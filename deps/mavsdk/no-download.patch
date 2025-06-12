@@ -1,0 +1,42 @@
+diff --git a/third_party/libevents/CMakeLists.txt b/third_party/libevents/CMakeLists.txt
+index 98b7d51a..c6c44f1a 100644
+--- a/third_party/libevents/CMakeLists.txt
++++ b/third_party/libevents/CMakeLists.txt
+@@ -31,8 +31,7 @@ endforeach()
+ 
+ ExternalProject_Add(
+         libevents
+-        GIT_REPOSITORY https://github.com/mavlink/libevents.git
+-        GIT_TAG 7c1720749dfe555ec2e71d5f9f753e6ac1244e1c
++        SOURCE_DIR libevents-prefix/src
+         SOURCE_SUBDIR libs/cpp
+         CMAKE_ARGS "${CMAKE_ARGS}"
+ )
+diff --git a/third_party/mavlink/CMakeLists.txt b/third_party/mavlink/CMakeLists.txt
+index 2c303dfe..c29a07c0 100644
+--- a/third_party/mavlink/CMakeLists.txt
++++ b/third_party/mavlink/CMakeLists.txt
+@@ -14,21 +14,17 @@ set(MAVLINK_GIT_HASH 5e3a42b8f3f53038f2779f9f69bd64767b913bb8)
+ if(IOS)
+     ExternalProject_add(
+         mavlink
+-        GIT_REPOSITORY https://github.com/mavlink/mavlink
+-        GIT_TAG ${MAVLINK_GIT_HASH}
++        DOWNLOAD_COMMAND true
+         PREFIX mavlink
+         PATCH_COMMAND git checkout .
+-        COMMAND git apply ${PROJECT_SOURCE_DIR}/mavlink.patch
+         COMMAND git apply ${PROJECT_SOURCE_DIR}/mavlink_ios.patch
+         CMAKE_ARGS "${CMAKE_ARGS}"
+     )
+ else()
+     ExternalProject_add(
+         mavlink
+-        GIT_REPOSITORY https://github.com/mavlink/mavlink
+-        GIT_TAG ${MAVLINK_GIT_HASH}
++        DOWNLOAD_COMMAND true
+         PREFIX mavlink
+-        PATCH_COMMAND git checkout . && git apply ${PROJECT_SOURCE_DIR}/mavlink.patch
+         CMAKE_ARGS "${CMAKE_ARGS}"
+     )
+ endif()

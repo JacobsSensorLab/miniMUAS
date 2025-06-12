@@ -1,0 +1,145 @@
+diff --git a/src/algo/content-key.hpp b/src/algo/content-key.hpp
+index ac0e730..80ba340 100644
+--- a/src/algo/content-key.hpp
++++ b/src/algo/content-key.hpp
+@@ -21,7 +21,7 @@
+ #ifndef NAC_ABE_ALGO_CONTENT_KEY_HPP
+ #define NAC_ABE_ALGO_CONTENT_KEY_HPP
+ 
+-#include "common.hpp"
++#include "../common.hpp"
+ 
+ namespace ndn {
+ namespace nacabe {
+diff --git a/src/algo/master-key.hpp b/src/algo/master-key.hpp
+index 00d4fe3..2eaa5ad 100644
+--- a/src/algo/master-key.hpp
++++ b/src/algo/master-key.hpp
+@@ -21,7 +21,7 @@
+ #ifndef NAC_ABE_ALGO_MASTER_KEY_HPP
+ #define NAC_ABE_ALGO_MASTER_KEY_HPP
+ 
+-#include "common.hpp"
++#include "../common.hpp"
+ 
+ namespace ndn {
+ namespace nacabe {
+diff --git a/src/algo/private-key.hpp b/src/algo/private-key.hpp
+index ed72be2..140336d 100644
+--- a/src/algo/private-key.hpp
++++ b/src/algo/private-key.hpp
+@@ -21,7 +21,7 @@
+ #ifndef NAC_ABE_ALGO_PRIVATE_KEY_HPP
+ #define NAC_ABE_ALGO_PRIVATE_KEY_HPP
+ 
+-#include "common.hpp"
++#include "../common.hpp"
+ 
+ namespace ndn {
+ namespace nacabe {
+diff --git a/src/algo/public-params.hpp b/src/algo/public-params.hpp
+index a89ff4b..6c5563d 100644
+--- a/src/algo/public-params.hpp
++++ b/src/algo/public-params.hpp
+@@ -21,7 +21,7 @@
+ #ifndef NAC_ABE_ALGO_PUBLIC_PARAMS_HPP
+ #define NAC_ABE_ALGO_PUBLIC_PARAMS_HPP
+ 
+-#include "common.hpp"
++#include "../common.hpp"
+ 
+ namespace ndn {
+ namespace nacabe {
+diff --git a/src/common.hpp b/src/common.hpp
+index 73e7d69..e871fa8 100644
+--- a/src/common.hpp
++++ b/src/common.hpp
+@@ -21,10 +21,6 @@
+ #ifndef NAC_ABE_COMMON_HPP
+ #define NAC_ABE_COMMON_HPP
+ 
+-#ifndef NAC_ABE_CMAKE_BUILD
+-#include "nac-abe-config.hpp"
+-#endif
+-
+ #ifdef HAVE_TESTS
+ #define VIRTUAL_WITH_TESTS virtual
+ #define PUBLIC_WITH_TESTS_ELSE_PROTECTED public
+diff --git a/src/consumer.hpp b/src/consumer.hpp
+index 83bdc19..2d8be11 100644
+--- a/src/consumer.hpp
++++ b/src/consumer.hpp
+@@ -21,7 +21,7 @@
+ #ifndef NAC_ABE_CONSUMER_HPP
+ #define NAC_ABE_CONSUMER_HPP
+ 
+-#include "common.hpp"
++#include "./common.hpp"
+ #include "trust-config.hpp"
+ #include "algo/public-params.hpp"
+ #include "algo/private-key.hpp"
+diff --git a/src/data-owner.hpp b/src/data-owner.hpp
+index 54783d3..540fa3f 100644
+--- a/src/data-owner.hpp
++++ b/src/data-owner.hpp
+@@ -21,7 +21,7 @@
+ #ifndef NAC_ABE_DATA_OWNER_HPP
+ #define NAC_ABE_DATA_OWNER_HPP
+ 
+-#include "common.hpp"
++#include "./common.hpp"
+ 
+ namespace ndn {
+ namespace nacabe {
+diff --git a/src/json-helper.hpp b/src/json-helper.hpp
+index facc164..3f8f2bd 100644
+--- a/src/json-helper.hpp
++++ b/src/json-helper.hpp
+@@ -21,7 +21,7 @@
+ #ifndef NAC_ABE_JSON_HELPER_HPP
+ #define NAC_ABE_JSON_HELPER_HPP
+ 
+-#include "common.hpp"
++#include "./common.hpp"
+ 
+ namespace ndn {
+ namespace nacabe {
+diff --git a/src/ndn-crypto/data-enc-dec.hpp b/src/ndn-crypto/data-enc-dec.hpp
+index 4bcbe75..ce1aa18 100644
+--- a/src/ndn-crypto/data-enc-dec.hpp
++++ b/src/ndn-crypto/data-enc-dec.hpp
+@@ -21,7 +21,7 @@
+ #ifndef NAC_DATA_ENC_DEC_HPP
+ #define NAC_DATA_ENC_DEC_HPP
+ 
+-#include "common.hpp"
++#include "../common.hpp"
+ 
+ namespace ndn {
+ namespace nacabe {
+diff --git a/src/param-fetcher.hpp b/src/param-fetcher.hpp
+index bb715b6..9dfa3ba 100644
+--- a/src/param-fetcher.hpp
++++ b/src/param-fetcher.hpp
+@@ -21,7 +21,7 @@
+ #ifndef NAC_ABE_PARAM_FETCHER_HPP
+ #define NAC_ABE_PARAM_FETCHER_HPP
+ 
+-#include "common.hpp"
++#include "./common.hpp"
+ #include "algo/public-params.hpp"
+ #include "trust-config.hpp"
+ 
+diff --git a/tests/test-common.hpp b/tests/test-common.hpp
+index d25ce5f..0832ce3 100644
+--- a/tests/test-common.hpp
++++ b/tests/test-common.hpp
+@@ -21,7 +21,7 @@
+ #ifndef NAC_ABE_TESTS_TEST_COMMON_HPP
+ #define NAC_ABE_TESTS_TEST_COMMON_HPP
+ 
+-#include "common.hpp"
++#include "../src/common.hpp"
+ #include "boost-test.hpp"
+ #include "identity-management-fixture.hpp"
+ 

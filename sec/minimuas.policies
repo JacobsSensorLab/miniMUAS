@@ -1,0 +1,99 @@
+name /muas/controller/NDNSF/ControllerPolicy/v1 ; policy name  
+provider-policies  
+{  
+    provider-policy  
+    {  
+        for /FlightCtrl/Takeoff ; service name without provider  
+        allow ; allowed provider prefixes  
+        { 
+            /muas/iuas1
+            /muas/wuas1
+        } 
+    }  
+    provider-policy  
+    {  
+        for /FlightCtrl/Land ; service name without provider  
+        allow ; allowed provider prefixes  
+        { 
+            /muas/iuas1
+            /muas/wuas1
+        }   
+    } 
+    provider-policy  
+    {  
+        for /FlightCtrl/Kill ; service name without provider  
+        allow ; allowed provider prefixes  
+        { 
+            /muas/iuas1
+            /muas/wuas1
+        }   
+    }  
+    provider-policy  
+    {  
+        for /FlightCtrl/RTL ; service name without provider  
+        allow ; allowed provider prefixes  
+        { 
+            /muas/iuas1
+            /muas/wuas1
+        }   
+    } 
+    provider-policy  
+    {  
+        for /Sensor/GetSensorInfo ; service name without provider  
+        allow ; allowed provider prefixes  
+        { 
+            /muas/iuas1
+        }   
+    } 
+    provider-policy  
+    {  
+        for /Sensor/CaptureSingle ; service name without provider  
+        allow ; allowed provider prefixes  
+        { 
+            /muas/iuas1
+        }   
+    } 
+    provider-policy  
+    {  
+        for /IUAS/PointOrbit ; service name without provider  
+        allow ; allowed provider prefixes  
+        { 
+            /muas/iuas1
+        }   
+    } 
+}  
+
+user-policies  
+{  
+    user-policy  
+    {  
+        for /muas/gcs1/ ; user full name  
+        allow ; allowed services  
+        {  
+            /muas/wuas1/FlightCtrl/Takeoff
+            /muas/wuas1/FlightCtrl/RTL
+            /muas/wuas1/FlightCtrl/Land
+            /muas/wuas1/FlightCtrl/Kill
+            /muas/iuas1/FlightCtrl/Takeoff
+            /muas/iuas1/FlightCtrl/RTL
+            /muas/iuas1/FlightCtrl/Land
+            /muas/iuas1/FlightCtrl/Kill
+            /muas/iuas1/Sensor/GetSensorInfo
+            /muas/iuas1/Sensor/CaptureSingle
+        }
+    }  
+    user-policy  
+    {  
+        for /muas/wuas1/ ; user full name
+        allow ; allowed services
+        {  
+            /muas/iuas1/IUAS/PointOrbit
+            /muas/iuas1/FlightCtrl/Takeoff
+            /muas/iuas1/FlightCtrl/Land
+            /muas/iuas1/FlightCtrl/Kill
+            /muas/iuas1/Sensor/GetSensorInfo
+            /muas/iuas1/Sensor/CaptureSingle
+        }
+    }  
+  
+}  
