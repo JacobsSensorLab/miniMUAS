@@ -24,8 +24,8 @@ let
   #   stdenv.cc.cc
   # ];
 in stdenv.mkDerivation {
-  pname = "minimuas-apps";
-  version = "2025-06-11";
+  pname = "minimuas";
+  version = "2025-06-16";
 
   src = ./.;
 
