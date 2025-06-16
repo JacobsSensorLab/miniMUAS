@@ -8,7 +8,6 @@
 #include "./generated/ServiceUser_GCS.hpp"
 
 #include <mutex>
-#include <opencv2/opencv.hpp>
 #include "./metrics.hpp"
 
 NDN_LOG_INIT(muas.main_gcs);
@@ -69,9 +68,9 @@ main(int argc, char **argv)
     muas::ServiceUser_GCS m_serviceUser(m_face, "/muas",gs_certificate,m_keyChain.getPib().getIdentity("/muas/aa").getDefaultKey().getDefaultCertificate(),"/usr/local/bin/trust-any.conf");
     
     std::vector<ndn::Name> wuas_providers;
-    wuas_providers.push_back(ndn::Name("/muas/wuas1"));
+    wuas_providers.push_back(ndn::Name("/muas/wuas-01"));
     std::vector<ndn::Name> iuas_providers;
-    iuas_providers.push_back(ndn::Name("/muas/iuas1"));
+    iuas_providers.push_back(ndn::Name("/muas/iuas-01"));
 
     m_face.processEvents(ndn::time::milliseconds(2000));
 

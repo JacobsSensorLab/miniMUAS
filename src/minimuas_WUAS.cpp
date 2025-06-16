@@ -34,15 +34,15 @@ main(int argc, char **argv)
         exit(1);
     }
 
-    Mavsdk mavsdk{Mavsdk::Configuration{ComponentType::CompanionComputer}};
-    ConnectionResult connection_result = mavsdk.add_any_connection(argv[2]);
+    mavsdk::Mavsdk mav{mavsdk::Mavsdk::Configuration{mavsdk::ComponentType::CompanionComputer}};
+    mavsdk::ConnectionResult connection_result = mav.add_any_connection(argv[2]);
 
-    if (connection_result != ConnectionResult::Success) {
+    if (connection_result != mavsdk::ConnectionResult::Success) {
         std::cerr << "Connection failed: " << connection_result << '\n';
         return 1;
     }
 
-    auto opt_system = mavsdk.first_autopilot(-1);
+    auto opt_system = mav.first_autopilot(-1);
     if (!opt_system) {
         std::cerr << "Timed out waiting for system\n";
         return 1;
@@ -50,11 +50,9 @@ main(int argc, char **argv)
 
     auto system = opt_system.value();
     
-    auto telemetry = Telemetry(system);
-    telemetry.set_rate_in_air(0.5);
-    telemetry.set_rate_gps_info(0.5);
-
-    auto action = Action(system);
+    auto m_telemetry = mavsdk::Telemetry{system};
+    m_telemetry.set_rate_in_air(0.5);
+    m_telemetry.set_rate_gps_info(0.5);
 
     std::string identity = argv[1];
     std::string trust_conf_dir = argv[3];
@@ -70,7 +68,7 @@ main(int argc, char **argv)
 
     muas::Sensor sensor;
     char sensor_namespace[200];
-    snprintf(sensor_namespace, sizeof(sensor_namespace), "/muas/%s/sensor/0", identity);
+    snprintf(sensor_namespace, sizeof(sensor_namespace), "/muas/%s/sensor/0", identity.c_str());
     sensor.set_name("WUAS_Arducam");
     sensor.set_type(muas::Sensor_SensorType_MULTISPECTRAL);
     sensor.set_id(0);
@@ -101,7 +99,7 @@ main(int argc, char **argv)
 
     auto takeoff = [&]() {
         std::vector<ndn::Name> providers;
-        providers.push_back(ndn::Name("/muas/iuas1"));
+        providers.push_back(ndn::Name("/muas/iuas-01"));
         muas::FlightCtrl_Takeoff_Request takeoff_request;
         auto takeoff_start = takeoff_metric.start();
         m_serviceUser.Takeoff_Async(providers, takeoff_request, [&, takeoff_start](const muas::FlightCtrl_Takeoff_Response& _response) {
@@ -113,7 +111,7 @@ main(int argc, char **argv)
 
     auto orbit = [&]() {
         std::vector<ndn::Name> providers;
-        providers.push_back(ndn::Name("/muas/iuas1"));
+        providers.push_back(ndn::Name("/muas/iuas-01"));
         
         muas::IUAS_PointOrbit_Request orbit_request;
 
@@ -147,7 +145,13 @@ main(int argc, char **argv)
         orbit_metric.exportCSV("wuas_orbit.csv");
     };
 
-    m_serviceProvider.m_FlightCtrlService.Takeoff_Handler = [&, telemetry, action](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Takeoff_Request& _request, muas::FlightCtrl_Takeoff_Response& _response){
+    m_serviceProvider.m_FlightCtrlService.Takeoff_Handler = [&, system](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Takeoff_Request& _request, muas::FlightCtrl_Takeoff_Response& _response){
+        auto telemetry = mavsdk::Telemetry{system};
+        telemetry.set_rate_in_air(0.5);
+        telemetry.set_rate_gps_info(0.5);
+
+        auto action = mavsdk::Action{system};
+
         if (telemetry.gps_info().num_satellites < 5) {
             NDN_LOG_INFO("Takeoff request denied: need more than 5 satellites (" << telemetry.gps_info().num_satellites << ")");
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
@@ -163,8 +167,8 @@ main(int argc, char **argv)
         }
 
         if (!telemetry.armed()) {
-            const Action::Result arm_result = action.arm();
-            if (arm_result != Action::Result::Success) {
+            const mavsdk::Action::Result arm_result = action.arm();
+            if (arm_result != mavsdk::Action::Result::Success) {
                 NDN_LOG_INFO("Arming failed: " << arm_result);
                 _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
                 _response.mutable_response()->set_msg("Arming failed");
@@ -173,8 +177,8 @@ main(int argc, char **argv)
             NDN_LOG_INFO("Armed");
         }
 
-        const Action::Result takeoff_result = action.takeoff();
-        if (takeoff_result != Action::Result::Success) {
+        const mavsdk::Action::Result takeoff_result = action.takeoff();
+        if (takeoff_result != mavsdk::Action::Result::Success) {
             NDN_LOG_INFO("Takeoff failed: " << takeoff_result);
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Takeoff failed");
@@ -185,7 +189,13 @@ main(int argc, char **argv)
         _response.mutable_response()->set_msg("Taking off");
     };
 
-    m_serviceProvider.m_FlightCtrlService.Land_Handler = [&, telemetry, action](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Land_Request& _request, muas::FlightCtrl_Land_Response& _response){
+    m_serviceProvider.m_FlightCtrlService.Land_Handler = [&, system](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Land_Request& _request, muas::FlightCtrl_Land_Response& _response){
+        auto telemetry = mavsdk::Telemetry{system};
+        telemetry.set_rate_in_air(0.5);
+        telemetry.set_rate_gps_info(0.5);
+
+        auto action = mavsdk::Action{system};
+
         if (!telemetry.in_air()) {
             NDN_LOG_INFO("Land request denied: Already grounded!");
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
@@ -193,8 +203,8 @@ main(int argc, char **argv)
             return;
         }
 
-        const Action::Result land_result = action.land();
-        if (land_result != Action::Result::Success) {
+        const mavsdk::Action::Result land_result = action.land();
+        if (land_result != mavsdk::Action::Result::Success) {
             NDN_LOG_INFO("Landing failed: " << land_result);
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Landing failed");
@@ -205,7 +215,13 @@ main(int argc, char **argv)
         _response.mutable_response()->set_msg("Landing");
     };
 
-    m_serviceProvider.m_FlightCtrlService.RTL_Handler = [&, telemetry, action](const ndn::Name& requesterIdentity, const muas::FlightCtrl_RTL_Request& _request, muas::FlightCtrl_RTL_Response& _response){
+    m_serviceProvider.m_FlightCtrlService.RTL_Handler = [&, system](const ndn::Name& requesterIdentity, const muas::FlightCtrl_RTL_Request& _request, muas::FlightCtrl_RTL_Response& _response){
+        auto telemetry = mavsdk::Telemetry{system};
+        telemetry.set_rate_in_air(0.5);
+        telemetry.set_rate_gps_info(0.5);
+
+        auto action = mavsdk::Action{system};
+
         if (!telemetry.in_air()) {
             NDN_LOG_INFO("RTL request denied: Already grounded!");
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
@@ -213,8 +229,8 @@ main(int argc, char **argv)
             return;
         }
 
-        const Action::Result rtl_result = action.return_to_launch();
-        if (rtl_result != Action::Result::Success) {
+        const mavsdk::Action::Result rtl_result = action.return_to_launch();
+        if (rtl_result != mavsdk::Action::Result::Success) {
             NDN_LOG_INFO("RTL failed: " << rtl_result);
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("RTL failed");
@@ -225,9 +241,15 @@ main(int argc, char **argv)
         _response.mutable_response()->set_msg("Initiating RTL");
     };
 
-    m_serviceProvider.m_FlightCtrlService.Kill_Handler = [&, telemetry, action](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Kill_Request& _request, muas::FlightCtrl_Kill_Response& _response){
-        const Action::Result kill_result = action.kill();
-        if (kill_result != Action::Result::Success) {
+    m_serviceProvider.m_FlightCtrlService.Kill_Handler = [&, system](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Kill_Request& _request, muas::FlightCtrl_Kill_Response& _response){
+        auto telemetry = mavsdk::Telemetry{system};
+        telemetry.set_rate_in_air(0.5);
+        telemetry.set_rate_gps_info(0.5);
+
+        auto action = mavsdk::Action{system};
+
+        const mavsdk::Action::Result kill_result = action.kill();
+        if (kill_result != mavsdk::Action::Result::Success) {
             NDN_LOG_INFO("Kill command failed: " << kill_result);
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Kill command failed");
@@ -241,7 +263,7 @@ main(int argc, char **argv)
     NDN_LOG_INFO("WUAS running");
     try {
         while (1) {
-            if (telemetry.in_air() && !single_request_sent) {
+            if (m_telemetry.in_air() && !single_request_sent) {
                 std::cout << "Beginning interrogation in 10 seconds." << std::endl;
                 m_scheduler.schedule(ndn::time::milliseconds(10000), interrogate);
                 m_scheduler.schedule(ndn::time::milliseconds(25000), OutputMetrics);

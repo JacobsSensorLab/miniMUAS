@@ -8,7 +8,6 @@
 #include "./generated/ServiceUser_GCS.hpp"
 
 #include <mutex>
-#include <opencv2/opencv.hpp>
 #include "./metrics.hpp"
 
 NDN_LOG_INIT(muas.main_gcs);
@@ -69,9 +68,9 @@ int main(int argc, char **argv)
         "/usr/local/bin/trust-any.conf"
     );
 
-    std::vector<ndn::Name> wuas_providers = { ndn::Name("/muas/wuas1") };
-    std::vector<ndn::Name> iuas_providers = { ndn::Name("/muas/iuas1") };
-    std::vector<ndn::Name> uas_providers = { ndn::Name("/muas/iuas1"), ndn::Name("/muas/wuas1") };
+    std::vector<ndn::Name> wuas_providers = { ndn::Name("/muas/wuas-01") };
+    std::vector<ndn::Name> iuas_providers = { ndn::Name("/muas/iuas-01") };
+    std::vector<ndn::Name> uas_providers = { ndn::Name("/muas/iuas-01"), ndn::Name("/muas/wuas-01") };
 
     m_face.processEvents(ndn::time::milliseconds(2000));
 
