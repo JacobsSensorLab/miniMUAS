@@ -33,44 +33,48 @@ in stdenv.mkDerivation {
 
   buildInputs = [ boost openssl ndn-cxx ndn-svs sqlite nac-abe ndnsd ndnsf protobuf mavsdk gtkmm3 cv ];
 
-  postInstall = ''
-    mkdir -p $out/sec
-
-    ndnsec delete /muas
-    ndnsec delete /muas/aa
-    ndnsec delete /muas/gcs-01
-    ndnsec delete /muas/wuas-01
-    ndnsec delete /muas/iuas-01
-
-    ndnsec key-gen -t r /muas > /tmp/muas.key
-    ndnsec key-gen -t r /muas/aa > /tmp/aa.key
-    ndnsec key-gen -t r /muas/gcs-01 > /tmp/gcs-01.key
-    ndnsec key-gen -t r /muas/wuas-01 > /tmp/wuas-01.key
-    ndnsec key-gen -t r /muas/iuas-01 > /tmp/iuas-01.key
-
-    ndnsec cert-dump -i /muas > $out/sec/muas.cert
-    ndnsec cert-gen -s /muas -i default /tmp/aa.key > $out/sec/aa.cert
-    ndnsec cert-gen -s /fossn -i default /tmp/gcs-01.key > $out/sec/gcs-01.cert
-    ndnsec cert-gen -s /fossn -i default /tmp/sys-01.key > $out/sec/sys-01.cert
-    ndnsec cert-gen -s /fossn -i default /tmp/sys-01.key > $out/sec/sys-02.cert
-
-    ndnsec-export -P 123456 -o $out/sec/muas.ndnkey -i /muas
-    ndnsec-export -P 123456 -o $out/sec/aa.ndnkey -i /muas/aa
-    ndnsec-export -P 123456 -o $out/sec/gcs-01.ndnkey -i /muas/gcs-01
-    ndnsec-export -P 123456 -o $out/sec/wuas-01.ndnkey -i /muas/wuas-01
-    ndnsec-export -P 123456 -o $out/sec/iuas-01.ndnkey -i /muas/iuas-01
-
+  installPhase = ''
     mkdir -p $out/bin
+    mkdir -p $out/sec
+    mkdir -p $out/config
+
     cp iuas $out/bin/
     cp wuas $out/bin/
     cp gcs $out/bin/
     cp gcs-shell $out/bin/
     cp service-controller $out/bin/
 
-    mkdir -p $out/config
-    cp config/minimuas.policies $out/config/
-    cp config/trust-any.conf $out/config/
-    cp config/trust-schema.conf $out/config/
+    # ndnsec needs $HOME to maintain its database
+    export HOME=$(mktemp -d)
+
+    ${ndn-cxx}/bin/ndnsec key-gen -t r /muas > $out/muas.key
+    ${ndn-cxx}/bin/ndnsec key-gen -t r /muas/aa > $out/aa.key
+    ${ndn-cxx}/bin/ndnsec key-gen -t r /muas/gcs-01 > $out/gcs-01.key
+    ${ndn-cxx}/bin/ndnsec key-gen -t r /muas/wuas-01 > $out/wuas-01.key
+    ${ndn-cxx}/bin/ndnsec key-gen -t r /muas/iuas-01 > $out/iuas-01.key
+
+    ${ndn-cxx}/bin/ndnsec cert-dump -i /muas > $out/sec/muas.cert
+    ${ndn-cxx}/bin/ndnsec cert-gen -s /muas -i default $out/aa.key > $out/sec/aa.cert
+    ${ndn-cxx}/bin/ndnsec cert-gen -s /muas -i default $out/gcs-01.key > $out/sec/gcs-01.cert
+    ${ndn-cxx}/bin/ndnsec cert-gen -s /muas -i default $out/wuas-01.key > $out/sec/wuas-01.cert
+    ${ndn-cxx}/bin/ndnsec cert-gen -s /muas -i default $out/iuas-01.key > $out/sec/iuas-01.cert
+
+    ${ndn-cxx}/bin/ndnsec-export -P 123456 -o $out/sec/muas.ndnkey -i /muas
+    ${ndn-cxx}/bin/ndnsec-export -P 123456 -o $out/sec/aa.ndnkey -i /muas/aa
+    ${ndn-cxx}/bin/ndnsec-export -P 123456 -o $out/sec/gcs-01.ndnkey -i /muas/gcs-01
+    ${ndn-cxx}/bin/ndnsec-export -P 123456 -o $out/sec/wuas-01.ndnkey -i /muas/wuas-01
+    ${ndn-cxx}/bin/ndnsec-export -P 123456 -o $out/sec/iuas-01.ndnkey -i /muas/iuas-01
+
+    cp ../config/minimuas.policies $out/config/
+    cp ../config/trust-any.conf $out/config/
+    cp ../config/trust-schema.conf $out/config/
+
+    # cleanup
+    rm $out/muas.key
+    rm $out/aa.key
+    rm $out/gcs-01.key
+    rm $out/wuas-01.key
+    rm $out/iuas-01.key
   '';
 
   meta = with lib; {
