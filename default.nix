@@ -33,7 +33,7 @@ in stdenv.mkDerivation {
 
   buildInputs = [ boost openssl ndn-cxx ndn-svs sqlite nac-abe ndnsd ndnsf protobuf mavsdk gtkmm3 cv ];
 
-  installPhase = ''
+  postInstall = ''
     mkdir -p $out/sec
 
     ndnsec delete /muas
