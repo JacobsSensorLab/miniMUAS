@@ -26,7 +26,7 @@ void getCapture(const std::string& producer_id, int sensor_id, int idx) {
         NDN_LOG_INFO("ndnget " + name + " > " + filename);
 
         // Pass the filename directly as an output redirection target
-        bp::child c("/usr/local/bin/ndnget", name, bp::std_out > filename);
+        bp::child c("ndnget", name, bp::std_out > filename);
         c.wait();
 
         std::cout << "Saved " << filename << std::endl;
@@ -42,14 +42,15 @@ main(int argc, char **argv)
     Metrics getinfo_metric(true, true);
     Metrics capture_metric(true, true);
 
-    if (argc != 4)
+    if (argc != 5)
     {
-        std::cerr << "Usage: gcs-example <identity> <capture_interval_in_ms> <count>" << std::endl;
+        std::cerr << "Usage: gcs-example <identity> <capture_interval_in_ms> <count> <trust_conf_dir>" << std::endl;
         exit(1);
     }
     std::string identity = argv[1];
     int interval_in_ms = std::stoi(argv[2]);
     int count = std::stoi(argv[3]);
+    std::string trust_conf_dir = argv[4];
     int delay = 0000;
 
     int iuas_sensor_idx = 0;
@@ -65,7 +66,7 @@ main(int argc, char **argv)
             .getDefaultCertificate()
     );
 
-    muas::ServiceUser_GCS m_serviceUser(m_face, "/muas",gs_certificate,m_keyChain.getPib().getIdentity("/muas/aa").getDefaultKey().getDefaultCertificate(),"/usr/local/bin/trust-any.conf");
+    muas::ServiceUser_GCS m_serviceUser(m_face, "/muas",gs_certificate,m_keyChain.getPib().getIdentity("/muas/aa").getDefaultKey().getDefaultCertificate(), trust_conf_dir + "/trust-any.conf");
     
     std::vector<ndn::Name> wuas_providers;
     wuas_providers.push_back(ndn::Name("/muas/wuas-01"));
