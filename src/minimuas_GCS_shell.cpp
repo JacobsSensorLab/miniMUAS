@@ -42,13 +42,13 @@ int main(int argc, char **argv)
     Metrics capture_metric(true, true);
     Metrics ping_metric(true, true);
 
-    if (argc != 3) {
-        std::cerr << "Usage: gcs-example <identity> <trust_conf_dir>" << std::endl;
+    if (argc != 2) {
+        std::cerr << "Usage: gcs-shell <identity>" << std::endl;
         return 1;
     }
 
     std::string identity = argv[1];
-    std::string trust_conf_dir = argv[2];
+    std::string conf_dir = "/usr/local/bin";
     int iuas_sensor_idx = 0;
 
     ndn::Face m_face;
@@ -66,7 +66,7 @@ int main(int argc, char **argv)
         m_face, "/muas",
         gs_certificate,
         m_keyChain.getPib().getIdentity("/muas/aa").getDefaultKey().getDefaultCertificate(),
-        trust_conf_dir + "/trust-any.conf"
+        conf_dir + "/trust-any.conf"
     );
 
     std::vector<ndn::Name> wuas_providers = { ndn::Name("/muas/wuas-01") };

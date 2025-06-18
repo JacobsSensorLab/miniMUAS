@@ -65,9 +65,9 @@ int get_next_file_number(const char *directory) {
 int
 main(int argc, char **argv)
 {
-    if (argc != 4)
+    if (argc != 3)
     {
-        std::cerr << "Usage : iuas-example <identity> <connection_url> <trust_conf_dir>\n"
+        std::cerr << "Usage : iuas-example <identity> <connection_url>\n"
               << "Connection URL format should be :\n"
               << " For TCP : tcp://[server_host][:server_port]\n"
               << " For UDP : udp://[bind_host][:bind_port]\n"
@@ -97,7 +97,7 @@ main(int argc, char **argv)
     m_telemetry.set_rate_gps_info(0.5);
 
     std::string identity = argv[1];
-    std::string trust_conf_dir = argv[3];
+    std::string conf_dir = "/usr/local/bin";
     ndn::Face m_face;
     auto sensor_idx = 0;
     muas::Sensor sensor;
@@ -122,7 +122,7 @@ main(int argc, char **argv)
             .getIdentity("/muas/aa")
             .getDefaultKey()
             .getDefaultCertificate()
-        , trust_conf_dir + "/trust-any.conf"
+        , conf_dir + "/trust-any.conf"
     );
 
     m_serviceProvider.m_FlightCtrlService.Takeoff_Handler = [&, system](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Takeoff_Request& _request, muas::FlightCtrl_Takeoff_Response& _response){

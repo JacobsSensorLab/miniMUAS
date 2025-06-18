@@ -23,9 +23,9 @@ main(int argc, char **argv)
 
     bool single_request_sent = false;
 
-    if (argc != 4)
+    if (argc != 3)
     {
-        std::cerr << "Usage : wuas-example <identity> <connection_url> <trust_conf_dir>\n"
+        std::cerr << "Usage : wuas-example <identity> <connection_url>\n"
               << "Connection URL format should be :\n"
               << " For TCP : tcp://[server_host][:server_port]\n"
               << " For UDP : udp://[bind_host][:bind_port]\n"
@@ -55,7 +55,7 @@ main(int argc, char **argv)
     m_telemetry.set_rate_gps_info(0.5);
 
     std::string identity = argv[1];
-    std::string trust_conf_dir = argv[3];
+    std::string conf_dir = "/usr/local/bin";
     ndn::Face m_face;
     ndn::Scheduler m_scheduler(m_face.getIoContext());
     ndn::security::KeyChain m_keyChain;
@@ -82,7 +82,7 @@ main(int argc, char **argv)
             .getIdentity("/muas/aa")
             .getDefaultKey()
             .getDefaultCertificate()
-        , trust_conf_dir + "/trust-any.conf"
+        , conf_dir + "/trust-any.conf"
     );
 
     muas::ServiceUser_WUAS m_serviceUser(
@@ -94,7 +94,7 @@ main(int argc, char **argv)
             .getIdentity("/muas/aa")
             .getDefaultKey()
             .getDefaultCertificate()
-        , trust_conf_dir + "/trust-any.conf"
+        , conf_dir + "/trust-any.conf"
     );
 
     auto takeoff = [&]() {
