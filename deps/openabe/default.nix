@@ -10,7 +10,7 @@
 , gmp
 , bison
 , flex
-, nodejs_23
+, nodejs_24
 , python313
 , unzip
 , gcc11
@@ -29,7 +29,7 @@ stdenv.mkDerivation rec {
     sha256 = "sha256-3SBLu2S128PFHlfYG704fe76AN5gZuEemmNInnS9HRk=";
   };
 
-  nativeBuildInputs = [ pkg-config perl cmake boost glib gmp unzip gcc11 bison flex nodejs_23 python313 ];
+  nativeBuildInputs = [ pkg-config perl cmake boost glib gmp unzip gcc11 bison flex nodejs_24 python313 ];
 
   dontUseCmakeConfigure = true;
 
