@@ -145,28 +145,24 @@ main(int argc, char **argv)
         orbit_metric.exportCSV("wuas_orbit.csv");
     };
 
-    m_serviceProvider.m_FlightCtrlService.Takeoff_Handler = [&, system](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Takeoff_Request& _request, muas::FlightCtrl_Takeoff_Response& _response){
-        auto telemetry = mavsdk::Telemetry{system};
-        telemetry.set_rate_in_air(0.5);
-        telemetry.set_rate_gps_info(0.5);
-
+    m_serviceProvider.m_FlightCtrlService.Takeoff_Handler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Takeoff_Request& _request, muas::FlightCtrl_Takeoff_Response& _response){
         auto action = mavsdk::Action{system};
 
-        if (telemetry.gps_info().num_satellites < 5) {
-            NDN_LOG_INFO("Takeoff request denied: need more than 5 satellites (" << telemetry.gps_info().num_satellites << ")");
+        if (m_telemetry.gps_info().num_satellites < 5) {
+            NDN_LOG_INFO("Takeoff request denied: need more than 5 satellites (" << m_telemetry.gps_info().num_satellites << ")");
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Not enough satellites");
             return;
         }
 
-        if (telemetry.in_air()) {
+        if (m_telemetry.in_air()) {
             NDN_LOG_INFO("Takeoff request denied: Already in the air!");
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("UAS has already taken off");
             return;
         }
 
-        if (!telemetry.armed()) {
+        if (!m_telemetry.armed()) {
             const mavsdk::Action::Result arm_result = action.arm();
             if (arm_result != mavsdk::Action::Result::Success) {
                 NDN_LOG_INFO("Arming failed: " << arm_result);
@@ -189,14 +185,10 @@ main(int argc, char **argv)
         _response.mutable_response()->set_msg("Taking off");
     };
 
-    m_serviceProvider.m_FlightCtrlService.Land_Handler = [&, system](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Land_Request& _request, muas::FlightCtrl_Land_Response& _response){
-        auto telemetry = mavsdk::Telemetry{system};
-        telemetry.set_rate_in_air(0.5);
-        telemetry.set_rate_gps_info(0.5);
-
+    m_serviceProvider.m_FlightCtrlService.Land_Handler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Land_Request& _request, muas::FlightCtrl_Land_Response& _response){
         auto action = mavsdk::Action{system};
 
-        if (!telemetry.in_air()) {
+        if (!m_telemetry.in_air()) {
             NDN_LOG_INFO("Land request denied: Already grounded!");
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Already grounded");
@@ -215,14 +207,10 @@ main(int argc, char **argv)
         _response.mutable_response()->set_msg("Landing");
     };
 
-    m_serviceProvider.m_FlightCtrlService.RTL_Handler = [&, system](const ndn::Name& requesterIdentity, const muas::FlightCtrl_RTL_Request& _request, muas::FlightCtrl_RTL_Response& _response){
-        auto telemetry = mavsdk::Telemetry{system};
-        telemetry.set_rate_in_air(0.5);
-        telemetry.set_rate_gps_info(0.5);
-
+    m_serviceProvider.m_FlightCtrlService.RTL_Handler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_RTL_Request& _request, muas::FlightCtrl_RTL_Response& _response){
         auto action = mavsdk::Action{system};
 
-        if (!telemetry.in_air()) {
+        if (!m_telemetry.in_air()) {
             NDN_LOG_INFO("RTL request denied: Already grounded!");
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Already grounded");
@@ -241,11 +229,7 @@ main(int argc, char **argv)
         _response.mutable_response()->set_msg("Initiating RTL");
     };
 
-    m_serviceProvider.m_FlightCtrlService.Kill_Handler = [&, system](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Kill_Request& _request, muas::FlightCtrl_Kill_Response& _response){
-        auto telemetry = mavsdk::Telemetry{system};
-        telemetry.set_rate_in_air(0.5);
-        telemetry.set_rate_gps_info(0.5);
-
+    m_serviceProvider.m_FlightCtrlService.Kill_Handler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Kill_Request& _request, muas::FlightCtrl_Kill_Response& _response){
         auto action = mavsdk::Action{system};
 
         const mavsdk::Action::Result kill_result = action.kill();
