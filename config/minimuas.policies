@@ -6,8 +6,8 @@ provider-policies
         for /FlightCtrl/Takeoff ; service name without provider  
         allow ; allowed provider prefixes  
         { 
-            /muas/iuas1
-            /muas/wuas1
+            /muas/iuas-01
+            /muas/wuas-01
         } 
     }  
     provider-policy  
@@ -15,8 +15,8 @@ provider-policies
         for /FlightCtrl/Land ; service name without provider  
         allow ; allowed provider prefixes  
         { 
-            /muas/iuas1
-            /muas/wuas1
+            /muas/iuas-01
+            /muas/wuas-01
         }   
     } 
     provider-policy  
@@ -24,8 +24,8 @@ provider-policies
         for /FlightCtrl/Kill ; service name without provider  
         allow ; allowed provider prefixes  
         { 
-            /muas/iuas1
-            /muas/wuas1
+            /muas/iuas-01
+            /muas/wuas-01
         }   
     }  
     provider-policy  
@@ -33,8 +33,8 @@ provider-policies
         for /FlightCtrl/RTL ; service name without provider  
         allow ; allowed provider prefixes  
         { 
-            /muas/iuas1
-            /muas/wuas1
+            /muas/iuas-01
+            /muas/wuas-01
         }   
     } 
     provider-policy  
@@ -42,7 +42,7 @@ provider-policies
         for /Sensor/GetSensorInfo ; service name without provider  
         allow ; allowed provider prefixes  
         { 
-            /muas/iuas1
+            /muas/iuas-01
         }   
     } 
     provider-policy  
@@ -50,7 +50,7 @@ provider-policies
         for /Sensor/CaptureSingle ; service name without provider  
         allow ; allowed provider prefixes  
         { 
-            /muas/iuas1
+            /muas/iuas-01
         }   
     } 
     provider-policy  
@@ -58,7 +58,7 @@ provider-policies
         for /IUAS/PointOrbit ; service name without provider  
         allow ; allowed provider prefixes  
         { 
-            /muas/iuas1
+            /muas/iuas-01
         }   
     } 
 }  
@@ -67,32 +67,32 @@ user-policies
 {  
     user-policy  
     {  
-        for /muas/gcs1/ ; user full name  
+        for /muas/gcs-01/ ; user full name  
         allow ; allowed services  
         {  
-            /muas/wuas1/FlightCtrl/Takeoff
-            /muas/wuas1/FlightCtrl/RTL
-            /muas/wuas1/FlightCtrl/Land
-            /muas/wuas1/FlightCtrl/Kill
-            /muas/iuas1/FlightCtrl/Takeoff
-            /muas/iuas1/FlightCtrl/RTL
-            /muas/iuas1/FlightCtrl/Land
-            /muas/iuas1/FlightCtrl/Kill
-            /muas/iuas1/Sensor/GetSensorInfo
-            /muas/iuas1/Sensor/CaptureSingle
+            /muas/wuas-01/FlightCtrl/Takeoff
+            /muas/wuas-01/FlightCtrl/RTL
+            /muas/wuas-01/FlightCtrl/Land
+            /muas/wuas-01/FlightCtrl/Kill
+            /muas/iuas-01/FlightCtrl/Takeoff
+            /muas/iuas-01/FlightCtrl/RTL
+            /muas/iuas-01/FlightCtrl/Land
+            /muas/iuas-01/FlightCtrl/Kill
+            /muas/iuas-01/Sensor/GetSensorInfo
+            /muas/iuas-01/Sensor/CaptureSingle
         }
     }  
     user-policy  
     {  
-        for /muas/wuas1/ ; user full name
+        for /muas/wuas-01/ ; user full name
         allow ; allowed services
         {  
-            /muas/iuas1/IUAS/PointOrbit
-            /muas/iuas1/FlightCtrl/Takeoff
-            /muas/iuas1/FlightCtrl/Land
-            /muas/iuas1/FlightCtrl/Kill
-            /muas/iuas1/Sensor/GetSensorInfo
-            /muas/iuas1/Sensor/CaptureSingle
+            /muas/iuas-01/IUAS/PointOrbit
+            /muas/iuas-01/FlightCtrl/Takeoff
+            /muas/iuas-01/FlightCtrl/Land
+            /muas/iuas-01/FlightCtrl/Kill
+            /muas/iuas-01/Sensor/GetSensorInfo
+            /muas/iuas-01/Sensor/CaptureSingle
         }
     }  
   
