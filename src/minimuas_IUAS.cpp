@@ -126,6 +126,7 @@ main(int argc, char **argv)
     );
 
     m_serviceProvider.m_FlightCtrlService.Takeoff_Handler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Takeoff_Request& _request, muas::FlightCtrl_Takeoff_Response& _response){
+        NDN_LOG_INFO("Takeoff request received");
         auto action = mavsdk::Action{system};
 
         if (m_telemetry.gps_info().num_satellites < 5) {
@@ -166,6 +167,7 @@ main(int argc, char **argv)
     };
 
     m_serviceProvider.m_FlightCtrlService.Land_Handler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Land_Request& _request, muas::FlightCtrl_Land_Response& _response){
+        NDN_LOG_INFO("Land request received");
         auto action = mavsdk::Action{system};
 
         if (!m_telemetry.in_air()) {
@@ -188,6 +190,7 @@ main(int argc, char **argv)
     };
 
     m_serviceProvider.m_FlightCtrlService.RTL_Handler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_RTL_Request& _request, muas::FlightCtrl_RTL_Response& _response){
+        NDN_LOG_INFO("RTL request received");
         auto action = mavsdk::Action{system};
 
         if (!m_telemetry.in_air()) {
@@ -210,6 +213,7 @@ main(int argc, char **argv)
     };
 
     m_serviceProvider.m_FlightCtrlService.Kill_Handler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Kill_Request& _request, muas::FlightCtrl_Kill_Response& _response){
+        NDN_LOG_INFO("Kill request received");
         auto action = mavsdk::Action{system};
 
         const mavsdk::Action::Result kill_result = action.kill();
@@ -225,6 +229,7 @@ main(int argc, char **argv)
     };
 
     m_serviceProvider.m_IUASService.PointOrbit_Handler = [&](const ndn::Name& requesterIdentity, const muas::IUAS_PointOrbit_Request& _request, muas::IUAS_PointOrbit_Response& _response){
+        NDN_LOG_INFO("PointOrbit request received");
         auto action = mavsdk::Action{system};
 
         if (!m_telemetry.in_air()) {
@@ -262,6 +267,7 @@ main(int argc, char **argv)
     };
 
     m_serviceProvider.m_SensorService.GetSensorInfo_Handler = [&, sensor](const ndn::Name& requesterIdentity, const muas::SensorCtrl_GetSensorInfo_Request& _request, muas::SensorCtrl_GetSensorInfo_Response& _response){
+        NDN_LOG_INFO("SensorInfo request received");
         auto action = mavsdk::Action{system};
 
         muas::Sensor* s = _response.add_sensors();
@@ -275,6 +281,7 @@ main(int argc, char **argv)
     };
 
     m_serviceProvider.m_SensorService.CaptureSingle_Handler = [&](const ndn::Name& requesterIdentity, const muas::SensorCtrl_CaptureSingle_Request& _request, muas::SensorCtrl_CaptureSingle_Response& _response){
+        NDN_LOG_INFO("CaptureSingle request received");
         auto action = mavsdk::Action{system};
 
         int cam_idx = 0;
