@@ -16,7 +16,7 @@ void getCapture(const std::string& producer_id, int sensor_id, int idx) {
     namespace bp = boost::process;
 
     std::stringstream nameStream, filenameStream;
-    nameStream << producer_id << "/sensor/" << sensor_id << "/" << idx;
+    nameStream << producer_id << "/sensor/" << sensor_id << "/" << idx << ".png";
     filenameStream << idx << ".png";
 
     std::string name = nameStream.str();
