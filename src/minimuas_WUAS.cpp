@@ -115,11 +115,14 @@ main(int argc, char **argv)
         
         muas::IUAS_PointOrbit_Request orbit_request;
 
-        // Some location in Switzerland bc QGC starts there apparently
+        
         auto point = orbit_request.target();
-        point.set_altitude(10);
-        point.set_latitude(47.397202);
-        point.set_longitude(8.543931);
+        point.set_altitude(30);
+        // Some location in Switzerland bc QGC starts there apparently
+        // point.set_latitude(47.397202);
+        // point.set_longitude(8.543931);
+        point.set_latitude(35.120881);
+        point.set_longitude(-89.934772);
         
         auto orbit_start = orbit_metric.start();
         m_serviceUser.PointOrbit_Async(providers, orbit_request, [&, orbit_start](const muas::IUAS_PointOrbit_Response& _response) {
