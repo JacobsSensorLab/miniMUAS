@@ -101,6 +101,28 @@ int main(int argc, char **argv)
         );
     };
 
+    auto rtl_call = [&](std::vector<ndn::Name> uas_providers) {
+        std::cout << "Requesting RTL." << std::endl;
+        muas::FlightCtrl_RTL_Request rtl_request;
+        m_serviceUser.RTL_Async(uas_providers, rtl_request,
+            [&](const muas::FlightCtrl_RTL_Response& _response) {
+                NDN_LOG_INFO(_response.DebugString());
+            },
+            ndn_service_framework::tlv::NoCoordination
+        );
+    };
+
+    auto kill_call = [&](std::vector<ndn::Name> uas_providers) {
+        std::cout << "Requesting Kill." << std::endl;
+        muas::FlightCtrl_Kill_Request kill_request;
+        m_serviceUser.Kill_Async(uas_providers, kill_request,
+            [&](const muas::FlightCtrl_Kill_Response& _response) {
+                NDN_LOG_INFO(_response.DebugString());
+            },
+            ndn_service_framework::tlv::NoCoordination
+        );
+    };
+
     auto info_call = [&]() {
         auto getinfo_start = getinfo_metric.start();
         std::cout << "Requesting sensor info from IUAS." << std::endl;
@@ -200,6 +222,28 @@ int main(int argc, char **argv)
             } else {
                 std::cerr << "Usage: ping <interval_ms> <count>" << std::endl;
             }
+        } else if (command == "rtl") {
+            std::string uas;
+            if (iss >> uas) {
+                std::stringstream nameStream;
+                nameStream << "/muas/" << uas << "-01";
+                std::string name = nameStream.str();
+                std::vector<ndn::Name> uas_providers = { ndn::Name(name) };
+                m_scheduler.schedule(ndn::time::milliseconds(0), [&] { rtl_call(uas_providers); });
+            } else {
+                std::cerr << "Usage: rtl <uas> (wuas/iuas)" << std::endl;
+            }
+        }  else if (command == "kill") {
+            std::string uas;
+            if (iss >> uas) {
+                std::stringstream nameStream;
+                nameStream << "/muas/" << uas << "-01";
+                std::string name = nameStream.str();
+                std::vector<ndn::Name> uas_providers = { ndn::Name(name) };
+                m_scheduler.schedule(ndn::time::milliseconds(0), [&] { kill_call(uas_providers); });
+            } else {
+                std::cerr << "Usage: kill <uas> (wuas/iuas)" << std::endl;
+            }
         } else if (command == "iuas_takeoff") {
             m_scheduler.schedule(ndn::time::milliseconds(0), iuas_takeoff_call);
         } else if (command == "wuas_takeoff") {
@@ -224,6 +268,8 @@ int main(int argc, char **argv)
                       << "  ping <i> <n>    - Ping n times with i ms interval\n"
                       << "  iuas_takeoff    - Request takeoff from IUAS\n"
                       << "  wuas_takeoff    - Request takeoff from WUAS\n"
+                      << "  rtl <uas>       - Request RTL from UAS\n"
+                      << "  kill <uas>      - Request kill from UAS\n"
                       << "  get_info        - Request sensor info from IUAS\n"
                       << "  capture <i> <n> - Capture n images with i ms interval\n"
                       << "  metrics         - Output metrics\n"
