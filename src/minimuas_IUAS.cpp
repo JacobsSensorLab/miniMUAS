@@ -292,7 +292,7 @@ main(int argc, char **argv)
         cv::Mat frame;
 
         capture >> frame;
-        const char *directory = ".";  // current directory
+        const char *directory = "./captures";  // current directory
         int next_num = get_next_file_number(directory);
 
         char filename[256];
