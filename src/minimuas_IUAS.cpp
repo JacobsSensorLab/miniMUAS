@@ -277,12 +277,16 @@ main(int argc, char **argv)
     m_serviceProvider.m_SensorService.CaptureSingle_Handler = [&](const ndn::Name& requesterIdentity, const muas::SensorCtrl_CaptureSingle_Request& _request, muas::SensorCtrl_CaptureSingle_Response& _response){
         auto action = mavsdk::Action{system};
 
-        std::cout << "Opening camera..." << std::endl;
-        cv::VideoCapture capture(0); // open the first camera
-        if (!capture.isOpened())
+        int cam_idx = 0;
+
+        std::cout << "Trying to open camera (/dev/video" << cam_idx << ")..." << std::endl;
+        cv::VideoCapture capture(cam_idx);
+        while (!capture.isOpened() || cam_idx < 5)
         {
-            std::cerr << "ERROR: Can't initialize camera capture" << std::endl;
-            throw;
+            NDN_LOG_ERROR("ERROR: Can't initialize camera (/dev/video" << cam_idx << ")");
+            cam_idx++;
+            std::cout << "Trying to open camera (/dev/video" << cam_idx << ")..." << std::endl;
+            cv::VideoCapture capture(cam_idx);
         }
 
         cv::Mat frame;
