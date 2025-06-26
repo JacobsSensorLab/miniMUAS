@@ -285,15 +285,18 @@ main(int argc, char **argv)
         auto action = mavsdk::Action{system};
 
         int cam_idx = 0;
+        std::string cap_dev = "/dev/video";
+        std::string cap_str = cap_dev + std::to_string(cam_idx);
 
-        std::cout << "Trying to open camera (/dev/video" << cam_idx << ")..." << std::endl;
-        cv::VideoCapture capture(cam_idx);
-        while (!capture.isOpened() || cam_idx < 5)
+        std::cout << "Trying to open camera (" << cap_dev << cam_idx << ")..." << std::endl;
+        cv::VideoCapture capture(cap_str);
+        while (!capture.isOpened() && cam_idx < 5)
         {
-            NDN_LOG_ERROR("ERROR: Can't initialize camera (/dev/video" << cam_idx << ")");
+            NDN_LOG_ERROR("ERROR: Can't initialize camera (" << cap_dev << cam_idx << ")");
             cam_idx++;
-            std::cout << "Trying to open camera (/dev/video" << cam_idx << ")..." << std::endl;
-            cv::VideoCapture capture(cam_idx);
+            std::string cap_str = cap_dev + std::to_string(cam_idx);
+            std::cout << "Trying to open camera (" << cap_dev << cam_idx << ")..." << std::endl;
+            cv::VideoCapture capture(cap_str);
         }
 
         cv::Mat frame;
