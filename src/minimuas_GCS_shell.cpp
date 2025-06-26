@@ -229,7 +229,7 @@ int main(int argc, char **argv)
                 nameStream << "/muas/" << uas << "-01";
                 std::string name = nameStream.str();
                 std::vector<ndn::Name> uas_providers = { ndn::Name(name) };
-                m_scheduler.schedule(ndn::time::milliseconds(0), [&] { rtl_call(uas_providers); });
+                m_scheduler.schedule(ndn::time::milliseconds(0), [uas_providers] { rtl_call(uas_providers); });
             } else {
                 std::cerr << "Usage: rtl <uas> (wuas/iuas)" << std::endl;
             }
@@ -240,7 +240,7 @@ int main(int argc, char **argv)
                 nameStream << "/muas/" << uas << "-01";
                 std::string name = nameStream.str();
                 std::vector<ndn::Name> uas_providers = { ndn::Name(name) };
-                m_scheduler.schedule(ndn::time::milliseconds(0), [&] { kill_call(uas_providers); });
+                m_scheduler.schedule(ndn::time::milliseconds(0), [uas_providers] { kill_call(uas_providers); });
             } else {
                 std::cerr << "Usage: kill <uas> (wuas/iuas)" << std::endl;
             }
