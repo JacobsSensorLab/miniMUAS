@@ -306,7 +306,7 @@ main(int argc, char **argv)
         int next_num = get_next_file_number(directory);
 
         char filename[256];
-        snprintf(filename, sizeof(filename), "%d.png", next_num);
+        snprintf(filename, sizeof(filename), "%s/%d.png", directory, next_num);
         cv::imwrite(filename,frame);
         NDN_LOG_INFO("Saved " << filename);
 
