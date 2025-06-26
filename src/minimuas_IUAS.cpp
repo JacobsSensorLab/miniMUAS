@@ -285,38 +285,37 @@ main(int argc, char **argv)
         auto action = mavsdk::Action{system};
 
         int cam_idx = 0;
-        std::string cap_dev = "v4l2:///dev/video";
-        std::string cap_str = cap_dev + std::to_string(cam_idx);
 
-        std::cout << "Trying to open camera (" << cap_dev << cam_idx << ")..." << std::endl;
-        cv::VideoCapture capture(cap_str);
-        while (!capture.isOpened() && cam_idx < 5)
+        std::cout << "Trying to open camera (" << cam_idx << ")..." << std::endl;
+        cv::VideoCapture capture(cam_idx, cv::CAP_V4L2);
+        if (!capture.isOpened())
         {
-            NDN_LOG_ERROR("ERROR: Can't initialize camera (" << cap_dev << cam_idx << ")");
-            cam_idx++;
-            std::string cap_str = cap_dev + std::to_string(cam_idx);
-            std::cout << "Trying to open camera (" << cap_dev << cam_idx << ")..." << std::endl;
-            cv::VideoCapture capture(cap_str);
+            NDN_LOG_ERROR("ERROR: Can't initialize camera (" << cam_idx << ")");
+
+            _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
+            _response.mutable_response()->set_msg("Camera failed to initialize");
         }
+        else
+        {
+            cv::Mat frame;
 
-        cv::Mat frame;
+            capture >> frame;
+            const char *directory = "./captures";  // current directory
+            int next_num = get_next_file_number(directory);
 
-        capture >> frame;
-        const char *directory = "./captures";  // current directory
-        int next_num = get_next_file_number(directory);
+            char filename[256];
+            snprintf(filename, sizeof(filename), "%s/%d.png", directory, next_num);
+            cv::imwrite(filename,frame);
+            NDN_LOG_INFO("Saved " << filename);
 
-        char filename[256];
-        snprintf(filename, sizeof(filename), "%s/%d.png", directory, next_num);
-        cv::imwrite(filename,frame);
-        NDN_LOG_INFO("Saved " << filename);
+            char msg[200];
 
-        char msg[200];
+            snprintf(msg,sizeof(msg),"Single capture successful. Index: %i", next_num);
 
-        snprintf(msg,sizeof(msg),"Single capture successful. Index: %i", next_num);
-
-        _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_SUCCESS);
-        _response.mutable_response()->set_msg(msg);
-        _response.set_capture_id(std::to_string(next_num));
+            _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_SUCCESS);
+            _response.mutable_response()->set_msg(msg);
+            _response.set_capture_id(std::to_string(next_num));
+        }
     };
 
     NDN_LOG_INFO("IUAS running");
