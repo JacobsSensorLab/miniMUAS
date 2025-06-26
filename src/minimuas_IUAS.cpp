@@ -294,6 +294,7 @@ main(int argc, char **argv)
 
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Camera failed to initialize");
+            _response.set_capture_id(std::to_string(-1));
         }
         else
         {
