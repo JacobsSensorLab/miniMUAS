@@ -285,7 +285,7 @@ main(int argc, char **argv)
         auto action = mavsdk::Action{system};
 
         int cam_idx = 0;
-        std::string cap_dev = "/dev/video";
+        std::string cap_dev = "v4l2:///dev/video";
         std::string cap_str = cap_dev + std::to_string(cam_idx);
 
         std::cout << "Trying to open camera (" << cap_dev << cam_idx << ")..." << std::endl;
