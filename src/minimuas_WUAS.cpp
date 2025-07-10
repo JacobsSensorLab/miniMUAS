@@ -117,7 +117,7 @@ main(int argc, char **argv)
 
         
         auto point = orbit_request.target();
-        point.set_altitude(30);
+        point.set_altitude(6);
         // Some location in Switzerland bc QGC starts there apparently
         // point.set_latitude(47.397202);
         // point.set_longitude(8.543931);
