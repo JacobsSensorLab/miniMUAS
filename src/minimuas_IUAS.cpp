@@ -244,8 +244,8 @@ main(int argc, char **argv)
         auto longitude = pos.longitude();
         auto altitude = pos.altitude();
 
-        float orbit_radius = 8.0;  // default radius
-        float orbit_velocity = 1.0;  // default velocity
+        float orbit_radius = 2.0;  // default radius
+        float orbit_velocity = 0.5;  // default velocity
 
         const mavsdk::Action::Result orbit_result = action.do_orbit(
             orbit_radius,
@@ -285,9 +285,11 @@ main(int argc, char **argv)
         auto action = mavsdk::Action{system};
 
         int cam_idx = 0;
+        std::string cap_dev = "v4l2:///dev/video";
+        std::string cap_str = cap_dev + std::to_string(cam_idx);
 
-        std::cout << "Trying to open camera (" << cam_idx << ")..." << std::endl;
-        cv::VideoCapture capture(cam_idx, cv::CAP_V4L2);
+        std::cout << "Trying to open camera (" << cap_str << ")..." << std::endl;
+        cv::VideoCapture capture(cap_str, cv::CAP_V4L2);
         if (!capture.isOpened())
         {
             NDN_LOG_ERROR("ERROR: Can't initialize camera (" << cam_idx << ")");
