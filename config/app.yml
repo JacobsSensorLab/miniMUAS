@@ -1,0 +1,540 @@
+NameSpace: muas
+
+MessageProto:
+  syntax = "proto3";
+
+  import "google/protobuf/timestamp.proto";
+  
+  package muas;
+
+  enum EntityType
+  {
+    ALL = 0;
+    GCS = 1;
+    UAS = 2;
+    IUAS = 3;
+    WUAS = 4;
+  }
+  enum MAV_MSG
+  {
+    UNKNOWN_MSG = 0;
+    HEARTBEAT = 1;
+    SYS_STATUS = 2;
+    SYSTEM_TIME = 3;
+    GPS_RAW_INT = 4;
+    GPS_STATUS = 5;
+    SCALED_IMU = 6;
+    RAW_IMU = 7;
+    RAW_PRESSURE = 8;
+    SCALED_PRESSURE = 9;
+    ATTITUDE = 10;
+    ATTITUDE_QUATERNION = 11;
+    LOCAL_POSITION_NED = 12;
+    GLOBAL_POSITION_INT = 13;
+  }
+  message Position
+  {
+    float latitude = 1;
+    float longitude = 2;
+    float altitude = 3;
+  }
+  message Orientation
+  {
+    float yaw = 1;
+    float pitch = 2;
+    float roll = 3;
+  }
+  message MissionItem
+  {
+    enum Frame
+    {
+      UNKNOWN_FRAME = 0;
+      GLOBAL = 1;
+      RELATIVE_ALT = 2;
+      TERRAIN_ALT = 3;
+      INT = 4;
+    }
+
+    enum MAV_CMD
+    {
+      UNKNOWN_CMD = 0;
+      NAV_WAYPOINT = 1;
+      NAV_RETURN_TO_LAUNCH = 2;
+      NAV_LAND = 3;
+      NAV_TAKEOFF = 4;
+      NAV_LAND_LOCAL = 5;
+      NAV_TAKEOFF_LOCAL = 6;
+      DO_FOLLOW = 7;
+      DO_FOLLOW_REPOSITION = 8;
+      DO_ORBIT = 9;
+      DO_FLIGHTTERMINATION = 10;
+      DO_CHANGE_ALTITUDE = 11;
+      DO_RETURN_PATH_START = 12;
+      DO_LAND_START = 13;
+      DO_RALLY_LAND = 14;
+      DO_GO_AROUND = 15;
+      DO_REPOSITION = 16;
+      DO_PAUSE_CONTINUE = 17;
+    }
+
+    int32 target_sys = 1;
+    int32 target_comp = 2;
+    int32 seq = 3;
+    Frame frame = 4;
+    MAV_CMD cmd = 5;
+    bool current = 6;
+    bool autocontinue = 7;
+    float param1 = 8;
+    float param2 = 9;
+    float param3 = 10;
+    float param4 = 11;
+    int32 x = 12;
+    int32 y = 13;
+    int32 z = 14;
+  }
+  message MissionInfo
+  {
+    int32 num_items = 1;
+  }
+  message Sensor
+  {
+    enum SensorType
+    {
+      UNKNOWN_SENSOR = 0;
+      MULTISPECTRAL = 1;
+      HYPERSPECTRAL = 2;
+      ACOUSTIC = 3;
+      MAGNETIC = 4;
+    }
+
+    string name = 1;
+    int32 id = 2;
+    SensorType type = 3;
+    string data_namespace = 4;
+  }
+  message NDNSF_Response
+  {
+    enum miniMUAS_Code
+    {
+      UNKNOWN_CODE = 0;
+      SUCCESS = 1;
+      ERROR = 2;
+    }
+    miniMUAS_Code code = 1;
+    optional string msg = 2;
+  }
+
+  message Entity_Echo_Request
+  {
+    google.protobuf.Timestamp time_request_sent = 1;
+  }
+  message Entity_Echo_Response
+  {
+    google.protobuf.Timestamp time_request_received = 1;
+    google.protobuf.Timestamp time_response_sent = 2;
+  }
+  message Entity_GetEntityInfo_Request
+  {
+    NDNSF_Response response = 1;
+    int32 key = 2;
+  }
+  message Entity_GetEntityInfo_Response
+  {
+    NDNSF_Response response = 1;
+    string value = 2;
+  }
+  message Entity_GetPosition_Request
+  {}
+  message Entity_GetPosition_Response
+  {
+    NDNSF_Response response = 1;
+    Position pos = 2;
+  }
+  message Entity_GetOrientation_Request
+  {}
+  message Entity_GetOrientation_Response
+  {
+    NDNSF_Response response = 1;
+    Orientation attitude = 2;
+  }
+
+  message Admin_Test_Request
+  {}
+  message Admin_Test_Response
+  {
+    NDNSF_Response response = 1;
+    string reply = 2;
+  }
+
+  message WUAS_QuadRaster_Request
+  {
+    Position nw_coord = 1;
+    Position se_coord = 2;
+    float alt = 3;
+    int32 passes = 4;
+  }
+  message WUAS_QuadRaster_Response
+  {
+    NDNSF_Response response = 1;
+  }
+
+  message IUAS_PointOrbit_Request
+  {
+    google.protobuf.Timestamp time_request_sent = 1;
+    Position target = 2;
+  }
+  message IUAS_PointOrbit_Response
+  {
+    google.protobuf.Timestamp time_request_received = 1;
+    google.protobuf.Timestamp time_response_sent = 2;
+    NDNSF_Response response = 3;
+  }
+  message IUAS_PointHover_Request
+  {
+    Position pos = 1;
+  }
+  message IUAS_PointHover_Response
+  {
+    NDNSF_Response response = 1;
+  }
+
+  message Mission_GetMissionInfo_Request
+  {}
+  message Mission_GetMissionInfo_Response
+  {
+    NDNSF_Response response = 1;
+    MissionInfo info = 2;
+  }
+  message Mission_GetItem_Request
+  {
+    int32 idx = 1;
+  }
+  message Mission_GetItem_Response
+  {
+    NDNSF_Response response = 1;
+    MissionItem item = 2;
+  }
+  message Mission_SetItem_Request
+  {
+    int32 idx = 1;
+    MissionItem item = 2;
+  }
+  message Mission_SetItem_Response
+  {
+    NDNSF_Response response = 1;
+  }
+  message Mission_Clear_Request
+  {}
+  message Mission_Clear_Response
+  {
+    NDNSF_Response response = 1;
+  }
+  message Mission_Start_Request
+  {}
+  message Mission_Start_Response
+  {
+    NDNSF_Response response = 1;
+  }
+  message Mission_Pause_Request
+  {}
+  message Mission_Pause_Response
+  {
+    NDNSF_Response response = 1;
+  }
+  message Mission_Continue_Request
+  {}
+  message Mission_Continue_Response
+  {
+    NDNSF_Response response = 1;
+  }
+  message Mission_Terminate_Request
+  {}
+  message Mission_Terminate_Response
+  {
+    NDNSF_Response response = 1;
+  }
+
+  message FlightCtrl_SwitchMode_Request
+  {
+    enum FlightMode
+    {
+      UNKNOWN = 0;
+      STABILIZE = 1;
+      ALT_HOLD = 2;
+      LOITER = 3;
+      GUIDED = 4;
+    }
+
+    FlightMode mode = 1;
+  }
+  message FlightCtrl_SwitchMode_Response
+  {
+    NDNSF_Response response = 1;
+  }
+  message FlightCtrl_Takeoff_Request
+  {
+    google.protobuf.Timestamp time_request_sent = 1;
+  }
+  message FlightCtrl_Takeoff_Response
+  {
+    google.protobuf.Timestamp time_request_received = 1;
+    google.protobuf.Timestamp time_response_sent = 2;
+    NDNSF_Response response = 3;
+  }
+  message FlightCtrl_Land_Request
+  {
+    google.protobuf.Timestamp time_request_sent = 1;
+  }
+  message FlightCtrl_Land_Response
+  {
+    google.protobuf.Timestamp time_request_received = 1;
+    google.protobuf.Timestamp time_response_sent = 2;
+    NDNSF_Response response = 3;
+  }
+  message FlightCtrl_RTL_Request
+  {
+    google.protobuf.Timestamp time_request_sent = 1;
+  }
+  message FlightCtrl_RTL_Response
+  {
+    google.protobuf.Timestamp time_request_received = 1;
+    google.protobuf.Timestamp time_response_sent = 2;
+    NDNSF_Response response = 3;
+  }
+  message FlightCtrl_Kill_Request
+  {
+    google.protobuf.Timestamp time_request_sent = 1;
+  }
+  message FlightCtrl_Kill_Response
+  {
+    google.protobuf.Timestamp time_request_received = 1;
+    google.protobuf.Timestamp time_response_sent = 2;
+    NDNSF_Response response = 3;
+  }
+  message FlightCtrl_SetSpeed_Request
+  {
+    int32 speed = 1;
+  }
+  message FlightCtrl_SetSpeed_Response
+  {
+    NDNSF_Response response = 1;
+  }
+  message FlightCtrl_Reposition_Request
+  {
+    Position pos = 1;
+  }
+  message FlightCtrl_Reposition_Response
+  {
+    NDNSF_Response response = 1;
+  }
+
+  message MAVLink_Generic_Request
+  {}
+  message MAVLink_Generic_Response
+  {
+    NDNSF_Response response = 1;
+    optional string mav_response = 2;
+  }
+
+  message SensorCtrl_GetSensorInfo_Request
+  {
+    google.protobuf.Timestamp time_request_sent = 1;
+  }
+  message SensorCtrl_GetSensorInfo_Response
+  {
+    google.protobuf.Timestamp time_request_received = 1;
+    google.protobuf.Timestamp time_response_sent = 2;
+    NDNSF_Response response = 3;
+    repeated Sensor sensors = 4;
+  }
+  message SensorCtrl_CaptureSingle_Request
+  {
+    google.protobuf.Timestamp time_request_sent = 1;
+  }
+  message SensorCtrl_CaptureSingle_Response
+  {
+    google.protobuf.Timestamp time_request_received = 1;
+    google.protobuf.Timestamp time_response_sent = 2;
+    NDNSF_Response response = 3;
+    string capture_id = 4;
+  }
+  message SensorCtrl_CapturePeriodic_Request
+  {
+    int32 interval_sec = 1;
+  }
+  message SensorCtrl_CapturePeriodic_Response
+  {
+    NDNSF_Response response = 1;
+    string capture_id = 2;
+  }
+
+Services:
+- serviceName: Entity
+  serviceDescription: Generic system entities
+  RPCList:
+  - name: Echo
+    requestMessage: muas::Entity_Echo_Request
+    responseMessage: muas::Entity_Echo_Response
+  - name: GetEntityInfo
+    requestMessage: muas::Entity_GetEntityInfo_Request
+    responseMessage: muas::Entity_GetEntityInfo_Response
+  - name: GetPosition
+    requestMessage: muas::Entity_GetPosition_Request
+    responseMessage: muas::Entity_GetPosition_Response
+  - name: GetOrientation
+    requestMessage: muas::Entity_GetOrientation_Request
+    responseMessage: muas::Entity_GetOrientation_Response
+    
+- serviceName: Admin
+  serviceDescription: Administers NDN security?
+  RPCList:
+  - name: Test
+    requestMessage: muas::Admin_Test_Request
+    responseMessage: muas::Admin_Test_Response
+    
+- serviceName: WUAS
+  serviceDescription: Generic Wide-area UAS
+  RPCList:
+  - name: QuadRaster
+    requestMessage: muas::WUAS_QuadRaster_Request
+    responseMessage: muas::WUAS_QuadRaster_Response
+
+- serviceName: IUAS
+  serviceDescription: Generic Interrogator-UAS
+  RPCList:
+  - name: PointOrbit
+    requestMessage: muas::IUAS_PointOrbit_Request
+    responseMessage: muas::IUAS_PointOrbit_Response
+  - name: PointHover
+    requestMessage: muas::IUAS_PointHover_Request
+    responseMessage: muas::IUAS_PointHover_Response
+  
+- serviceName: Mission
+  serviceDescription: Build and execute missions
+  RPCList:
+  - name: GetMissionInfo
+    requestMessage: muas::Mission_GetMissionInfo_Request
+    responseMessage: muas::Mission_GetMissionInfo_Response
+  - name: GetItem
+    requestMessage: muas::Mission_GetItem_Request
+    responseMessage: muas::Mission_GetItem_Response
+  - name: SetItem
+    requestMessage: muas::Mission_SetItem_Request
+    responseMessage: muas::Mission_SetItem_Response
+  - name: Clear
+    requestMessage: muas::Mission_Clear_Request
+    responseMessage: muas::Mission_Clear_Response
+  - name: Start
+    requestMessage: muas::Mission_Start_Request
+    responseMessage: muas::Mission_Start_Response
+  - name: Pause
+    requestMessage: muas::Mission_Pause_Request
+    responseMessage: muas::Mission_Pause_Response
+  - name: Continue
+    requestMessage: muas::Mission_Continue_Request
+    responseMessage: muas::Mission_Continue_Response
+  - name: Terminate
+    requestMessage: muas::Mission_Terminate_Request
+    responseMessage: muas::Mission_Terminate_Response
+
+- serviceName: FlightCtrl
+  serviceDescription: Simple UAS control
+  RPCList:
+  - name: SwitchMode
+    requestMessage: muas::FlightCtrl_SwitchMode_Request
+    responseMessage: muas::FlightCtrl_SwitchMode_Response
+  - name: Takeoff
+    requestMessage: muas::FlightCtrl_Takeoff_Request
+    responseMessage: muas::FlightCtrl_Takeoff_Response
+  - name: Land
+    requestMessage: muas::FlightCtrl_Land_Request
+    responseMessage: muas::FlightCtrl_Land_Response
+  - name: RTL
+    requestMessage: muas::FlightCtrl_RTL_Request
+    responseMessage: muas::FlightCtrl_RTL_Response
+  - name: Kill
+    requestMessage: muas::FlightCtrl_Kill_Request
+    responseMessage: muas::FlightCtrl_Kill_Response
+  - name: SetSpeed
+    requestMessage: muas::FlightCtrl_SetSpeed_Request
+    responseMessage: muas::FlightCtrl_SetSpeed_Response
+  - name: Reposition
+    requestMessage: muas::FlightCtrl_Reposition_Request
+    responseMessage: muas::FlightCtrl_Reposition_Response
+
+- serviceName: MAVLink
+  serviceDescription: Allows generic MAVLink command execution
+  RPCList:
+  - name: Generic
+    requestMessage: muas::MAVLink_Generic_Request
+    responseMessage: muas::MAVLink_Generic_Response
+
+- serviceName: Sensor
+  serviceDescription: Sensor operations and data
+  RPCList:
+  - name: GetSensorInfo
+    requestMessage: muas::SensorCtrl_GetSensorInfo_Request
+    responseMessage: muas::SensorCtrl_GetSensorInfo_Response
+  - name: CaptureSingle
+    requestMessage: muas::SensorCtrl_CaptureSingle_Request
+    responseMessage: muas::SensorCtrl_CaptureSingle_Response
+  - name: CapturePeriodic
+    requestMessage: muas::SensorCtrl_CapturePeriodic_Request
+    responseMessage: muas::SensorCtrl_CapturePeriodic_Response
+    
+ServiceProviders:
+- providerName: GCS
+  providerDescription: Ground Station of MUAS Project
+  ServiceList:
+  - Entity
+  - Admin
+  
+- providerName: WUAS
+  providerDescription: Wide-area UAS
+  ServiceList:
+  - Entity
+  - Admin
+  - Mission
+  - WUAS
+  - FlightCtrl
+  - MAVLink
+  - Sensor
+  
+- providerName: IUAS
+  providerDescription: Interrogator UAS
+  ServiceList:
+  - Entity
+  - IUAS
+  - Mission
+  - FlightCtrl
+  - MAVLink
+  - Sensor
+
+ServiceUsers:
+- userName: GCS
+  userDescription: Ground Station
+  ServiceStubList:
+  - Entity
+  - Admin
+  - WUAS
+  - IUAS
+  - Mission
+  - FlightCtrl
+  - MAVLink
+  - Sensor
+  
+- userName: WUAS
+  userDescription: Wide-area UAS
+  ServiceStubList:
+  - Entity
+  - Admin
+  - IUAS
+  - FlightCtrl
+  - MAVLink
+  - Sensor
+
+- userName: IUAS
+  userDescription: Interrogator UAS
+  ServiceStubList:
+  - Entity
+  - Admin
