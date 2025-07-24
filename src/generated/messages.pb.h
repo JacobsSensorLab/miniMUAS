@@ -32,6 +32,7 @@
 #include <google/protobuf/extension_set.h>  // IWYU pragma: export
 #include <google/protobuf/generated_enum_reflection.h>
 #include <google/protobuf/unknown_field_set.h>
+#include <google/protobuf/timestamp.pb.h>
 // @@protoc_insertion_point(includes)
 #include <google/protobuf/port_def.inc>
 #define PROTOBUF_INTERNAL_EXPORT_messages_2eproto
@@ -1936,21 +1937,25 @@ class Entity_Echo_Request final :
   // accessors -------------------------------------------------------
 
   enum : int {
-    kNonceFieldNumber = 1,
+    kTimeRequestSentFieldNumber = 1,
   };
-  // string nonce = 1;
-  void clear_nonce();
-  const std::string& nonce() const;
-  template <typename ArgT0 = const std::string&, typename... ArgT>
-  void set_nonce(ArgT0&& arg0, ArgT... args);
-  std::string* mutable_nonce();
-  PROTOBUF_NODISCARD std::string* release_nonce();
-  void set_allocated_nonce(std::string* nonce);
+  // .google.protobuf.Timestamp time_request_sent = 1;
+  bool has_time_request_sent() const;
   private:
-  const std::string& _internal_nonce() const;
-  inline PROTOBUF_ALWAYS_INLINE void _internal_set_nonce(const std::string& value);
-  std::string* _internal_mutable_nonce();
+  bool _internal_has_time_request_sent() const;
   public:
+  void clear_time_request_sent();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_request_sent() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_request_sent();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_request_sent();
+  void set_allocated_time_request_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_request_sent() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_request_sent();
+  public:
+  void unsafe_arena_set_allocated_time_request_sent(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_request_sent();
 
   // @@protoc_insertion_point(class_scope:muas.Entity_Echo_Request)
  private:
@@ -1960,7 +1965,7 @@ class Entity_Echo_Request final :
   typedef void InternalArenaConstructable_;
   typedef void DestructorSkippable_;
   struct Impl_ {
-    ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr nonce_;
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent_;
     mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
   union { Impl_ _impl_; };
@@ -2089,21 +2094,44 @@ class Entity_Echo_Response final :
   // accessors -------------------------------------------------------
 
   enum : int {
-    kNonceFieldNumber = 1,
+    kTimeRequestReceivedFieldNumber = 1,
+    kTimeResponseSentFieldNumber = 2,
   };
-  // string nonce = 1;
-  void clear_nonce();
-  const std::string& nonce() const;
-  template <typename ArgT0 = const std::string&, typename... ArgT>
-  void set_nonce(ArgT0&& arg0, ArgT... args);
-  std::string* mutable_nonce();
-  PROTOBUF_NODISCARD std::string* release_nonce();
-  void set_allocated_nonce(std::string* nonce);
+  // .google.protobuf.Timestamp time_request_received = 1;
+  bool has_time_request_received() const;
   private:
-  const std::string& _internal_nonce() const;
-  inline PROTOBUF_ALWAYS_INLINE void _internal_set_nonce(const std::string& value);
-  std::string* _internal_mutable_nonce();
+  bool _internal_has_time_request_received() const;
   public:
+  void clear_time_request_received();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_request_received() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_request_received();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_request_received();
+  void set_allocated_time_request_received(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_request_received() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_request_received();
+  public:
+  void unsafe_arena_set_allocated_time_request_received(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_request_received();
+
+  // .google.protobuf.Timestamp time_response_sent = 2;
+  bool has_time_response_sent() const;
+  private:
+  bool _internal_has_time_response_sent() const;
+  public:
+  void clear_time_response_sent();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_response_sent() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_response_sent();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_response_sent();
+  void set_allocated_time_response_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_response_sent() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_response_sent();
+  public:
+  void unsafe_arena_set_allocated_time_response_sent(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_response_sent();
 
   // @@protoc_insertion_point(class_scope:muas.Entity_Echo_Response)
  private:
@@ -2113,7 +2141,8 @@ class Entity_Echo_Response final :
   typedef void InternalArenaConstructable_;
   typedef void DestructorSkippable_;
   struct Impl_ {
-    ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr nonce_;
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received_;
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent_;
     mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
   union { Impl_ _impl_; };
@@ -3820,9 +3849,28 @@ class IUAS_PointOrbit_Request final :
   // accessors -------------------------------------------------------
 
   enum : int {
-    kTargetFieldNumber = 1,
+    kTimeRequestSentFieldNumber = 1,
+    kTargetFieldNumber = 2,
   };
-  // .muas.Position target = 1;
+  // .google.protobuf.Timestamp time_request_sent = 1;
+  bool has_time_request_sent() const;
+  private:
+  bool _internal_has_time_request_sent() const;
+  public:
+  void clear_time_request_sent();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_request_sent() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_request_sent();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_request_sent();
+  void set_allocated_time_request_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_request_sent() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_request_sent();
+  public:
+  void unsafe_arena_set_allocated_time_request_sent(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_request_sent();
+
+  // .muas.Position target = 2;
   bool has_target() const;
   private:
   bool _internal_has_target() const;
@@ -3848,6 +3896,7 @@ class IUAS_PointOrbit_Request final :
   typedef void InternalArenaConstructable_;
   typedef void DestructorSkippable_;
   struct Impl_ {
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent_;
     ::muas::Position* target_;
     mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
@@ -3977,9 +4026,47 @@ class IUAS_PointOrbit_Response final :
   // accessors -------------------------------------------------------
 
   enum : int {
-    kResponseFieldNumber = 1,
+    kTimeRequestReceivedFieldNumber = 1,
+    kTimeResponseSentFieldNumber = 2,
+    kResponseFieldNumber = 3,
   };
-  // .muas.NDNSF_Response response = 1;
+  // .google.protobuf.Timestamp time_request_received = 1;
+  bool has_time_request_received() const;
+  private:
+  bool _internal_has_time_request_received() const;
+  public:
+  void clear_time_request_received();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_request_received() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_request_received();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_request_received();
+  void set_allocated_time_request_received(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_request_received() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_request_received();
+  public:
+  void unsafe_arena_set_allocated_time_request_received(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_request_received();
+
+  // .google.protobuf.Timestamp time_response_sent = 2;
+  bool has_time_response_sent() const;
+  private:
+  bool _internal_has_time_response_sent() const;
+  public:
+  void clear_time_response_sent();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_response_sent() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_response_sent();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_response_sent();
+  void set_allocated_time_response_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_response_sent() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_response_sent();
+  public:
+  void unsafe_arena_set_allocated_time_response_sent(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_response_sent();
+
+  // .muas.NDNSF_Response response = 3;
   bool has_response() const;
   private:
   bool _internal_has_response() const;
@@ -4005,6 +4092,8 @@ class IUAS_PointOrbit_Response final :
   typedef void InternalArenaConstructable_;
   typedef void DestructorSkippable_;
   struct Impl_ {
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received_;
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent_;
     ::muas::NDNSF_Response* response_;
     mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
@@ -6989,9 +7078,10 @@ class FlightCtrl_SwitchMode_Response final :
 // -------------------------------------------------------------------
 
 class FlightCtrl_Takeoff_Request final :
-    public ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase /* @@protoc_insertion_point(class_definition:muas.FlightCtrl_Takeoff_Request) */ {
+    public ::PROTOBUF_NAMESPACE_ID::Message /* @@protoc_insertion_point(class_definition:muas.FlightCtrl_Takeoff_Request) */ {
  public:
   inline FlightCtrl_Takeoff_Request() : FlightCtrl_Takeoff_Request(nullptr) {}
+  ~FlightCtrl_Takeoff_Request() override;
   explicit PROTOBUF_CONSTEXPR FlightCtrl_Takeoff_Request(::PROTOBUF_NAMESPACE_ID::internal::ConstantInitialized);
 
   FlightCtrl_Takeoff_Request(const FlightCtrl_Takeoff_Request& from);
@@ -7064,15 +7154,29 @@ class FlightCtrl_Takeoff_Request final :
   FlightCtrl_Takeoff_Request* New(::PROTOBUF_NAMESPACE_ID::Arena* arena = nullptr) const final {
     return CreateMaybeMessage<FlightCtrl_Takeoff_Request>(arena);
   }
-  using ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::CopyFrom;
-  inline void CopyFrom(const FlightCtrl_Takeoff_Request& from) {
-    ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::CopyImpl(*this, from);
+  using ::PROTOBUF_NAMESPACE_ID::Message::CopyFrom;
+  void CopyFrom(const FlightCtrl_Takeoff_Request& from);
+  using ::PROTOBUF_NAMESPACE_ID::Message::MergeFrom;
+  void MergeFrom( const FlightCtrl_Takeoff_Request& from) {
+    FlightCtrl_Takeoff_Request::MergeImpl(*this, from);
   }
-  using ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::MergeFrom;
-  void MergeFrom(const FlightCtrl_Takeoff_Request& from) {
-    ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::MergeImpl(*this, from);
-  }
+  private:
+  static void MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const ::PROTOBUF_NAMESPACE_ID::Message& from_msg);
   public:
+  PROTOBUF_ATTRIBUTE_REINITIALIZES void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  const char* _InternalParse(const char* ptr, ::PROTOBUF_NAMESPACE_ID::internal::ParseContext* ctx) final;
+  uint8_t* _InternalSerialize(
+      uint8_t* target, ::PROTOBUF_NAMESPACE_ID::io::EpsCopyOutputStream* stream) const final;
+  int GetCachedSize() const final { return _impl_._cached_size_.Get(); }
+
+  private:
+  void SharedCtor(::PROTOBUF_NAMESPACE_ID::Arena* arena, bool is_message_owned);
+  void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(FlightCtrl_Takeoff_Request* other);
 
   private:
   friend class ::PROTOBUF_NAMESPACE_ID::internal::AnyMetadata;
@@ -7093,6 +7197,27 @@ class FlightCtrl_Takeoff_Request final :
 
   // accessors -------------------------------------------------------
 
+  enum : int {
+    kTimeRequestSentFieldNumber = 1,
+  };
+  // .google.protobuf.Timestamp time_request_sent = 1;
+  bool has_time_request_sent() const;
+  private:
+  bool _internal_has_time_request_sent() const;
+  public:
+  void clear_time_request_sent();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_request_sent() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_request_sent();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_request_sent();
+  void set_allocated_time_request_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_request_sent() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_request_sent();
+  public:
+  void unsafe_arena_set_allocated_time_request_sent(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_request_sent();
+
   // @@protoc_insertion_point(class_scope:muas.FlightCtrl_Takeoff_Request)
  private:
   class _Internal;
@@ -7101,7 +7226,10 @@ class FlightCtrl_Takeoff_Request final :
   typedef void InternalArenaConstructable_;
   typedef void DestructorSkippable_;
   struct Impl_ {
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent_;
+    mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
+  union { Impl_ _impl_; };
   friend struct ::TableStruct_messages_2eproto;
 };
 // -------------------------------------------------------------------
@@ -7227,9 +7355,47 @@ class FlightCtrl_Takeoff_Response final :
   // accessors -------------------------------------------------------
 
   enum : int {
-    kResponseFieldNumber = 1,
+    kTimeRequestReceivedFieldNumber = 1,
+    kTimeResponseSentFieldNumber = 2,
+    kResponseFieldNumber = 3,
   };
-  // .muas.NDNSF_Response response = 1;
+  // .google.protobuf.Timestamp time_request_received = 1;
+  bool has_time_request_received() const;
+  private:
+  bool _internal_has_time_request_received() const;
+  public:
+  void clear_time_request_received();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_request_received() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_request_received();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_request_received();
+  void set_allocated_time_request_received(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_request_received() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_request_received();
+  public:
+  void unsafe_arena_set_allocated_time_request_received(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_request_received();
+
+  // .google.protobuf.Timestamp time_response_sent = 2;
+  bool has_time_response_sent() const;
+  private:
+  bool _internal_has_time_response_sent() const;
+  public:
+  void clear_time_response_sent();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_response_sent() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_response_sent();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_response_sent();
+  void set_allocated_time_response_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_response_sent() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_response_sent();
+  public:
+  void unsafe_arena_set_allocated_time_response_sent(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_response_sent();
+
+  // .muas.NDNSF_Response response = 3;
   bool has_response() const;
   private:
   bool _internal_has_response() const;
@@ -7255,6 +7421,8 @@ class FlightCtrl_Takeoff_Response final :
   typedef void InternalArenaConstructable_;
   typedef void DestructorSkippable_;
   struct Impl_ {
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received_;
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent_;
     ::muas::NDNSF_Response* response_;
     mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
@@ -7264,9 +7432,10 @@ class FlightCtrl_Takeoff_Response final :
 // -------------------------------------------------------------------
 
 class FlightCtrl_Land_Request final :
-    public ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase /* @@protoc_insertion_point(class_definition:muas.FlightCtrl_Land_Request) */ {
+    public ::PROTOBUF_NAMESPACE_ID::Message /* @@protoc_insertion_point(class_definition:muas.FlightCtrl_Land_Request) */ {
  public:
   inline FlightCtrl_Land_Request() : FlightCtrl_Land_Request(nullptr) {}
+  ~FlightCtrl_Land_Request() override;
   explicit PROTOBUF_CONSTEXPR FlightCtrl_Land_Request(::PROTOBUF_NAMESPACE_ID::internal::ConstantInitialized);
 
   FlightCtrl_Land_Request(const FlightCtrl_Land_Request& from);
@@ -7339,15 +7508,29 @@ class FlightCtrl_Land_Request final :
   FlightCtrl_Land_Request* New(::PROTOBUF_NAMESPACE_ID::Arena* arena = nullptr) const final {
     return CreateMaybeMessage<FlightCtrl_Land_Request>(arena);
   }
-  using ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::CopyFrom;
-  inline void CopyFrom(const FlightCtrl_Land_Request& from) {
-    ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::CopyImpl(*this, from);
+  using ::PROTOBUF_NAMESPACE_ID::Message::CopyFrom;
+  void CopyFrom(const FlightCtrl_Land_Request& from);
+  using ::PROTOBUF_NAMESPACE_ID::Message::MergeFrom;
+  void MergeFrom( const FlightCtrl_Land_Request& from) {
+    FlightCtrl_Land_Request::MergeImpl(*this, from);
   }
-  using ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::MergeFrom;
-  void MergeFrom(const FlightCtrl_Land_Request& from) {
-    ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::MergeImpl(*this, from);
-  }
+  private:
+  static void MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const ::PROTOBUF_NAMESPACE_ID::Message& from_msg);
   public:
+  PROTOBUF_ATTRIBUTE_REINITIALIZES void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  const char* _InternalParse(const char* ptr, ::PROTOBUF_NAMESPACE_ID::internal::ParseContext* ctx) final;
+  uint8_t* _InternalSerialize(
+      uint8_t* target, ::PROTOBUF_NAMESPACE_ID::io::EpsCopyOutputStream* stream) const final;
+  int GetCachedSize() const final { return _impl_._cached_size_.Get(); }
+
+  private:
+  void SharedCtor(::PROTOBUF_NAMESPACE_ID::Arena* arena, bool is_message_owned);
+  void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(FlightCtrl_Land_Request* other);
 
   private:
   friend class ::PROTOBUF_NAMESPACE_ID::internal::AnyMetadata;
@@ -7368,6 +7551,27 @@ class FlightCtrl_Land_Request final :
 
   // accessors -------------------------------------------------------
 
+  enum : int {
+    kTimeRequestSentFieldNumber = 1,
+  };
+  // .google.protobuf.Timestamp time_request_sent = 1;
+  bool has_time_request_sent() const;
+  private:
+  bool _internal_has_time_request_sent() const;
+  public:
+  void clear_time_request_sent();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_request_sent() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_request_sent();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_request_sent();
+  void set_allocated_time_request_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_request_sent() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_request_sent();
+  public:
+  void unsafe_arena_set_allocated_time_request_sent(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_request_sent();
+
   // @@protoc_insertion_point(class_scope:muas.FlightCtrl_Land_Request)
  private:
   class _Internal;
@@ -7376,7 +7580,10 @@ class FlightCtrl_Land_Request final :
   typedef void InternalArenaConstructable_;
   typedef void DestructorSkippable_;
   struct Impl_ {
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent_;
+    mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
+  union { Impl_ _impl_; };
   friend struct ::TableStruct_messages_2eproto;
 };
 // -------------------------------------------------------------------
@@ -7502,9 +7709,47 @@ class FlightCtrl_Land_Response final :
   // accessors -------------------------------------------------------
 
   enum : int {
-    kResponseFieldNumber = 1,
+    kTimeRequestReceivedFieldNumber = 1,
+    kTimeResponseSentFieldNumber = 2,
+    kResponseFieldNumber = 3,
   };
-  // .muas.NDNSF_Response response = 1;
+  // .google.protobuf.Timestamp time_request_received = 1;
+  bool has_time_request_received() const;
+  private:
+  bool _internal_has_time_request_received() const;
+  public:
+  void clear_time_request_received();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_request_received() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_request_received();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_request_received();
+  void set_allocated_time_request_received(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_request_received() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_request_received();
+  public:
+  void unsafe_arena_set_allocated_time_request_received(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_request_received();
+
+  // .google.protobuf.Timestamp time_response_sent = 2;
+  bool has_time_response_sent() const;
+  private:
+  bool _internal_has_time_response_sent() const;
+  public:
+  void clear_time_response_sent();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_response_sent() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_response_sent();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_response_sent();
+  void set_allocated_time_response_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_response_sent() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_response_sent();
+  public:
+  void unsafe_arena_set_allocated_time_response_sent(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_response_sent();
+
+  // .muas.NDNSF_Response response = 3;
   bool has_response() const;
   private:
   bool _internal_has_response() const;
@@ -7530,6 +7775,8 @@ class FlightCtrl_Land_Response final :
   typedef void InternalArenaConstructable_;
   typedef void DestructorSkippable_;
   struct Impl_ {
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received_;
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent_;
     ::muas::NDNSF_Response* response_;
     mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
@@ -7539,9 +7786,10 @@ class FlightCtrl_Land_Response final :
 // -------------------------------------------------------------------
 
 class FlightCtrl_RTL_Request final :
-    public ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase /* @@protoc_insertion_point(class_definition:muas.FlightCtrl_RTL_Request) */ {
+    public ::PROTOBUF_NAMESPACE_ID::Message /* @@protoc_insertion_point(class_definition:muas.FlightCtrl_RTL_Request) */ {
  public:
   inline FlightCtrl_RTL_Request() : FlightCtrl_RTL_Request(nullptr) {}
+  ~FlightCtrl_RTL_Request() override;
   explicit PROTOBUF_CONSTEXPR FlightCtrl_RTL_Request(::PROTOBUF_NAMESPACE_ID::internal::ConstantInitialized);
 
   FlightCtrl_RTL_Request(const FlightCtrl_RTL_Request& from);
@@ -7614,15 +7862,29 @@ class FlightCtrl_RTL_Request final :
   FlightCtrl_RTL_Request* New(::PROTOBUF_NAMESPACE_ID::Arena* arena = nullptr) const final {
     return CreateMaybeMessage<FlightCtrl_RTL_Request>(arena);
   }
-  using ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::CopyFrom;
-  inline void CopyFrom(const FlightCtrl_RTL_Request& from) {
-    ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::CopyImpl(*this, from);
+  using ::PROTOBUF_NAMESPACE_ID::Message::CopyFrom;
+  void CopyFrom(const FlightCtrl_RTL_Request& from);
+  using ::PROTOBUF_NAMESPACE_ID::Message::MergeFrom;
+  void MergeFrom( const FlightCtrl_RTL_Request& from) {
+    FlightCtrl_RTL_Request::MergeImpl(*this, from);
   }
-  using ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::MergeFrom;
-  void MergeFrom(const FlightCtrl_RTL_Request& from) {
-    ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::MergeImpl(*this, from);
-  }
+  private:
+  static void MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const ::PROTOBUF_NAMESPACE_ID::Message& from_msg);
   public:
+  PROTOBUF_ATTRIBUTE_REINITIALIZES void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  const char* _InternalParse(const char* ptr, ::PROTOBUF_NAMESPACE_ID::internal::ParseContext* ctx) final;
+  uint8_t* _InternalSerialize(
+      uint8_t* target, ::PROTOBUF_NAMESPACE_ID::io::EpsCopyOutputStream* stream) const final;
+  int GetCachedSize() const final { return _impl_._cached_size_.Get(); }
+
+  private:
+  void SharedCtor(::PROTOBUF_NAMESPACE_ID::Arena* arena, bool is_message_owned);
+  void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(FlightCtrl_RTL_Request* other);
 
   private:
   friend class ::PROTOBUF_NAMESPACE_ID::internal::AnyMetadata;
@@ -7643,6 +7905,27 @@ class FlightCtrl_RTL_Request final :
 
   // accessors -------------------------------------------------------
 
+  enum : int {
+    kTimeRequestSentFieldNumber = 1,
+  };
+  // .google.protobuf.Timestamp time_request_sent = 1;
+  bool has_time_request_sent() const;
+  private:
+  bool _internal_has_time_request_sent() const;
+  public:
+  void clear_time_request_sent();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_request_sent() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_request_sent();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_request_sent();
+  void set_allocated_time_request_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_request_sent() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_request_sent();
+  public:
+  void unsafe_arena_set_allocated_time_request_sent(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_request_sent();
+
   // @@protoc_insertion_point(class_scope:muas.FlightCtrl_RTL_Request)
  private:
   class _Internal;
@@ -7651,7 +7934,10 @@ class FlightCtrl_RTL_Request final :
   typedef void InternalArenaConstructable_;
   typedef void DestructorSkippable_;
   struct Impl_ {
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent_;
+    mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
+  union { Impl_ _impl_; };
   friend struct ::TableStruct_messages_2eproto;
 };
 // -------------------------------------------------------------------
@@ -7777,9 +8063,47 @@ class FlightCtrl_RTL_Response final :
   // accessors -------------------------------------------------------
 
   enum : int {
-    kResponseFieldNumber = 1,
+    kTimeRequestReceivedFieldNumber = 1,
+    kTimeResponseSentFieldNumber = 2,
+    kResponseFieldNumber = 3,
   };
-  // .muas.NDNSF_Response response = 1;
+  // .google.protobuf.Timestamp time_request_received = 1;
+  bool has_time_request_received() const;
+  private:
+  bool _internal_has_time_request_received() const;
+  public:
+  void clear_time_request_received();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_request_received() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_request_received();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_request_received();
+  void set_allocated_time_request_received(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_request_received() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_request_received();
+  public:
+  void unsafe_arena_set_allocated_time_request_received(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_request_received();
+
+  // .google.protobuf.Timestamp time_response_sent = 2;
+  bool has_time_response_sent() const;
+  private:
+  bool _internal_has_time_response_sent() const;
+  public:
+  void clear_time_response_sent();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_response_sent() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_response_sent();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_response_sent();
+  void set_allocated_time_response_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_response_sent() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_response_sent();
+  public:
+  void unsafe_arena_set_allocated_time_response_sent(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_response_sent();
+
+  // .muas.NDNSF_Response response = 3;
   bool has_response() const;
   private:
   bool _internal_has_response() const;
@@ -7805,6 +8129,8 @@ class FlightCtrl_RTL_Response final :
   typedef void InternalArenaConstructable_;
   typedef void DestructorSkippable_;
   struct Impl_ {
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received_;
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent_;
     ::muas::NDNSF_Response* response_;
     mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
@@ -7814,9 +8140,10 @@ class FlightCtrl_RTL_Response final :
 // -------------------------------------------------------------------
 
 class FlightCtrl_Kill_Request final :
-    public ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase /* @@protoc_insertion_point(class_definition:muas.FlightCtrl_Kill_Request) */ {
+    public ::PROTOBUF_NAMESPACE_ID::Message /* @@protoc_insertion_point(class_definition:muas.FlightCtrl_Kill_Request) */ {
  public:
   inline FlightCtrl_Kill_Request() : FlightCtrl_Kill_Request(nullptr) {}
+  ~FlightCtrl_Kill_Request() override;
   explicit PROTOBUF_CONSTEXPR FlightCtrl_Kill_Request(::PROTOBUF_NAMESPACE_ID::internal::ConstantInitialized);
 
   FlightCtrl_Kill_Request(const FlightCtrl_Kill_Request& from);
@@ -7889,15 +8216,29 @@ class FlightCtrl_Kill_Request final :
   FlightCtrl_Kill_Request* New(::PROTOBUF_NAMESPACE_ID::Arena* arena = nullptr) const final {
     return CreateMaybeMessage<FlightCtrl_Kill_Request>(arena);
   }
-  using ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::CopyFrom;
-  inline void CopyFrom(const FlightCtrl_Kill_Request& from) {
-    ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::CopyImpl(*this, from);
+  using ::PROTOBUF_NAMESPACE_ID::Message::CopyFrom;
+  void CopyFrom(const FlightCtrl_Kill_Request& from);
+  using ::PROTOBUF_NAMESPACE_ID::Message::MergeFrom;
+  void MergeFrom( const FlightCtrl_Kill_Request& from) {
+    FlightCtrl_Kill_Request::MergeImpl(*this, from);
   }
-  using ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::MergeFrom;
-  void MergeFrom(const FlightCtrl_Kill_Request& from) {
-    ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::MergeImpl(*this, from);
-  }
+  private:
+  static void MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const ::PROTOBUF_NAMESPACE_ID::Message& from_msg);
   public:
+  PROTOBUF_ATTRIBUTE_REINITIALIZES void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  const char* _InternalParse(const char* ptr, ::PROTOBUF_NAMESPACE_ID::internal::ParseContext* ctx) final;
+  uint8_t* _InternalSerialize(
+      uint8_t* target, ::PROTOBUF_NAMESPACE_ID::io::EpsCopyOutputStream* stream) const final;
+  int GetCachedSize() const final { return _impl_._cached_size_.Get(); }
+
+  private:
+  void SharedCtor(::PROTOBUF_NAMESPACE_ID::Arena* arena, bool is_message_owned);
+  void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(FlightCtrl_Kill_Request* other);
 
   private:
   friend class ::PROTOBUF_NAMESPACE_ID::internal::AnyMetadata;
@@ -7918,6 +8259,27 @@ class FlightCtrl_Kill_Request final :
 
   // accessors -------------------------------------------------------
 
+  enum : int {
+    kTimeRequestSentFieldNumber = 1,
+  };
+  // .google.protobuf.Timestamp time_request_sent = 1;
+  bool has_time_request_sent() const;
+  private:
+  bool _internal_has_time_request_sent() const;
+  public:
+  void clear_time_request_sent();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_request_sent() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_request_sent();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_request_sent();
+  void set_allocated_time_request_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_request_sent() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_request_sent();
+  public:
+  void unsafe_arena_set_allocated_time_request_sent(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_request_sent();
+
   // @@protoc_insertion_point(class_scope:muas.FlightCtrl_Kill_Request)
  private:
   class _Internal;
@@ -7926,7 +8288,10 @@ class FlightCtrl_Kill_Request final :
   typedef void InternalArenaConstructable_;
   typedef void DestructorSkippable_;
   struct Impl_ {
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent_;
+    mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
+  union { Impl_ _impl_; };
   friend struct ::TableStruct_messages_2eproto;
 };
 // -------------------------------------------------------------------
@@ -8052,9 +8417,47 @@ class FlightCtrl_Kill_Response final :
   // accessors -------------------------------------------------------
 
   enum : int {
-    kResponseFieldNumber = 1,
+    kTimeRequestReceivedFieldNumber = 1,
+    kTimeResponseSentFieldNumber = 2,
+    kResponseFieldNumber = 3,
   };
-  // .muas.NDNSF_Response response = 1;
+  // .google.protobuf.Timestamp time_request_received = 1;
+  bool has_time_request_received() const;
+  private:
+  bool _internal_has_time_request_received() const;
+  public:
+  void clear_time_request_received();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_request_received() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_request_received();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_request_received();
+  void set_allocated_time_request_received(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_request_received() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_request_received();
+  public:
+  void unsafe_arena_set_allocated_time_request_received(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_request_received();
+
+  // .google.protobuf.Timestamp time_response_sent = 2;
+  bool has_time_response_sent() const;
+  private:
+  bool _internal_has_time_response_sent() const;
+  public:
+  void clear_time_response_sent();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_response_sent() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_response_sent();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_response_sent();
+  void set_allocated_time_response_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_response_sent() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_response_sent();
+  public:
+  void unsafe_arena_set_allocated_time_response_sent(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_response_sent();
+
+  // .muas.NDNSF_Response response = 3;
   bool has_response() const;
   private:
   bool _internal_has_response() const;
@@ -8080,6 +8483,8 @@ class FlightCtrl_Kill_Response final :
   typedef void InternalArenaConstructable_;
   typedef void DestructorSkippable_;
   struct Impl_ {
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received_;
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent_;
     ::muas::NDNSF_Response* response_;
     mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
@@ -9004,9 +9409,10 @@ class MAVLink_Generic_Response final :
 // -------------------------------------------------------------------
 
 class SensorCtrl_GetSensorInfo_Request final :
-    public ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase /* @@protoc_insertion_point(class_definition:muas.SensorCtrl_GetSensorInfo_Request) */ {
+    public ::PROTOBUF_NAMESPACE_ID::Message /* @@protoc_insertion_point(class_definition:muas.SensorCtrl_GetSensorInfo_Request) */ {
  public:
   inline SensorCtrl_GetSensorInfo_Request() : SensorCtrl_GetSensorInfo_Request(nullptr) {}
+  ~SensorCtrl_GetSensorInfo_Request() override;
   explicit PROTOBUF_CONSTEXPR SensorCtrl_GetSensorInfo_Request(::PROTOBUF_NAMESPACE_ID::internal::ConstantInitialized);
 
   SensorCtrl_GetSensorInfo_Request(const SensorCtrl_GetSensorInfo_Request& from);
@@ -9079,15 +9485,29 @@ class SensorCtrl_GetSensorInfo_Request final :
   SensorCtrl_GetSensorInfo_Request* New(::PROTOBUF_NAMESPACE_ID::Arena* arena = nullptr) const final {
     return CreateMaybeMessage<SensorCtrl_GetSensorInfo_Request>(arena);
   }
-  using ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::CopyFrom;
-  inline void CopyFrom(const SensorCtrl_GetSensorInfo_Request& from) {
-    ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::CopyImpl(*this, from);
+  using ::PROTOBUF_NAMESPACE_ID::Message::CopyFrom;
+  void CopyFrom(const SensorCtrl_GetSensorInfo_Request& from);
+  using ::PROTOBUF_NAMESPACE_ID::Message::MergeFrom;
+  void MergeFrom( const SensorCtrl_GetSensorInfo_Request& from) {
+    SensorCtrl_GetSensorInfo_Request::MergeImpl(*this, from);
   }
-  using ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::MergeFrom;
-  void MergeFrom(const SensorCtrl_GetSensorInfo_Request& from) {
-    ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::MergeImpl(*this, from);
-  }
+  private:
+  static void MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const ::PROTOBUF_NAMESPACE_ID::Message& from_msg);
   public:
+  PROTOBUF_ATTRIBUTE_REINITIALIZES void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  const char* _InternalParse(const char* ptr, ::PROTOBUF_NAMESPACE_ID::internal::ParseContext* ctx) final;
+  uint8_t* _InternalSerialize(
+      uint8_t* target, ::PROTOBUF_NAMESPACE_ID::io::EpsCopyOutputStream* stream) const final;
+  int GetCachedSize() const final { return _impl_._cached_size_.Get(); }
+
+  private:
+  void SharedCtor(::PROTOBUF_NAMESPACE_ID::Arena* arena, bool is_message_owned);
+  void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(SensorCtrl_GetSensorInfo_Request* other);
 
   private:
   friend class ::PROTOBUF_NAMESPACE_ID::internal::AnyMetadata;
@@ -9108,6 +9528,27 @@ class SensorCtrl_GetSensorInfo_Request final :
 
   // accessors -------------------------------------------------------
 
+  enum : int {
+    kTimeRequestSentFieldNumber = 1,
+  };
+  // .google.protobuf.Timestamp time_request_sent = 1;
+  bool has_time_request_sent() const;
+  private:
+  bool _internal_has_time_request_sent() const;
+  public:
+  void clear_time_request_sent();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_request_sent() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_request_sent();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_request_sent();
+  void set_allocated_time_request_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_request_sent() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_request_sent();
+  public:
+  void unsafe_arena_set_allocated_time_request_sent(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_request_sent();
+
   // @@protoc_insertion_point(class_scope:muas.SensorCtrl_GetSensorInfo_Request)
  private:
   class _Internal;
@@ -9116,7 +9557,10 @@ class SensorCtrl_GetSensorInfo_Request final :
   typedef void InternalArenaConstructable_;
   typedef void DestructorSkippable_;
   struct Impl_ {
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent_;
+    mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
+  union { Impl_ _impl_; };
   friend struct ::TableStruct_messages_2eproto;
 };
 // -------------------------------------------------------------------
@@ -9242,10 +9686,12 @@ class SensorCtrl_GetSensorInfo_Response final :
   // accessors -------------------------------------------------------
 
   enum : int {
-    kSensorsFieldNumber = 2,
-    kResponseFieldNumber = 1,
+    kSensorsFieldNumber = 4,
+    kTimeRequestReceivedFieldNumber = 1,
+    kTimeResponseSentFieldNumber = 2,
+    kResponseFieldNumber = 3,
   };
-  // repeated .muas.Sensor sensors = 2;
+  // repeated .muas.Sensor sensors = 4;
   int sensors_size() const;
   private:
   int _internal_sensors_size() const;
@@ -9263,7 +9709,43 @@ class SensorCtrl_GetSensorInfo_Response final :
   const ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField< ::muas::Sensor >&
       sensors() const;
 
-  // .muas.NDNSF_Response response = 1;
+  // .google.protobuf.Timestamp time_request_received = 1;
+  bool has_time_request_received() const;
+  private:
+  bool _internal_has_time_request_received() const;
+  public:
+  void clear_time_request_received();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_request_received() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_request_received();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_request_received();
+  void set_allocated_time_request_received(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_request_received() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_request_received();
+  public:
+  void unsafe_arena_set_allocated_time_request_received(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_request_received();
+
+  // .google.protobuf.Timestamp time_response_sent = 2;
+  bool has_time_response_sent() const;
+  private:
+  bool _internal_has_time_response_sent() const;
+  public:
+  void clear_time_response_sent();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_response_sent() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_response_sent();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_response_sent();
+  void set_allocated_time_response_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_response_sent() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_response_sent();
+  public:
+  void unsafe_arena_set_allocated_time_response_sent(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_response_sent();
+
+  // .muas.NDNSF_Response response = 3;
   bool has_response() const;
   private:
   bool _internal_has_response() const;
@@ -9290,6 +9772,8 @@ class SensorCtrl_GetSensorInfo_Response final :
   typedef void DestructorSkippable_;
   struct Impl_ {
     ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField< ::muas::Sensor > sensors_;
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received_;
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent_;
     ::muas::NDNSF_Response* response_;
     mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
@@ -9299,9 +9783,10 @@ class SensorCtrl_GetSensorInfo_Response final :
 // -------------------------------------------------------------------
 
 class SensorCtrl_CaptureSingle_Request final :
-    public ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase /* @@protoc_insertion_point(class_definition:muas.SensorCtrl_CaptureSingle_Request) */ {
+    public ::PROTOBUF_NAMESPACE_ID::Message /* @@protoc_insertion_point(class_definition:muas.SensorCtrl_CaptureSingle_Request) */ {
  public:
   inline SensorCtrl_CaptureSingle_Request() : SensorCtrl_CaptureSingle_Request(nullptr) {}
+  ~SensorCtrl_CaptureSingle_Request() override;
   explicit PROTOBUF_CONSTEXPR SensorCtrl_CaptureSingle_Request(::PROTOBUF_NAMESPACE_ID::internal::ConstantInitialized);
 
   SensorCtrl_CaptureSingle_Request(const SensorCtrl_CaptureSingle_Request& from);
@@ -9374,15 +9859,29 @@ class SensorCtrl_CaptureSingle_Request final :
   SensorCtrl_CaptureSingle_Request* New(::PROTOBUF_NAMESPACE_ID::Arena* arena = nullptr) const final {
     return CreateMaybeMessage<SensorCtrl_CaptureSingle_Request>(arena);
   }
-  using ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::CopyFrom;
-  inline void CopyFrom(const SensorCtrl_CaptureSingle_Request& from) {
-    ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::CopyImpl(*this, from);
+  using ::PROTOBUF_NAMESPACE_ID::Message::CopyFrom;
+  void CopyFrom(const SensorCtrl_CaptureSingle_Request& from);
+  using ::PROTOBUF_NAMESPACE_ID::Message::MergeFrom;
+  void MergeFrom( const SensorCtrl_CaptureSingle_Request& from) {
+    SensorCtrl_CaptureSingle_Request::MergeImpl(*this, from);
   }
-  using ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::MergeFrom;
-  void MergeFrom(const SensorCtrl_CaptureSingle_Request& from) {
-    ::PROTOBUF_NAMESPACE_ID::internal::ZeroFieldsBase::MergeImpl(*this, from);
-  }
+  private:
+  static void MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const ::PROTOBUF_NAMESPACE_ID::Message& from_msg);
   public:
+  PROTOBUF_ATTRIBUTE_REINITIALIZES void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  const char* _InternalParse(const char* ptr, ::PROTOBUF_NAMESPACE_ID::internal::ParseContext* ctx) final;
+  uint8_t* _InternalSerialize(
+      uint8_t* target, ::PROTOBUF_NAMESPACE_ID::io::EpsCopyOutputStream* stream) const final;
+  int GetCachedSize() const final { return _impl_._cached_size_.Get(); }
+
+  private:
+  void SharedCtor(::PROTOBUF_NAMESPACE_ID::Arena* arena, bool is_message_owned);
+  void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(SensorCtrl_CaptureSingle_Request* other);
 
   private:
   friend class ::PROTOBUF_NAMESPACE_ID::internal::AnyMetadata;
@@ -9403,6 +9902,27 @@ class SensorCtrl_CaptureSingle_Request final :
 
   // accessors -------------------------------------------------------
 
+  enum : int {
+    kTimeRequestSentFieldNumber = 1,
+  };
+  // .google.protobuf.Timestamp time_request_sent = 1;
+  bool has_time_request_sent() const;
+  private:
+  bool _internal_has_time_request_sent() const;
+  public:
+  void clear_time_request_sent();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_request_sent() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_request_sent();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_request_sent();
+  void set_allocated_time_request_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_request_sent() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_request_sent();
+  public:
+  void unsafe_arena_set_allocated_time_request_sent(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_request_sent();
+
   // @@protoc_insertion_point(class_scope:muas.SensorCtrl_CaptureSingle_Request)
  private:
   class _Internal;
@@ -9411,7 +9931,10 @@ class SensorCtrl_CaptureSingle_Request final :
   typedef void InternalArenaConstructable_;
   typedef void DestructorSkippable_;
   struct Impl_ {
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent_;
+    mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
+  union { Impl_ _impl_; };
   friend struct ::TableStruct_messages_2eproto;
 };
 // -------------------------------------------------------------------
@@ -9537,10 +10060,12 @@ class SensorCtrl_CaptureSingle_Response final :
   // accessors -------------------------------------------------------
 
   enum : int {
-    kCaptureIdFieldNumber = 2,
-    kResponseFieldNumber = 1,
+    kCaptureIdFieldNumber = 4,
+    kTimeRequestReceivedFieldNumber = 1,
+    kTimeResponseSentFieldNumber = 2,
+    kResponseFieldNumber = 3,
   };
-  // string capture_id = 2;
+  // string capture_id = 4;
   void clear_capture_id();
   const std::string& capture_id() const;
   template <typename ArgT0 = const std::string&, typename... ArgT>
@@ -9554,7 +10079,43 @@ class SensorCtrl_CaptureSingle_Response final :
   std::string* _internal_mutable_capture_id();
   public:
 
-  // .muas.NDNSF_Response response = 1;
+  // .google.protobuf.Timestamp time_request_received = 1;
+  bool has_time_request_received() const;
+  private:
+  bool _internal_has_time_request_received() const;
+  public:
+  void clear_time_request_received();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_request_received() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_request_received();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_request_received();
+  void set_allocated_time_request_received(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_request_received() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_request_received();
+  public:
+  void unsafe_arena_set_allocated_time_request_received(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_request_received();
+
+  // .google.protobuf.Timestamp time_response_sent = 2;
+  bool has_time_response_sent() const;
+  private:
+  bool _internal_has_time_response_sent() const;
+  public:
+  void clear_time_response_sent();
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& time_response_sent() const;
+  PROTOBUF_NODISCARD ::PROTOBUF_NAMESPACE_ID::Timestamp* release_time_response_sent();
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* mutable_time_response_sent();
+  void set_allocated_time_response_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent);
+  private:
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp& _internal_time_response_sent() const;
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _internal_mutable_time_response_sent();
+  public:
+  void unsafe_arena_set_allocated_time_response_sent(
+      ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent);
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* unsafe_arena_release_time_response_sent();
+
+  // .muas.NDNSF_Response response = 3;
   bool has_response() const;
   private:
   bool _internal_has_response() const;
@@ -9581,6 +10142,8 @@ class SensorCtrl_CaptureSingle_Response final :
   typedef void DestructorSkippable_;
   struct Impl_ {
     ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr capture_id_;
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received_;
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent_;
     ::muas::NDNSF_Response* response_;
     mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
@@ -10591,108 +11154,263 @@ inline void NDNSF_Response::set_allocated_msg(std::string* msg) {
 
 // Entity_Echo_Request
 
-// string nonce = 1;
-inline void Entity_Echo_Request::clear_nonce() {
-  _impl_.nonce_.ClearToEmpty();
+// .google.protobuf.Timestamp time_request_sent = 1;
+inline bool Entity_Echo_Request::_internal_has_time_request_sent() const {
+  return this != internal_default_instance() && _impl_.time_request_sent_ != nullptr;
 }
-inline const std::string& Entity_Echo_Request::nonce() const {
-  // @@protoc_insertion_point(field_get:muas.Entity_Echo_Request.nonce)
-  return _internal_nonce();
+inline bool Entity_Echo_Request::has_time_request_sent() const {
+  return _internal_has_time_request_sent();
 }
-template <typename ArgT0, typename... ArgT>
-inline PROTOBUF_ALWAYS_INLINE
-void Entity_Echo_Request::set_nonce(ArgT0&& arg0, ArgT... args) {
- 
- _impl_.nonce_.Set(static_cast<ArgT0 &&>(arg0), args..., GetArenaForAllocation());
-  // @@protoc_insertion_point(field_set:muas.Entity_Echo_Request.nonce)
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& Entity_Echo_Request::_internal_time_request_sent() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_request_sent_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
 }
-inline std::string* Entity_Echo_Request::mutable_nonce() {
-  std::string* _s = _internal_mutable_nonce();
-  // @@protoc_insertion_point(field_mutable:muas.Entity_Echo_Request.nonce)
-  return _s;
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& Entity_Echo_Request::time_request_sent() const {
+  // @@protoc_insertion_point(field_get:muas.Entity_Echo_Request.time_request_sent)
+  return _internal_time_request_sent();
 }
-inline const std::string& Entity_Echo_Request::_internal_nonce() const {
-  return _impl_.nonce_.Get();
-}
-inline void Entity_Echo_Request::_internal_set_nonce(const std::string& value) {
-  
-  _impl_.nonce_.Set(value, GetArenaForAllocation());
-}
-inline std::string* Entity_Echo_Request::_internal_mutable_nonce() {
-  
-  return _impl_.nonce_.Mutable(GetArenaForAllocation());
-}
-inline std::string* Entity_Echo_Request::release_nonce() {
-  // @@protoc_insertion_point(field_release:muas.Entity_Echo_Request.nonce)
-  return _impl_.nonce_.Release();
-}
-inline void Entity_Echo_Request::set_allocated_nonce(std::string* nonce) {
-  if (nonce != nullptr) {
+inline void Entity_Echo_Request::unsafe_arena_set_allocated_time_request_sent(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_sent_);
+  }
+  _impl_.time_request_sent_ = time_request_sent;
+  if (time_request_sent) {
     
   } else {
     
   }
-  _impl_.nonce_.SetAllocated(nonce, GetArenaForAllocation());
-#ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
-  if (_impl_.nonce_.IsDefault()) {
-    _impl_.nonce_.Set("", GetArenaForAllocation());
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.Entity_Echo_Request.time_request_sent)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* Entity_Echo_Request::release_time_request_sent() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_sent_;
+  _impl_.time_request_sent_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
   }
-#endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
-  // @@protoc_insertion_point(field_set_allocated:muas.Entity_Echo_Request.nonce)
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* Entity_Echo_Request::unsafe_arena_release_time_request_sent() {
+  // @@protoc_insertion_point(field_release:muas.Entity_Echo_Request.time_request_sent)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_sent_;
+  _impl_.time_request_sent_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* Entity_Echo_Request::_internal_mutable_time_request_sent() {
+  
+  if (_impl_.time_request_sent_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_request_sent_ = p;
+  }
+  return _impl_.time_request_sent_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* Entity_Echo_Request::mutable_time_request_sent() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_request_sent();
+  // @@protoc_insertion_point(field_mutable:muas.Entity_Echo_Request.time_request_sent)
+  return _msg;
+}
+inline void Entity_Echo_Request::set_allocated_time_request_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_sent_);
+  }
+  if (time_request_sent) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_request_sent));
+    if (message_arena != submessage_arena) {
+      time_request_sent = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_request_sent, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_request_sent_ = time_request_sent;
+  // @@protoc_insertion_point(field_set_allocated:muas.Entity_Echo_Request.time_request_sent)
 }
 
 // -------------------------------------------------------------------
 
 // Entity_Echo_Response
 
-// string nonce = 1;
-inline void Entity_Echo_Response::clear_nonce() {
-  _impl_.nonce_.ClearToEmpty();
+// .google.protobuf.Timestamp time_request_received = 1;
+inline bool Entity_Echo_Response::_internal_has_time_request_received() const {
+  return this != internal_default_instance() && _impl_.time_request_received_ != nullptr;
 }
-inline const std::string& Entity_Echo_Response::nonce() const {
-  // @@protoc_insertion_point(field_get:muas.Entity_Echo_Response.nonce)
-  return _internal_nonce();
+inline bool Entity_Echo_Response::has_time_request_received() const {
+  return _internal_has_time_request_received();
 }
-template <typename ArgT0, typename... ArgT>
-inline PROTOBUF_ALWAYS_INLINE
-void Entity_Echo_Response::set_nonce(ArgT0&& arg0, ArgT... args) {
- 
- _impl_.nonce_.Set(static_cast<ArgT0 &&>(arg0), args..., GetArenaForAllocation());
-  // @@protoc_insertion_point(field_set:muas.Entity_Echo_Response.nonce)
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& Entity_Echo_Response::_internal_time_request_received() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_request_received_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
 }
-inline std::string* Entity_Echo_Response::mutable_nonce() {
-  std::string* _s = _internal_mutable_nonce();
-  // @@protoc_insertion_point(field_mutable:muas.Entity_Echo_Response.nonce)
-  return _s;
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& Entity_Echo_Response::time_request_received() const {
+  // @@protoc_insertion_point(field_get:muas.Entity_Echo_Response.time_request_received)
+  return _internal_time_request_received();
 }
-inline const std::string& Entity_Echo_Response::_internal_nonce() const {
-  return _impl_.nonce_.Get();
-}
-inline void Entity_Echo_Response::_internal_set_nonce(const std::string& value) {
-  
-  _impl_.nonce_.Set(value, GetArenaForAllocation());
-}
-inline std::string* Entity_Echo_Response::_internal_mutable_nonce() {
-  
-  return _impl_.nonce_.Mutable(GetArenaForAllocation());
-}
-inline std::string* Entity_Echo_Response::release_nonce() {
-  // @@protoc_insertion_point(field_release:muas.Entity_Echo_Response.nonce)
-  return _impl_.nonce_.Release();
-}
-inline void Entity_Echo_Response::set_allocated_nonce(std::string* nonce) {
-  if (nonce != nullptr) {
+inline void Entity_Echo_Response::unsafe_arena_set_allocated_time_request_received(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_received_);
+  }
+  _impl_.time_request_received_ = time_request_received;
+  if (time_request_received) {
     
   } else {
     
   }
-  _impl_.nonce_.SetAllocated(nonce, GetArenaForAllocation());
-#ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
-  if (_impl_.nonce_.IsDefault()) {
-    _impl_.nonce_.Set("", GetArenaForAllocation());
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.Entity_Echo_Response.time_request_received)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* Entity_Echo_Response::release_time_request_received() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_received_;
+  _impl_.time_request_received_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
   }
-#endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
-  // @@protoc_insertion_point(field_set_allocated:muas.Entity_Echo_Response.nonce)
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* Entity_Echo_Response::unsafe_arena_release_time_request_received() {
+  // @@protoc_insertion_point(field_release:muas.Entity_Echo_Response.time_request_received)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_received_;
+  _impl_.time_request_received_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* Entity_Echo_Response::_internal_mutable_time_request_received() {
+  
+  if (_impl_.time_request_received_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_request_received_ = p;
+  }
+  return _impl_.time_request_received_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* Entity_Echo_Response::mutable_time_request_received() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_request_received();
+  // @@protoc_insertion_point(field_mutable:muas.Entity_Echo_Response.time_request_received)
+  return _msg;
+}
+inline void Entity_Echo_Response::set_allocated_time_request_received(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_received_);
+  }
+  if (time_request_received) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_request_received));
+    if (message_arena != submessage_arena) {
+      time_request_received = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_request_received, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_request_received_ = time_request_received;
+  // @@protoc_insertion_point(field_set_allocated:muas.Entity_Echo_Response.time_request_received)
+}
+
+// .google.protobuf.Timestamp time_response_sent = 2;
+inline bool Entity_Echo_Response::_internal_has_time_response_sent() const {
+  return this != internal_default_instance() && _impl_.time_response_sent_ != nullptr;
+}
+inline bool Entity_Echo_Response::has_time_response_sent() const {
+  return _internal_has_time_response_sent();
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& Entity_Echo_Response::_internal_time_response_sent() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_response_sent_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& Entity_Echo_Response::time_response_sent() const {
+  // @@protoc_insertion_point(field_get:muas.Entity_Echo_Response.time_response_sent)
+  return _internal_time_response_sent();
+}
+inline void Entity_Echo_Response::unsafe_arena_set_allocated_time_response_sent(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_response_sent_);
+  }
+  _impl_.time_response_sent_ = time_response_sent;
+  if (time_response_sent) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.Entity_Echo_Response.time_response_sent)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* Entity_Echo_Response::release_time_response_sent() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_response_sent_;
+  _impl_.time_response_sent_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* Entity_Echo_Response::unsafe_arena_release_time_response_sent() {
+  // @@protoc_insertion_point(field_release:muas.Entity_Echo_Response.time_response_sent)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_response_sent_;
+  _impl_.time_response_sent_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* Entity_Echo_Response::_internal_mutable_time_response_sent() {
+  
+  if (_impl_.time_response_sent_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_response_sent_ = p;
+  }
+  return _impl_.time_response_sent_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* Entity_Echo_Response::mutable_time_response_sent() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_response_sent();
+  // @@protoc_insertion_point(field_mutable:muas.Entity_Echo_Response.time_response_sent)
+  return _msg;
+}
+inline void Entity_Echo_Response::set_allocated_time_response_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_response_sent_);
+  }
+  if (time_response_sent) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_response_sent));
+    if (message_arena != submessage_arena) {
+      time_response_sent = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_response_sent, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_response_sent_ = time_response_sent;
+  // @@protoc_insertion_point(field_set_allocated:muas.Entity_Echo_Response.time_response_sent)
 }
 
 // -------------------------------------------------------------------
@@ -11799,7 +12517,92 @@ inline void WUAS_QuadRaster_Response::set_allocated_response(::muas::NDNSF_Respo
 
 // IUAS_PointOrbit_Request
 
-// .muas.Position target = 1;
+// .google.protobuf.Timestamp time_request_sent = 1;
+inline bool IUAS_PointOrbit_Request::_internal_has_time_request_sent() const {
+  return this != internal_default_instance() && _impl_.time_request_sent_ != nullptr;
+}
+inline bool IUAS_PointOrbit_Request::has_time_request_sent() const {
+  return _internal_has_time_request_sent();
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& IUAS_PointOrbit_Request::_internal_time_request_sent() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_request_sent_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& IUAS_PointOrbit_Request::time_request_sent() const {
+  // @@protoc_insertion_point(field_get:muas.IUAS_PointOrbit_Request.time_request_sent)
+  return _internal_time_request_sent();
+}
+inline void IUAS_PointOrbit_Request::unsafe_arena_set_allocated_time_request_sent(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_sent_);
+  }
+  _impl_.time_request_sent_ = time_request_sent;
+  if (time_request_sent) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.IUAS_PointOrbit_Request.time_request_sent)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* IUAS_PointOrbit_Request::release_time_request_sent() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_sent_;
+  _impl_.time_request_sent_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* IUAS_PointOrbit_Request::unsafe_arena_release_time_request_sent() {
+  // @@protoc_insertion_point(field_release:muas.IUAS_PointOrbit_Request.time_request_sent)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_sent_;
+  _impl_.time_request_sent_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* IUAS_PointOrbit_Request::_internal_mutable_time_request_sent() {
+  
+  if (_impl_.time_request_sent_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_request_sent_ = p;
+  }
+  return _impl_.time_request_sent_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* IUAS_PointOrbit_Request::mutable_time_request_sent() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_request_sent();
+  // @@protoc_insertion_point(field_mutable:muas.IUAS_PointOrbit_Request.time_request_sent)
+  return _msg;
+}
+inline void IUAS_PointOrbit_Request::set_allocated_time_request_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_sent_);
+  }
+  if (time_request_sent) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_request_sent));
+    if (message_arena != submessage_arena) {
+      time_request_sent = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_request_sent, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_request_sent_ = time_request_sent;
+  // @@protoc_insertion_point(field_set_allocated:muas.IUAS_PointOrbit_Request.time_request_sent)
+}
+
+// .muas.Position target = 2;
 inline bool IUAS_PointOrbit_Request::_internal_has_target() const {
   return this != internal_default_instance() && _impl_.target_ != nullptr;
 }
@@ -11893,7 +12696,177 @@ inline void IUAS_PointOrbit_Request::set_allocated_target(::muas::Position* targ
 
 // IUAS_PointOrbit_Response
 
-// .muas.NDNSF_Response response = 1;
+// .google.protobuf.Timestamp time_request_received = 1;
+inline bool IUAS_PointOrbit_Response::_internal_has_time_request_received() const {
+  return this != internal_default_instance() && _impl_.time_request_received_ != nullptr;
+}
+inline bool IUAS_PointOrbit_Response::has_time_request_received() const {
+  return _internal_has_time_request_received();
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& IUAS_PointOrbit_Response::_internal_time_request_received() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_request_received_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& IUAS_PointOrbit_Response::time_request_received() const {
+  // @@protoc_insertion_point(field_get:muas.IUAS_PointOrbit_Response.time_request_received)
+  return _internal_time_request_received();
+}
+inline void IUAS_PointOrbit_Response::unsafe_arena_set_allocated_time_request_received(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_received_);
+  }
+  _impl_.time_request_received_ = time_request_received;
+  if (time_request_received) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.IUAS_PointOrbit_Response.time_request_received)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* IUAS_PointOrbit_Response::release_time_request_received() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_received_;
+  _impl_.time_request_received_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* IUAS_PointOrbit_Response::unsafe_arena_release_time_request_received() {
+  // @@protoc_insertion_point(field_release:muas.IUAS_PointOrbit_Response.time_request_received)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_received_;
+  _impl_.time_request_received_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* IUAS_PointOrbit_Response::_internal_mutable_time_request_received() {
+  
+  if (_impl_.time_request_received_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_request_received_ = p;
+  }
+  return _impl_.time_request_received_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* IUAS_PointOrbit_Response::mutable_time_request_received() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_request_received();
+  // @@protoc_insertion_point(field_mutable:muas.IUAS_PointOrbit_Response.time_request_received)
+  return _msg;
+}
+inline void IUAS_PointOrbit_Response::set_allocated_time_request_received(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_received_);
+  }
+  if (time_request_received) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_request_received));
+    if (message_arena != submessage_arena) {
+      time_request_received = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_request_received, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_request_received_ = time_request_received;
+  // @@protoc_insertion_point(field_set_allocated:muas.IUAS_PointOrbit_Response.time_request_received)
+}
+
+// .google.protobuf.Timestamp time_response_sent = 2;
+inline bool IUAS_PointOrbit_Response::_internal_has_time_response_sent() const {
+  return this != internal_default_instance() && _impl_.time_response_sent_ != nullptr;
+}
+inline bool IUAS_PointOrbit_Response::has_time_response_sent() const {
+  return _internal_has_time_response_sent();
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& IUAS_PointOrbit_Response::_internal_time_response_sent() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_response_sent_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& IUAS_PointOrbit_Response::time_response_sent() const {
+  // @@protoc_insertion_point(field_get:muas.IUAS_PointOrbit_Response.time_response_sent)
+  return _internal_time_response_sent();
+}
+inline void IUAS_PointOrbit_Response::unsafe_arena_set_allocated_time_response_sent(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_response_sent_);
+  }
+  _impl_.time_response_sent_ = time_response_sent;
+  if (time_response_sent) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.IUAS_PointOrbit_Response.time_response_sent)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* IUAS_PointOrbit_Response::release_time_response_sent() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_response_sent_;
+  _impl_.time_response_sent_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* IUAS_PointOrbit_Response::unsafe_arena_release_time_response_sent() {
+  // @@protoc_insertion_point(field_release:muas.IUAS_PointOrbit_Response.time_response_sent)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_response_sent_;
+  _impl_.time_response_sent_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* IUAS_PointOrbit_Response::_internal_mutable_time_response_sent() {
+  
+  if (_impl_.time_response_sent_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_response_sent_ = p;
+  }
+  return _impl_.time_response_sent_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* IUAS_PointOrbit_Response::mutable_time_response_sent() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_response_sent();
+  // @@protoc_insertion_point(field_mutable:muas.IUAS_PointOrbit_Response.time_response_sent)
+  return _msg;
+}
+inline void IUAS_PointOrbit_Response::set_allocated_time_response_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_response_sent_);
+  }
+  if (time_response_sent) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_response_sent));
+    if (message_arena != submessage_arena) {
+      time_response_sent = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_response_sent, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_response_sent_ = time_response_sent;
+  // @@protoc_insertion_point(field_set_allocated:muas.IUAS_PointOrbit_Response.time_response_sent)
+}
+
+// .muas.NDNSF_Response response = 3;
 inline bool IUAS_PointOrbit_Response::_internal_has_response() const {
   return this != internal_default_instance() && _impl_.response_ != nullptr;
 }
@@ -13387,11 +14360,266 @@ inline void FlightCtrl_SwitchMode_Response::set_allocated_response(::muas::NDNSF
 
 // FlightCtrl_Takeoff_Request
 
+// .google.protobuf.Timestamp time_request_sent = 1;
+inline bool FlightCtrl_Takeoff_Request::_internal_has_time_request_sent() const {
+  return this != internal_default_instance() && _impl_.time_request_sent_ != nullptr;
+}
+inline bool FlightCtrl_Takeoff_Request::has_time_request_sent() const {
+  return _internal_has_time_request_sent();
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_Takeoff_Request::_internal_time_request_sent() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_request_sent_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_Takeoff_Request::time_request_sent() const {
+  // @@protoc_insertion_point(field_get:muas.FlightCtrl_Takeoff_Request.time_request_sent)
+  return _internal_time_request_sent();
+}
+inline void FlightCtrl_Takeoff_Request::unsafe_arena_set_allocated_time_request_sent(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_sent_);
+  }
+  _impl_.time_request_sent_ = time_request_sent;
+  if (time_request_sent) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.FlightCtrl_Takeoff_Request.time_request_sent)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Takeoff_Request::release_time_request_sent() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_sent_;
+  _impl_.time_request_sent_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Takeoff_Request::unsafe_arena_release_time_request_sent() {
+  // @@protoc_insertion_point(field_release:muas.FlightCtrl_Takeoff_Request.time_request_sent)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_sent_;
+  _impl_.time_request_sent_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Takeoff_Request::_internal_mutable_time_request_sent() {
+  
+  if (_impl_.time_request_sent_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_request_sent_ = p;
+  }
+  return _impl_.time_request_sent_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Takeoff_Request::mutable_time_request_sent() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_request_sent();
+  // @@protoc_insertion_point(field_mutable:muas.FlightCtrl_Takeoff_Request.time_request_sent)
+  return _msg;
+}
+inline void FlightCtrl_Takeoff_Request::set_allocated_time_request_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_sent_);
+  }
+  if (time_request_sent) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_request_sent));
+    if (message_arena != submessage_arena) {
+      time_request_sent = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_request_sent, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_request_sent_ = time_request_sent;
+  // @@protoc_insertion_point(field_set_allocated:muas.FlightCtrl_Takeoff_Request.time_request_sent)
+}
+
 // -------------------------------------------------------------------
 
 // FlightCtrl_Takeoff_Response
 
-// .muas.NDNSF_Response response = 1;
+// .google.protobuf.Timestamp time_request_received = 1;
+inline bool FlightCtrl_Takeoff_Response::_internal_has_time_request_received() const {
+  return this != internal_default_instance() && _impl_.time_request_received_ != nullptr;
+}
+inline bool FlightCtrl_Takeoff_Response::has_time_request_received() const {
+  return _internal_has_time_request_received();
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_Takeoff_Response::_internal_time_request_received() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_request_received_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_Takeoff_Response::time_request_received() const {
+  // @@protoc_insertion_point(field_get:muas.FlightCtrl_Takeoff_Response.time_request_received)
+  return _internal_time_request_received();
+}
+inline void FlightCtrl_Takeoff_Response::unsafe_arena_set_allocated_time_request_received(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_received_);
+  }
+  _impl_.time_request_received_ = time_request_received;
+  if (time_request_received) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.FlightCtrl_Takeoff_Response.time_request_received)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Takeoff_Response::release_time_request_received() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_received_;
+  _impl_.time_request_received_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Takeoff_Response::unsafe_arena_release_time_request_received() {
+  // @@protoc_insertion_point(field_release:muas.FlightCtrl_Takeoff_Response.time_request_received)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_received_;
+  _impl_.time_request_received_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Takeoff_Response::_internal_mutable_time_request_received() {
+  
+  if (_impl_.time_request_received_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_request_received_ = p;
+  }
+  return _impl_.time_request_received_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Takeoff_Response::mutable_time_request_received() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_request_received();
+  // @@protoc_insertion_point(field_mutable:muas.FlightCtrl_Takeoff_Response.time_request_received)
+  return _msg;
+}
+inline void FlightCtrl_Takeoff_Response::set_allocated_time_request_received(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_received_);
+  }
+  if (time_request_received) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_request_received));
+    if (message_arena != submessage_arena) {
+      time_request_received = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_request_received, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_request_received_ = time_request_received;
+  // @@protoc_insertion_point(field_set_allocated:muas.FlightCtrl_Takeoff_Response.time_request_received)
+}
+
+// .google.protobuf.Timestamp time_response_sent = 2;
+inline bool FlightCtrl_Takeoff_Response::_internal_has_time_response_sent() const {
+  return this != internal_default_instance() && _impl_.time_response_sent_ != nullptr;
+}
+inline bool FlightCtrl_Takeoff_Response::has_time_response_sent() const {
+  return _internal_has_time_response_sent();
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_Takeoff_Response::_internal_time_response_sent() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_response_sent_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_Takeoff_Response::time_response_sent() const {
+  // @@protoc_insertion_point(field_get:muas.FlightCtrl_Takeoff_Response.time_response_sent)
+  return _internal_time_response_sent();
+}
+inline void FlightCtrl_Takeoff_Response::unsafe_arena_set_allocated_time_response_sent(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_response_sent_);
+  }
+  _impl_.time_response_sent_ = time_response_sent;
+  if (time_response_sent) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.FlightCtrl_Takeoff_Response.time_response_sent)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Takeoff_Response::release_time_response_sent() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_response_sent_;
+  _impl_.time_response_sent_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Takeoff_Response::unsafe_arena_release_time_response_sent() {
+  // @@protoc_insertion_point(field_release:muas.FlightCtrl_Takeoff_Response.time_response_sent)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_response_sent_;
+  _impl_.time_response_sent_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Takeoff_Response::_internal_mutable_time_response_sent() {
+  
+  if (_impl_.time_response_sent_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_response_sent_ = p;
+  }
+  return _impl_.time_response_sent_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Takeoff_Response::mutable_time_response_sent() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_response_sent();
+  // @@protoc_insertion_point(field_mutable:muas.FlightCtrl_Takeoff_Response.time_response_sent)
+  return _msg;
+}
+inline void FlightCtrl_Takeoff_Response::set_allocated_time_response_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_response_sent_);
+  }
+  if (time_response_sent) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_response_sent));
+    if (message_arena != submessage_arena) {
+      time_response_sent = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_response_sent, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_response_sent_ = time_response_sent;
+  // @@protoc_insertion_point(field_set_allocated:muas.FlightCtrl_Takeoff_Response.time_response_sent)
+}
+
+// .muas.NDNSF_Response response = 3;
 inline bool FlightCtrl_Takeoff_Response::_internal_has_response() const {
   return this != internal_default_instance() && _impl_.response_ != nullptr;
 }
@@ -13485,11 +14713,266 @@ inline void FlightCtrl_Takeoff_Response::set_allocated_response(::muas::NDNSF_Re
 
 // FlightCtrl_Land_Request
 
+// .google.protobuf.Timestamp time_request_sent = 1;
+inline bool FlightCtrl_Land_Request::_internal_has_time_request_sent() const {
+  return this != internal_default_instance() && _impl_.time_request_sent_ != nullptr;
+}
+inline bool FlightCtrl_Land_Request::has_time_request_sent() const {
+  return _internal_has_time_request_sent();
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_Land_Request::_internal_time_request_sent() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_request_sent_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_Land_Request::time_request_sent() const {
+  // @@protoc_insertion_point(field_get:muas.FlightCtrl_Land_Request.time_request_sent)
+  return _internal_time_request_sent();
+}
+inline void FlightCtrl_Land_Request::unsafe_arena_set_allocated_time_request_sent(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_sent_);
+  }
+  _impl_.time_request_sent_ = time_request_sent;
+  if (time_request_sent) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.FlightCtrl_Land_Request.time_request_sent)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Land_Request::release_time_request_sent() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_sent_;
+  _impl_.time_request_sent_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Land_Request::unsafe_arena_release_time_request_sent() {
+  // @@protoc_insertion_point(field_release:muas.FlightCtrl_Land_Request.time_request_sent)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_sent_;
+  _impl_.time_request_sent_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Land_Request::_internal_mutable_time_request_sent() {
+  
+  if (_impl_.time_request_sent_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_request_sent_ = p;
+  }
+  return _impl_.time_request_sent_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Land_Request::mutable_time_request_sent() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_request_sent();
+  // @@protoc_insertion_point(field_mutable:muas.FlightCtrl_Land_Request.time_request_sent)
+  return _msg;
+}
+inline void FlightCtrl_Land_Request::set_allocated_time_request_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_sent_);
+  }
+  if (time_request_sent) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_request_sent));
+    if (message_arena != submessage_arena) {
+      time_request_sent = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_request_sent, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_request_sent_ = time_request_sent;
+  // @@protoc_insertion_point(field_set_allocated:muas.FlightCtrl_Land_Request.time_request_sent)
+}
+
 // -------------------------------------------------------------------
 
 // FlightCtrl_Land_Response
 
-// .muas.NDNSF_Response response = 1;
+// .google.protobuf.Timestamp time_request_received = 1;
+inline bool FlightCtrl_Land_Response::_internal_has_time_request_received() const {
+  return this != internal_default_instance() && _impl_.time_request_received_ != nullptr;
+}
+inline bool FlightCtrl_Land_Response::has_time_request_received() const {
+  return _internal_has_time_request_received();
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_Land_Response::_internal_time_request_received() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_request_received_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_Land_Response::time_request_received() const {
+  // @@protoc_insertion_point(field_get:muas.FlightCtrl_Land_Response.time_request_received)
+  return _internal_time_request_received();
+}
+inline void FlightCtrl_Land_Response::unsafe_arena_set_allocated_time_request_received(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_received_);
+  }
+  _impl_.time_request_received_ = time_request_received;
+  if (time_request_received) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.FlightCtrl_Land_Response.time_request_received)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Land_Response::release_time_request_received() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_received_;
+  _impl_.time_request_received_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Land_Response::unsafe_arena_release_time_request_received() {
+  // @@protoc_insertion_point(field_release:muas.FlightCtrl_Land_Response.time_request_received)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_received_;
+  _impl_.time_request_received_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Land_Response::_internal_mutable_time_request_received() {
+  
+  if (_impl_.time_request_received_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_request_received_ = p;
+  }
+  return _impl_.time_request_received_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Land_Response::mutable_time_request_received() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_request_received();
+  // @@protoc_insertion_point(field_mutable:muas.FlightCtrl_Land_Response.time_request_received)
+  return _msg;
+}
+inline void FlightCtrl_Land_Response::set_allocated_time_request_received(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_received_);
+  }
+  if (time_request_received) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_request_received));
+    if (message_arena != submessage_arena) {
+      time_request_received = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_request_received, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_request_received_ = time_request_received;
+  // @@protoc_insertion_point(field_set_allocated:muas.FlightCtrl_Land_Response.time_request_received)
+}
+
+// .google.protobuf.Timestamp time_response_sent = 2;
+inline bool FlightCtrl_Land_Response::_internal_has_time_response_sent() const {
+  return this != internal_default_instance() && _impl_.time_response_sent_ != nullptr;
+}
+inline bool FlightCtrl_Land_Response::has_time_response_sent() const {
+  return _internal_has_time_response_sent();
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_Land_Response::_internal_time_response_sent() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_response_sent_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_Land_Response::time_response_sent() const {
+  // @@protoc_insertion_point(field_get:muas.FlightCtrl_Land_Response.time_response_sent)
+  return _internal_time_response_sent();
+}
+inline void FlightCtrl_Land_Response::unsafe_arena_set_allocated_time_response_sent(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_response_sent_);
+  }
+  _impl_.time_response_sent_ = time_response_sent;
+  if (time_response_sent) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.FlightCtrl_Land_Response.time_response_sent)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Land_Response::release_time_response_sent() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_response_sent_;
+  _impl_.time_response_sent_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Land_Response::unsafe_arena_release_time_response_sent() {
+  // @@protoc_insertion_point(field_release:muas.FlightCtrl_Land_Response.time_response_sent)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_response_sent_;
+  _impl_.time_response_sent_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Land_Response::_internal_mutable_time_response_sent() {
+  
+  if (_impl_.time_response_sent_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_response_sent_ = p;
+  }
+  return _impl_.time_response_sent_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Land_Response::mutable_time_response_sent() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_response_sent();
+  // @@protoc_insertion_point(field_mutable:muas.FlightCtrl_Land_Response.time_response_sent)
+  return _msg;
+}
+inline void FlightCtrl_Land_Response::set_allocated_time_response_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_response_sent_);
+  }
+  if (time_response_sent) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_response_sent));
+    if (message_arena != submessage_arena) {
+      time_response_sent = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_response_sent, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_response_sent_ = time_response_sent;
+  // @@protoc_insertion_point(field_set_allocated:muas.FlightCtrl_Land_Response.time_response_sent)
+}
+
+// .muas.NDNSF_Response response = 3;
 inline bool FlightCtrl_Land_Response::_internal_has_response() const {
   return this != internal_default_instance() && _impl_.response_ != nullptr;
 }
@@ -13583,11 +15066,266 @@ inline void FlightCtrl_Land_Response::set_allocated_response(::muas::NDNSF_Respo
 
 // FlightCtrl_RTL_Request
 
+// .google.protobuf.Timestamp time_request_sent = 1;
+inline bool FlightCtrl_RTL_Request::_internal_has_time_request_sent() const {
+  return this != internal_default_instance() && _impl_.time_request_sent_ != nullptr;
+}
+inline bool FlightCtrl_RTL_Request::has_time_request_sent() const {
+  return _internal_has_time_request_sent();
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_RTL_Request::_internal_time_request_sent() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_request_sent_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_RTL_Request::time_request_sent() const {
+  // @@protoc_insertion_point(field_get:muas.FlightCtrl_RTL_Request.time_request_sent)
+  return _internal_time_request_sent();
+}
+inline void FlightCtrl_RTL_Request::unsafe_arena_set_allocated_time_request_sent(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_sent_);
+  }
+  _impl_.time_request_sent_ = time_request_sent;
+  if (time_request_sent) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.FlightCtrl_RTL_Request.time_request_sent)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_RTL_Request::release_time_request_sent() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_sent_;
+  _impl_.time_request_sent_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_RTL_Request::unsafe_arena_release_time_request_sent() {
+  // @@protoc_insertion_point(field_release:muas.FlightCtrl_RTL_Request.time_request_sent)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_sent_;
+  _impl_.time_request_sent_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_RTL_Request::_internal_mutable_time_request_sent() {
+  
+  if (_impl_.time_request_sent_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_request_sent_ = p;
+  }
+  return _impl_.time_request_sent_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_RTL_Request::mutable_time_request_sent() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_request_sent();
+  // @@protoc_insertion_point(field_mutable:muas.FlightCtrl_RTL_Request.time_request_sent)
+  return _msg;
+}
+inline void FlightCtrl_RTL_Request::set_allocated_time_request_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_sent_);
+  }
+  if (time_request_sent) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_request_sent));
+    if (message_arena != submessage_arena) {
+      time_request_sent = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_request_sent, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_request_sent_ = time_request_sent;
+  // @@protoc_insertion_point(field_set_allocated:muas.FlightCtrl_RTL_Request.time_request_sent)
+}
+
 // -------------------------------------------------------------------
 
 // FlightCtrl_RTL_Response
 
-// .muas.NDNSF_Response response = 1;
+// .google.protobuf.Timestamp time_request_received = 1;
+inline bool FlightCtrl_RTL_Response::_internal_has_time_request_received() const {
+  return this != internal_default_instance() && _impl_.time_request_received_ != nullptr;
+}
+inline bool FlightCtrl_RTL_Response::has_time_request_received() const {
+  return _internal_has_time_request_received();
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_RTL_Response::_internal_time_request_received() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_request_received_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_RTL_Response::time_request_received() const {
+  // @@protoc_insertion_point(field_get:muas.FlightCtrl_RTL_Response.time_request_received)
+  return _internal_time_request_received();
+}
+inline void FlightCtrl_RTL_Response::unsafe_arena_set_allocated_time_request_received(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_received_);
+  }
+  _impl_.time_request_received_ = time_request_received;
+  if (time_request_received) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.FlightCtrl_RTL_Response.time_request_received)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_RTL_Response::release_time_request_received() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_received_;
+  _impl_.time_request_received_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_RTL_Response::unsafe_arena_release_time_request_received() {
+  // @@protoc_insertion_point(field_release:muas.FlightCtrl_RTL_Response.time_request_received)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_received_;
+  _impl_.time_request_received_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_RTL_Response::_internal_mutable_time_request_received() {
+  
+  if (_impl_.time_request_received_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_request_received_ = p;
+  }
+  return _impl_.time_request_received_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_RTL_Response::mutable_time_request_received() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_request_received();
+  // @@protoc_insertion_point(field_mutable:muas.FlightCtrl_RTL_Response.time_request_received)
+  return _msg;
+}
+inline void FlightCtrl_RTL_Response::set_allocated_time_request_received(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_received_);
+  }
+  if (time_request_received) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_request_received));
+    if (message_arena != submessage_arena) {
+      time_request_received = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_request_received, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_request_received_ = time_request_received;
+  // @@protoc_insertion_point(field_set_allocated:muas.FlightCtrl_RTL_Response.time_request_received)
+}
+
+// .google.protobuf.Timestamp time_response_sent = 2;
+inline bool FlightCtrl_RTL_Response::_internal_has_time_response_sent() const {
+  return this != internal_default_instance() && _impl_.time_response_sent_ != nullptr;
+}
+inline bool FlightCtrl_RTL_Response::has_time_response_sent() const {
+  return _internal_has_time_response_sent();
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_RTL_Response::_internal_time_response_sent() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_response_sent_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_RTL_Response::time_response_sent() const {
+  // @@protoc_insertion_point(field_get:muas.FlightCtrl_RTL_Response.time_response_sent)
+  return _internal_time_response_sent();
+}
+inline void FlightCtrl_RTL_Response::unsafe_arena_set_allocated_time_response_sent(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_response_sent_);
+  }
+  _impl_.time_response_sent_ = time_response_sent;
+  if (time_response_sent) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.FlightCtrl_RTL_Response.time_response_sent)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_RTL_Response::release_time_response_sent() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_response_sent_;
+  _impl_.time_response_sent_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_RTL_Response::unsafe_arena_release_time_response_sent() {
+  // @@protoc_insertion_point(field_release:muas.FlightCtrl_RTL_Response.time_response_sent)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_response_sent_;
+  _impl_.time_response_sent_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_RTL_Response::_internal_mutable_time_response_sent() {
+  
+  if (_impl_.time_response_sent_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_response_sent_ = p;
+  }
+  return _impl_.time_response_sent_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_RTL_Response::mutable_time_response_sent() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_response_sent();
+  // @@protoc_insertion_point(field_mutable:muas.FlightCtrl_RTL_Response.time_response_sent)
+  return _msg;
+}
+inline void FlightCtrl_RTL_Response::set_allocated_time_response_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_response_sent_);
+  }
+  if (time_response_sent) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_response_sent));
+    if (message_arena != submessage_arena) {
+      time_response_sent = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_response_sent, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_response_sent_ = time_response_sent;
+  // @@protoc_insertion_point(field_set_allocated:muas.FlightCtrl_RTL_Response.time_response_sent)
+}
+
+// .muas.NDNSF_Response response = 3;
 inline bool FlightCtrl_RTL_Response::_internal_has_response() const {
   return this != internal_default_instance() && _impl_.response_ != nullptr;
 }
@@ -13681,11 +15419,266 @@ inline void FlightCtrl_RTL_Response::set_allocated_response(::muas::NDNSF_Respon
 
 // FlightCtrl_Kill_Request
 
+// .google.protobuf.Timestamp time_request_sent = 1;
+inline bool FlightCtrl_Kill_Request::_internal_has_time_request_sent() const {
+  return this != internal_default_instance() && _impl_.time_request_sent_ != nullptr;
+}
+inline bool FlightCtrl_Kill_Request::has_time_request_sent() const {
+  return _internal_has_time_request_sent();
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_Kill_Request::_internal_time_request_sent() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_request_sent_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_Kill_Request::time_request_sent() const {
+  // @@protoc_insertion_point(field_get:muas.FlightCtrl_Kill_Request.time_request_sent)
+  return _internal_time_request_sent();
+}
+inline void FlightCtrl_Kill_Request::unsafe_arena_set_allocated_time_request_sent(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_sent_);
+  }
+  _impl_.time_request_sent_ = time_request_sent;
+  if (time_request_sent) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.FlightCtrl_Kill_Request.time_request_sent)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Kill_Request::release_time_request_sent() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_sent_;
+  _impl_.time_request_sent_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Kill_Request::unsafe_arena_release_time_request_sent() {
+  // @@protoc_insertion_point(field_release:muas.FlightCtrl_Kill_Request.time_request_sent)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_sent_;
+  _impl_.time_request_sent_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Kill_Request::_internal_mutable_time_request_sent() {
+  
+  if (_impl_.time_request_sent_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_request_sent_ = p;
+  }
+  return _impl_.time_request_sent_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Kill_Request::mutable_time_request_sent() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_request_sent();
+  // @@protoc_insertion_point(field_mutable:muas.FlightCtrl_Kill_Request.time_request_sent)
+  return _msg;
+}
+inline void FlightCtrl_Kill_Request::set_allocated_time_request_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_sent_);
+  }
+  if (time_request_sent) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_request_sent));
+    if (message_arena != submessage_arena) {
+      time_request_sent = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_request_sent, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_request_sent_ = time_request_sent;
+  // @@protoc_insertion_point(field_set_allocated:muas.FlightCtrl_Kill_Request.time_request_sent)
+}
+
 // -------------------------------------------------------------------
 
 // FlightCtrl_Kill_Response
 
-// .muas.NDNSF_Response response = 1;
+// .google.protobuf.Timestamp time_request_received = 1;
+inline bool FlightCtrl_Kill_Response::_internal_has_time_request_received() const {
+  return this != internal_default_instance() && _impl_.time_request_received_ != nullptr;
+}
+inline bool FlightCtrl_Kill_Response::has_time_request_received() const {
+  return _internal_has_time_request_received();
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_Kill_Response::_internal_time_request_received() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_request_received_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_Kill_Response::time_request_received() const {
+  // @@protoc_insertion_point(field_get:muas.FlightCtrl_Kill_Response.time_request_received)
+  return _internal_time_request_received();
+}
+inline void FlightCtrl_Kill_Response::unsafe_arena_set_allocated_time_request_received(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_received_);
+  }
+  _impl_.time_request_received_ = time_request_received;
+  if (time_request_received) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.FlightCtrl_Kill_Response.time_request_received)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Kill_Response::release_time_request_received() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_received_;
+  _impl_.time_request_received_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Kill_Response::unsafe_arena_release_time_request_received() {
+  // @@protoc_insertion_point(field_release:muas.FlightCtrl_Kill_Response.time_request_received)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_received_;
+  _impl_.time_request_received_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Kill_Response::_internal_mutable_time_request_received() {
+  
+  if (_impl_.time_request_received_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_request_received_ = p;
+  }
+  return _impl_.time_request_received_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Kill_Response::mutable_time_request_received() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_request_received();
+  // @@protoc_insertion_point(field_mutable:muas.FlightCtrl_Kill_Response.time_request_received)
+  return _msg;
+}
+inline void FlightCtrl_Kill_Response::set_allocated_time_request_received(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_received_);
+  }
+  if (time_request_received) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_request_received));
+    if (message_arena != submessage_arena) {
+      time_request_received = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_request_received, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_request_received_ = time_request_received;
+  // @@protoc_insertion_point(field_set_allocated:muas.FlightCtrl_Kill_Response.time_request_received)
+}
+
+// .google.protobuf.Timestamp time_response_sent = 2;
+inline bool FlightCtrl_Kill_Response::_internal_has_time_response_sent() const {
+  return this != internal_default_instance() && _impl_.time_response_sent_ != nullptr;
+}
+inline bool FlightCtrl_Kill_Response::has_time_response_sent() const {
+  return _internal_has_time_response_sent();
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_Kill_Response::_internal_time_response_sent() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_response_sent_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& FlightCtrl_Kill_Response::time_response_sent() const {
+  // @@protoc_insertion_point(field_get:muas.FlightCtrl_Kill_Response.time_response_sent)
+  return _internal_time_response_sent();
+}
+inline void FlightCtrl_Kill_Response::unsafe_arena_set_allocated_time_response_sent(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_response_sent_);
+  }
+  _impl_.time_response_sent_ = time_response_sent;
+  if (time_response_sent) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.FlightCtrl_Kill_Response.time_response_sent)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Kill_Response::release_time_response_sent() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_response_sent_;
+  _impl_.time_response_sent_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Kill_Response::unsafe_arena_release_time_response_sent() {
+  // @@protoc_insertion_point(field_release:muas.FlightCtrl_Kill_Response.time_response_sent)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_response_sent_;
+  _impl_.time_response_sent_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Kill_Response::_internal_mutable_time_response_sent() {
+  
+  if (_impl_.time_response_sent_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_response_sent_ = p;
+  }
+  return _impl_.time_response_sent_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* FlightCtrl_Kill_Response::mutable_time_response_sent() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_response_sent();
+  // @@protoc_insertion_point(field_mutable:muas.FlightCtrl_Kill_Response.time_response_sent)
+  return _msg;
+}
+inline void FlightCtrl_Kill_Response::set_allocated_time_response_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_response_sent_);
+  }
+  if (time_response_sent) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_response_sent));
+    if (message_arena != submessage_arena) {
+      time_response_sent = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_response_sent, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_response_sent_ = time_response_sent;
+  // @@protoc_insertion_point(field_set_allocated:muas.FlightCtrl_Kill_Response.time_response_sent)
+}
+
+// .muas.NDNSF_Response response = 3;
 inline bool FlightCtrl_Kill_Response::_internal_has_response() const {
   return this != internal_default_instance() && _impl_.response_ != nullptr;
 }
@@ -14251,11 +16244,266 @@ inline void MAVLink_Generic_Response::set_allocated_mav_response(std::string* ma
 
 // SensorCtrl_GetSensorInfo_Request
 
+// .google.protobuf.Timestamp time_request_sent = 1;
+inline bool SensorCtrl_GetSensorInfo_Request::_internal_has_time_request_sent() const {
+  return this != internal_default_instance() && _impl_.time_request_sent_ != nullptr;
+}
+inline bool SensorCtrl_GetSensorInfo_Request::has_time_request_sent() const {
+  return _internal_has_time_request_sent();
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& SensorCtrl_GetSensorInfo_Request::_internal_time_request_sent() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_request_sent_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& SensorCtrl_GetSensorInfo_Request::time_request_sent() const {
+  // @@protoc_insertion_point(field_get:muas.SensorCtrl_GetSensorInfo_Request.time_request_sent)
+  return _internal_time_request_sent();
+}
+inline void SensorCtrl_GetSensorInfo_Request::unsafe_arena_set_allocated_time_request_sent(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_sent_);
+  }
+  _impl_.time_request_sent_ = time_request_sent;
+  if (time_request_sent) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.SensorCtrl_GetSensorInfo_Request.time_request_sent)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_GetSensorInfo_Request::release_time_request_sent() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_sent_;
+  _impl_.time_request_sent_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_GetSensorInfo_Request::unsafe_arena_release_time_request_sent() {
+  // @@protoc_insertion_point(field_release:muas.SensorCtrl_GetSensorInfo_Request.time_request_sent)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_sent_;
+  _impl_.time_request_sent_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_GetSensorInfo_Request::_internal_mutable_time_request_sent() {
+  
+  if (_impl_.time_request_sent_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_request_sent_ = p;
+  }
+  return _impl_.time_request_sent_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_GetSensorInfo_Request::mutable_time_request_sent() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_request_sent();
+  // @@protoc_insertion_point(field_mutable:muas.SensorCtrl_GetSensorInfo_Request.time_request_sent)
+  return _msg;
+}
+inline void SensorCtrl_GetSensorInfo_Request::set_allocated_time_request_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_sent_);
+  }
+  if (time_request_sent) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_request_sent));
+    if (message_arena != submessage_arena) {
+      time_request_sent = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_request_sent, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_request_sent_ = time_request_sent;
+  // @@protoc_insertion_point(field_set_allocated:muas.SensorCtrl_GetSensorInfo_Request.time_request_sent)
+}
+
 // -------------------------------------------------------------------
 
 // SensorCtrl_GetSensorInfo_Response
 
-// .muas.NDNSF_Response response = 1;
+// .google.protobuf.Timestamp time_request_received = 1;
+inline bool SensorCtrl_GetSensorInfo_Response::_internal_has_time_request_received() const {
+  return this != internal_default_instance() && _impl_.time_request_received_ != nullptr;
+}
+inline bool SensorCtrl_GetSensorInfo_Response::has_time_request_received() const {
+  return _internal_has_time_request_received();
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& SensorCtrl_GetSensorInfo_Response::_internal_time_request_received() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_request_received_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& SensorCtrl_GetSensorInfo_Response::time_request_received() const {
+  // @@protoc_insertion_point(field_get:muas.SensorCtrl_GetSensorInfo_Response.time_request_received)
+  return _internal_time_request_received();
+}
+inline void SensorCtrl_GetSensorInfo_Response::unsafe_arena_set_allocated_time_request_received(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_received_);
+  }
+  _impl_.time_request_received_ = time_request_received;
+  if (time_request_received) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.SensorCtrl_GetSensorInfo_Response.time_request_received)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_GetSensorInfo_Response::release_time_request_received() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_received_;
+  _impl_.time_request_received_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_GetSensorInfo_Response::unsafe_arena_release_time_request_received() {
+  // @@protoc_insertion_point(field_release:muas.SensorCtrl_GetSensorInfo_Response.time_request_received)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_received_;
+  _impl_.time_request_received_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_GetSensorInfo_Response::_internal_mutable_time_request_received() {
+  
+  if (_impl_.time_request_received_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_request_received_ = p;
+  }
+  return _impl_.time_request_received_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_GetSensorInfo_Response::mutable_time_request_received() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_request_received();
+  // @@protoc_insertion_point(field_mutable:muas.SensorCtrl_GetSensorInfo_Response.time_request_received)
+  return _msg;
+}
+inline void SensorCtrl_GetSensorInfo_Response::set_allocated_time_request_received(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_received_);
+  }
+  if (time_request_received) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_request_received));
+    if (message_arena != submessage_arena) {
+      time_request_received = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_request_received, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_request_received_ = time_request_received;
+  // @@protoc_insertion_point(field_set_allocated:muas.SensorCtrl_GetSensorInfo_Response.time_request_received)
+}
+
+// .google.protobuf.Timestamp time_response_sent = 2;
+inline bool SensorCtrl_GetSensorInfo_Response::_internal_has_time_response_sent() const {
+  return this != internal_default_instance() && _impl_.time_response_sent_ != nullptr;
+}
+inline bool SensorCtrl_GetSensorInfo_Response::has_time_response_sent() const {
+  return _internal_has_time_response_sent();
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& SensorCtrl_GetSensorInfo_Response::_internal_time_response_sent() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_response_sent_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& SensorCtrl_GetSensorInfo_Response::time_response_sent() const {
+  // @@protoc_insertion_point(field_get:muas.SensorCtrl_GetSensorInfo_Response.time_response_sent)
+  return _internal_time_response_sent();
+}
+inline void SensorCtrl_GetSensorInfo_Response::unsafe_arena_set_allocated_time_response_sent(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_response_sent_);
+  }
+  _impl_.time_response_sent_ = time_response_sent;
+  if (time_response_sent) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.SensorCtrl_GetSensorInfo_Response.time_response_sent)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_GetSensorInfo_Response::release_time_response_sent() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_response_sent_;
+  _impl_.time_response_sent_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_GetSensorInfo_Response::unsafe_arena_release_time_response_sent() {
+  // @@protoc_insertion_point(field_release:muas.SensorCtrl_GetSensorInfo_Response.time_response_sent)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_response_sent_;
+  _impl_.time_response_sent_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_GetSensorInfo_Response::_internal_mutable_time_response_sent() {
+  
+  if (_impl_.time_response_sent_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_response_sent_ = p;
+  }
+  return _impl_.time_response_sent_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_GetSensorInfo_Response::mutable_time_response_sent() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_response_sent();
+  // @@protoc_insertion_point(field_mutable:muas.SensorCtrl_GetSensorInfo_Response.time_response_sent)
+  return _msg;
+}
+inline void SensorCtrl_GetSensorInfo_Response::set_allocated_time_response_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_response_sent_);
+  }
+  if (time_response_sent) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_response_sent));
+    if (message_arena != submessage_arena) {
+      time_response_sent = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_response_sent, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_response_sent_ = time_response_sent;
+  // @@protoc_insertion_point(field_set_allocated:muas.SensorCtrl_GetSensorInfo_Response.time_response_sent)
+}
+
+// .muas.NDNSF_Response response = 3;
 inline bool SensorCtrl_GetSensorInfo_Response::_internal_has_response() const {
   return this != internal_default_instance() && _impl_.response_ != nullptr;
 }
@@ -14345,7 +16593,7 @@ inline void SensorCtrl_GetSensorInfo_Response::set_allocated_response(::muas::ND
   // @@protoc_insertion_point(field_set_allocated:muas.SensorCtrl_GetSensorInfo_Response.response)
 }
 
-// repeated .muas.Sensor sensors = 2;
+// repeated .muas.Sensor sensors = 4;
 inline int SensorCtrl_GetSensorInfo_Response::_internal_sensors_size() const {
   return _impl_.sensors_.size();
 }
@@ -14389,11 +16637,266 @@ SensorCtrl_GetSensorInfo_Response::sensors() const {
 
 // SensorCtrl_CaptureSingle_Request
 
+// .google.protobuf.Timestamp time_request_sent = 1;
+inline bool SensorCtrl_CaptureSingle_Request::_internal_has_time_request_sent() const {
+  return this != internal_default_instance() && _impl_.time_request_sent_ != nullptr;
+}
+inline bool SensorCtrl_CaptureSingle_Request::has_time_request_sent() const {
+  return _internal_has_time_request_sent();
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& SensorCtrl_CaptureSingle_Request::_internal_time_request_sent() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_request_sent_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& SensorCtrl_CaptureSingle_Request::time_request_sent() const {
+  // @@protoc_insertion_point(field_get:muas.SensorCtrl_CaptureSingle_Request.time_request_sent)
+  return _internal_time_request_sent();
+}
+inline void SensorCtrl_CaptureSingle_Request::unsafe_arena_set_allocated_time_request_sent(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_sent_);
+  }
+  _impl_.time_request_sent_ = time_request_sent;
+  if (time_request_sent) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.SensorCtrl_CaptureSingle_Request.time_request_sent)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_CaptureSingle_Request::release_time_request_sent() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_sent_;
+  _impl_.time_request_sent_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_CaptureSingle_Request::unsafe_arena_release_time_request_sent() {
+  // @@protoc_insertion_point(field_release:muas.SensorCtrl_CaptureSingle_Request.time_request_sent)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_sent_;
+  _impl_.time_request_sent_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_CaptureSingle_Request::_internal_mutable_time_request_sent() {
+  
+  if (_impl_.time_request_sent_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_request_sent_ = p;
+  }
+  return _impl_.time_request_sent_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_CaptureSingle_Request::mutable_time_request_sent() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_request_sent();
+  // @@protoc_insertion_point(field_mutable:muas.SensorCtrl_CaptureSingle_Request.time_request_sent)
+  return _msg;
+}
+inline void SensorCtrl_CaptureSingle_Request::set_allocated_time_request_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_sent) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_sent_);
+  }
+  if (time_request_sent) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_request_sent));
+    if (message_arena != submessage_arena) {
+      time_request_sent = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_request_sent, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_request_sent_ = time_request_sent;
+  // @@protoc_insertion_point(field_set_allocated:muas.SensorCtrl_CaptureSingle_Request.time_request_sent)
+}
+
 // -------------------------------------------------------------------
 
 // SensorCtrl_CaptureSingle_Response
 
-// .muas.NDNSF_Response response = 1;
+// .google.protobuf.Timestamp time_request_received = 1;
+inline bool SensorCtrl_CaptureSingle_Response::_internal_has_time_request_received() const {
+  return this != internal_default_instance() && _impl_.time_request_received_ != nullptr;
+}
+inline bool SensorCtrl_CaptureSingle_Response::has_time_request_received() const {
+  return _internal_has_time_request_received();
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& SensorCtrl_CaptureSingle_Response::_internal_time_request_received() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_request_received_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& SensorCtrl_CaptureSingle_Response::time_request_received() const {
+  // @@protoc_insertion_point(field_get:muas.SensorCtrl_CaptureSingle_Response.time_request_received)
+  return _internal_time_request_received();
+}
+inline void SensorCtrl_CaptureSingle_Response::unsafe_arena_set_allocated_time_request_received(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_received_);
+  }
+  _impl_.time_request_received_ = time_request_received;
+  if (time_request_received) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.SensorCtrl_CaptureSingle_Response.time_request_received)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_CaptureSingle_Response::release_time_request_received() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_received_;
+  _impl_.time_request_received_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_CaptureSingle_Response::unsafe_arena_release_time_request_received() {
+  // @@protoc_insertion_point(field_release:muas.SensorCtrl_CaptureSingle_Response.time_request_received)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_request_received_;
+  _impl_.time_request_received_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_CaptureSingle_Response::_internal_mutable_time_request_received() {
+  
+  if (_impl_.time_request_received_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_request_received_ = p;
+  }
+  return _impl_.time_request_received_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_CaptureSingle_Response::mutable_time_request_received() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_request_received();
+  // @@protoc_insertion_point(field_mutable:muas.SensorCtrl_CaptureSingle_Response.time_request_received)
+  return _msg;
+}
+inline void SensorCtrl_CaptureSingle_Response::set_allocated_time_request_received(::PROTOBUF_NAMESPACE_ID::Timestamp* time_request_received) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_request_received_);
+  }
+  if (time_request_received) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_request_received));
+    if (message_arena != submessage_arena) {
+      time_request_received = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_request_received, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_request_received_ = time_request_received;
+  // @@protoc_insertion_point(field_set_allocated:muas.SensorCtrl_CaptureSingle_Response.time_request_received)
+}
+
+// .google.protobuf.Timestamp time_response_sent = 2;
+inline bool SensorCtrl_CaptureSingle_Response::_internal_has_time_response_sent() const {
+  return this != internal_default_instance() && _impl_.time_response_sent_ != nullptr;
+}
+inline bool SensorCtrl_CaptureSingle_Response::has_time_response_sent() const {
+  return _internal_has_time_response_sent();
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& SensorCtrl_CaptureSingle_Response::_internal_time_response_sent() const {
+  const ::PROTOBUF_NAMESPACE_ID::Timestamp* p = _impl_.time_response_sent_;
+  return p != nullptr ? *p : reinterpret_cast<const ::PROTOBUF_NAMESPACE_ID::Timestamp&>(
+      ::PROTOBUF_NAMESPACE_ID::_Timestamp_default_instance_);
+}
+inline const ::PROTOBUF_NAMESPACE_ID::Timestamp& SensorCtrl_CaptureSingle_Response::time_response_sent() const {
+  // @@protoc_insertion_point(field_get:muas.SensorCtrl_CaptureSingle_Response.time_response_sent)
+  return _internal_time_response_sent();
+}
+inline void SensorCtrl_CaptureSingle_Response::unsafe_arena_set_allocated_time_response_sent(
+    ::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent) {
+  if (GetArenaForAllocation() == nullptr) {
+    delete reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_response_sent_);
+  }
+  _impl_.time_response_sent_ = time_response_sent;
+  if (time_response_sent) {
+    
+  } else {
+    
+  }
+  // @@protoc_insertion_point(field_unsafe_arena_set_allocated:muas.SensorCtrl_CaptureSingle_Response.time_response_sent)
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_CaptureSingle_Response::release_time_response_sent() {
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_response_sent_;
+  _impl_.time_response_sent_ = nullptr;
+#ifdef PROTOBUF_FORCE_COPY_IN_RELEASE
+  auto* old =  reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(temp);
+  temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  if (GetArenaForAllocation() == nullptr) { delete old; }
+#else  // PROTOBUF_FORCE_COPY_IN_RELEASE
+  if (GetArenaForAllocation() != nullptr) {
+    temp = ::PROTOBUF_NAMESPACE_ID::internal::DuplicateIfNonNull(temp);
+  }
+#endif  // !PROTOBUF_FORCE_COPY_IN_RELEASE
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_CaptureSingle_Response::unsafe_arena_release_time_response_sent() {
+  // @@protoc_insertion_point(field_release:muas.SensorCtrl_CaptureSingle_Response.time_response_sent)
+  
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* temp = _impl_.time_response_sent_;
+  _impl_.time_response_sent_ = nullptr;
+  return temp;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_CaptureSingle_Response::_internal_mutable_time_response_sent() {
+  
+  if (_impl_.time_response_sent_ == nullptr) {
+    auto* p = CreateMaybeMessage<::PROTOBUF_NAMESPACE_ID::Timestamp>(GetArenaForAllocation());
+    _impl_.time_response_sent_ = p;
+  }
+  return _impl_.time_response_sent_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::Timestamp* SensorCtrl_CaptureSingle_Response::mutable_time_response_sent() {
+  ::PROTOBUF_NAMESPACE_ID::Timestamp* _msg = _internal_mutable_time_response_sent();
+  // @@protoc_insertion_point(field_mutable:muas.SensorCtrl_CaptureSingle_Response.time_response_sent)
+  return _msg;
+}
+inline void SensorCtrl_CaptureSingle_Response::set_allocated_time_response_sent(::PROTOBUF_NAMESPACE_ID::Timestamp* time_response_sent) {
+  ::PROTOBUF_NAMESPACE_ID::Arena* message_arena = GetArenaForAllocation();
+  if (message_arena == nullptr) {
+    delete reinterpret_cast< ::PROTOBUF_NAMESPACE_ID::MessageLite*>(_impl_.time_response_sent_);
+  }
+  if (time_response_sent) {
+    ::PROTOBUF_NAMESPACE_ID::Arena* submessage_arena =
+        ::PROTOBUF_NAMESPACE_ID::Arena::InternalGetOwningArena(
+                reinterpret_cast<::PROTOBUF_NAMESPACE_ID::MessageLite*>(time_response_sent));
+    if (message_arena != submessage_arena) {
+      time_response_sent = ::PROTOBUF_NAMESPACE_ID::internal::GetOwnedMessage(
+          message_arena, time_response_sent, submessage_arena);
+    }
+    
+  } else {
+    
+  }
+  _impl_.time_response_sent_ = time_response_sent;
+  // @@protoc_insertion_point(field_set_allocated:muas.SensorCtrl_CaptureSingle_Response.time_response_sent)
+}
+
+// .muas.NDNSF_Response response = 3;
 inline bool SensorCtrl_CaptureSingle_Response::_internal_has_response() const {
   return this != internal_default_instance() && _impl_.response_ != nullptr;
 }
@@ -14483,7 +16986,7 @@ inline void SensorCtrl_CaptureSingle_Response::set_allocated_response(::muas::ND
   // @@protoc_insertion_point(field_set_allocated:muas.SensorCtrl_CaptureSingle_Response.response)
 }
 
-// string capture_id = 2;
+// string capture_id = 4;
 inline void SensorCtrl_CaptureSingle_Response::clear_capture_id() {
   _impl_.capture_id_.ClearToEmpty();
 }
