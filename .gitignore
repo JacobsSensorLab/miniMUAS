@@ -1,7 +1,8 @@
 result
 result/
 .vscode
-build/
 build_manual/
+compile_commands.json/
 .cache/
-compile_commands.json
+CMakeFiles/
+build/
