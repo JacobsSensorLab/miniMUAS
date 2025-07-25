@@ -73,7 +73,7 @@ int main(int argc, char **argv)
     std::vector<ndn::Name> iuas_providers = { ndn::Name("/muas/iuas-01") };
     std::vector<ndn::Name> uas_providers = { ndn::Name("/muas/iuas-01"), ndn::Name("/muas/wuas-01") };
 
-    m_face.processEvents(ndn::time::milliseconds(10000));
+    m_face.processEvents(ndn::time::milliseconds(1000));
 
     auto wuas_takeoff_call = [&]() {
         struct timeval tv;
