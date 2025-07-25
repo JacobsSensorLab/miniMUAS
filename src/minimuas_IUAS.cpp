@@ -1,6 +1,6 @@
 #include <iostream>
-#include <sstream>
 #include <string>
+#include <sys/time.h>
 
 #include "./generated/messages.pb.h"
 #include <ndn-service-framework/common.hpp>
@@ -126,13 +126,38 @@ main(int argc, char **argv)
     );
 
     m_serviceProvider.m_FlightCtrlService.Takeoff_Handler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Takeoff_Request& _request, muas::FlightCtrl_Takeoff_Response& _response){
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+
+        google::protobuf::Timestamp time_req_recv;
+        time_req_recv.set_seconds(tv.tv_sec);
+        time_req_recv.set_nanos(tv.tv_usec * 1000);
+
+        auto time_req_sent = _request.time_request_sent();
+
+        auto req_latency_sec = time_req_recv.seconds() - time_req_sent.seconds();
+        auto req_latency_nanos = time_req_recv.nanos() - time_req_sent.nanos();
+        auto req_latency_ms = req_latency_sec*1000 + (req_latency_nanos/100000);
+
         NDN_LOG_INFO("Takeoff request received");
         auto action = mavsdk::Action{system};
+
+        NDN_LOG_INFO("Takeoff request latency: " << req_latency_ms << " ms");
 
         if (m_telemetry.gps_info().num_satellites < 5) {
             NDN_LOG_INFO("Takeoff request denied: need more than 5 satellites (" << m_telemetry.gps_info().num_satellites << ")");
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Not enough satellites");
+
+            gettimeofday(&tv, NULL);
+
+            google::protobuf::Timestamp time_res_sent;
+            time_res_sent.set_seconds(tv.tv_sec);
+            time_res_sent.set_nanos(tv.tv_usec * 1000);
+
+            _response.set_allocated_time_request_received(&time_req_recv);
+            _response.set_allocated_time_response_sent(&time_res_sent);
+
             return;
         }
 
@@ -140,6 +165,16 @@ main(int argc, char **argv)
             NDN_LOG_INFO("Takeoff request denied: Already in the air!");
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("UAS has already taken off");
+
+            gettimeofday(&tv, NULL);
+
+            google::protobuf::Timestamp time_res_sent;
+            time_res_sent.set_seconds(tv.tv_sec);
+            time_res_sent.set_nanos(tv.tv_usec * 1000);
+
+            _response.set_allocated_time_request_received(&time_req_recv);
+            _response.set_allocated_time_response_sent(&time_res_sent);
+
             return;
         }
 
@@ -149,6 +184,16 @@ main(int argc, char **argv)
                 NDN_LOG_INFO("Arming failed: " << arm_result);
                 _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
                 _response.mutable_response()->set_msg("Arming failed");
+
+                gettimeofday(&tv, NULL);
+
+            google::protobuf::Timestamp time_res_sent;
+            time_res_sent.set_seconds(tv.tv_sec);
+            time_res_sent.set_nanos(tv.tv_usec * 1000);
+
+            _response.set_allocated_time_request_received(&time_req_recv);
+            _response.set_allocated_time_response_sent(&time_res_sent);
+
                 return;
             }
             NDN_LOG_INFO("Armed");
@@ -159,21 +204,65 @@ main(int argc, char **argv)
             NDN_LOG_INFO("Takeoff failed: " << takeoff_result);
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Takeoff failed");
+
+            gettimeofday(&tv, NULL);
+
+            google::protobuf::Timestamp time_res_sent;
+            time_res_sent.set_seconds(tv.tv_sec);
+            time_res_sent.set_nanos(tv.tv_usec * 1000);
+
+            _response.set_allocated_time_request_received(&time_req_recv);
+            _response.set_allocated_time_response_sent(&time_res_sent);
+
             return;
         }
         
         _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_SUCCESS);
         _response.mutable_response()->set_msg("Taking off");
+        
+        gettimeofday(&tv, NULL);
+
+        google::protobuf::Timestamp time_res_sent;
+        time_res_sent.set_seconds(tv.tv_sec);
+        time_res_sent.set_nanos(tv.tv_usec * 1000);
+
+        _response.set_allocated_time_request_received(&time_req_recv);
+        _response.set_allocated_time_response_sent(&time_res_sent);
     };
 
     m_serviceProvider.m_FlightCtrlService.Land_Handler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Land_Request& _request, muas::FlightCtrl_Land_Response& _response){
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+
+        google::protobuf::Timestamp time_req_recv;
+        time_req_recv.set_seconds(tv.tv_sec);
+        time_req_recv.set_nanos(tv.tv_usec * 1000);
+
+        auto time_req_sent = _request.time_request_sent();
+
+        auto req_latency_sec = time_req_recv.seconds() - time_req_sent.seconds();
+        auto req_latency_nanos = time_req_recv.nanos() - time_req_sent.nanos();
+        auto req_latency_ms = req_latency_sec*1000 + (req_latency_nanos/100000);
+
         NDN_LOG_INFO("Land request received");
         auto action = mavsdk::Action{system};
 
+        NDN_LOG_INFO("Land request latency: " << req_latency_ms << " ms");
+        
         if (!m_telemetry.in_air()) {
             NDN_LOG_INFO("Land request denied: Already grounded!");
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Already grounded");
+
+            gettimeofday(&tv, NULL);
+
+            google::protobuf::Timestamp time_res_sent;
+            time_res_sent.set_seconds(tv.tv_sec);
+            time_res_sent.set_nanos(tv.tv_usec * 1000);
+
+            _response.set_allocated_time_request_received(&time_req_recv);
+            _response.set_allocated_time_response_sent(&time_res_sent);
+
             return;
         }
 
@@ -182,21 +271,65 @@ main(int argc, char **argv)
             NDN_LOG_INFO("Landing failed: " << land_result);
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Landing failed");
+
+            gettimeofday(&tv, NULL);
+
+            google::protobuf::Timestamp time_res_sent;
+            time_res_sent.set_seconds(tv.tv_sec);
+            time_res_sent.set_nanos(tv.tv_usec * 1000);
+
+            _response.set_allocated_time_request_received(&time_req_recv);
+            _response.set_allocated_time_response_sent(&time_res_sent);
+
             return;
         }
 
         _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_SUCCESS);
         _response.mutable_response()->set_msg("Landing");
+
+        gettimeofday(&tv, NULL);
+
+        google::protobuf::Timestamp time_res_sent;
+        time_res_sent.set_seconds(tv.tv_sec);
+        time_res_sent.set_nanos(tv.tv_usec * 1000);
+
+        _response.set_allocated_time_request_received(&time_req_recv);
+        _response.set_allocated_time_response_sent(&time_res_sent);
     };
 
     m_serviceProvider.m_FlightCtrlService.RTL_Handler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_RTL_Request& _request, muas::FlightCtrl_RTL_Response& _response){
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+
+        google::protobuf::Timestamp time_req_recv;
+        time_req_recv.set_seconds(tv.tv_sec);
+        time_req_recv.set_nanos(tv.tv_usec * 1000);
+
+        auto time_req_sent = _request.time_request_sent();
+
+        auto req_latency_sec = time_req_recv.seconds() - time_req_sent.seconds();
+        auto req_latency_nanos = time_req_recv.nanos() - time_req_sent.nanos();
+        auto req_latency_ms = req_latency_sec*1000 + (req_latency_nanos/100000);
+
         NDN_LOG_INFO("RTL request received");
         auto action = mavsdk::Action{system};
+
+        NDN_LOG_INFO("RTL request latency: " << req_latency_ms << " ms");
 
         if (!m_telemetry.in_air()) {
             NDN_LOG_INFO("RTL request denied: Already grounded!");
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Already grounded");
+
+            gettimeofday(&tv, NULL);
+
+            google::protobuf::Timestamp time_res_sent;
+            time_res_sent.set_seconds(tv.tv_sec);
+            time_res_sent.set_nanos(tv.tv_usec * 1000);
+
+            _response.set_allocated_time_request_received(&time_req_recv);
+            _response.set_allocated_time_response_sent(&time_res_sent);
+
             return;
         }
 
@@ -205,37 +338,115 @@ main(int argc, char **argv)
             NDN_LOG_INFO("RTL failed: " << rtl_result);
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("RTL failed");
+
+            gettimeofday(&tv, NULL);
+
+            google::protobuf::Timestamp time_res_sent;
+            time_res_sent.set_seconds(tv.tv_sec);
+            time_res_sent.set_nanos(tv.tv_usec * 1000);
+
+            _response.set_allocated_time_request_received(&time_req_recv);
+            _response.set_allocated_time_response_sent(&time_res_sent);
+
             return;
         }
 
         _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_SUCCESS);
         _response.mutable_response()->set_msg("Initiating RTL");
+
+        gettimeofday(&tv, NULL);
+
+        google::protobuf::Timestamp time_res_sent;
+        time_res_sent.set_seconds(tv.tv_sec);
+        time_res_sent.set_nanos(tv.tv_usec * 1000);
+
+        _response.set_allocated_time_request_received(&time_req_recv);
+        _response.set_allocated_time_response_sent(&time_res_sent);
     };
 
     m_serviceProvider.m_FlightCtrlService.Kill_Handler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Kill_Request& _request, muas::FlightCtrl_Kill_Response& _response){
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+
+        google::protobuf::Timestamp time_req_recv;
+        time_req_recv.set_seconds(tv.tv_sec);
+        time_req_recv.set_nanos(tv.tv_usec * 1000);
+
+        auto time_req_sent = _request.time_request_sent();
+
+        auto req_latency_sec = time_req_recv.seconds() - time_req_sent.seconds();
+        auto req_latency_nanos = time_req_recv.nanos() - time_req_sent.nanos();
+        auto req_latency_ms = req_latency_sec*1000 + (req_latency_nanos/100000);
+
         NDN_LOG_INFO("Kill request received");
         auto action = mavsdk::Action{system};
+
+        NDN_LOG_INFO("Kill request latency: " << req_latency_ms << " ms");
 
         const mavsdk::Action::Result kill_result = action.kill();
         if (kill_result != mavsdk::Action::Result::Success) {
             NDN_LOG_INFO("Kill command failed: " << kill_result);
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Kill command failed");
+
+            gettimeofday(&tv, NULL);
+
+            google::protobuf::Timestamp time_res_sent;
+            time_res_sent.set_seconds(tv.tv_sec);
+            time_res_sent.set_nanos(tv.tv_usec * 1000);
+
+            _response.set_allocated_time_request_received(&time_req_recv);
+            _response.set_allocated_time_response_sent(&time_res_sent);
+
             return;
         }
 
         _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_SUCCESS);
         _response.mutable_response()->set_msg("Killed");
+
+        gettimeofday(&tv, NULL);
+
+        google::protobuf::Timestamp time_res_sent;
+        time_res_sent.set_seconds(tv.tv_sec);
+        time_res_sent.set_nanos(tv.tv_usec * 1000);
+
+        _response.set_allocated_time_request_received(&time_req_recv);
+        _response.set_allocated_time_response_sent(&time_res_sent);
     };
 
     m_serviceProvider.m_IUASService.PointOrbit_Handler = [&](const ndn::Name& requesterIdentity, const muas::IUAS_PointOrbit_Request& _request, muas::IUAS_PointOrbit_Response& _response){
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+
+        google::protobuf::Timestamp time_req_recv;
+        time_req_recv.set_seconds(tv.tv_sec);
+        time_req_recv.set_nanos(tv.tv_usec * 1000);
+
+        auto time_req_sent = _request.time_request_sent();
+
+        auto req_latency_sec = time_req_recv.seconds() - time_req_sent.seconds();
+        auto req_latency_nanos = time_req_recv.nanos() - time_req_sent.nanos();
+        auto req_latency_ms = req_latency_sec*1000 + (req_latency_nanos/100000);
+
         NDN_LOG_INFO("PointOrbit request received");
         auto action = mavsdk::Action{system};
+
+        NDN_LOG_INFO("PointOrbit request latency: " << req_latency_ms << " ms");
 
         if (!m_telemetry.in_air()) {
             NDN_LOG_INFO("PointOrbit request denied: IUAS has not taken off");
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("IUAS has not taken off");
+
+            gettimeofday(&tv, NULL);
+
+            google::protobuf::Timestamp time_res_sent;
+            time_res_sent.set_seconds(tv.tv_sec);
+            time_res_sent.set_nanos(tv.tv_usec * 1000);
+
+            _response.set_allocated_time_request_received(&time_req_recv);
+            _response.set_allocated_time_response_sent(&time_res_sent);
+
             return;
         }
 
@@ -259,16 +470,50 @@ main(int argc, char **argv)
             NDN_LOG_INFO("PointOrbit request failed: " << orbit_result);
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Orbit failed");
+
+            gettimeofday(&tv, NULL);
+
+            google::protobuf::Timestamp time_res_sent;
+            time_res_sent.set_seconds(tv.tv_sec);
+            time_res_sent.set_nanos(tv.tv_usec * 1000);
+
+            _response.set_allocated_time_request_received(&time_req_recv);
+            _response.set_allocated_time_response_sent(&time_res_sent);
+
             return;
         }
         
         _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_SUCCESS);
         _response.mutable_response()->set_msg("Beginning orbit routine at target position");
+
+        gettimeofday(&tv, NULL);
+
+        google::protobuf::Timestamp time_res_sent;
+        time_res_sent.set_seconds(tv.tv_sec);
+        time_res_sent.set_nanos(tv.tv_usec * 1000);
+
+        _response.set_allocated_time_request_received(&time_req_recv);
+        _response.set_allocated_time_response_sent(&time_res_sent);
     };
 
     m_serviceProvider.m_SensorService.GetSensorInfo_Handler = [&, sensor](const ndn::Name& requesterIdentity, const muas::SensorCtrl_GetSensorInfo_Request& _request, muas::SensorCtrl_GetSensorInfo_Response& _response){
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+
+        google::protobuf::Timestamp time_req_recv;
+        time_req_recv.set_seconds(tv.tv_sec);
+        time_req_recv.set_nanos(tv.tv_usec * 1000);
+
+        auto time_req_sent = _request.time_request_sent();
+
+        auto req_latency_sec = time_req_recv.seconds() - time_req_sent.seconds();
+        auto req_latency_nanos = time_req_recv.nanos() - time_req_sent.nanos();
+        auto req_latency_ms = req_latency_sec*1000 + (req_latency_nanos/100000);
+        
         NDN_LOG_INFO("SensorInfo request received");
         auto action = mavsdk::Action{system};
+
+        NDN_LOG_INFO("SensorInfo request latency: " << req_latency_ms << " ms");
 
         muas::Sensor* s = _response.add_sensors();
         s->set_name(sensor.name());
@@ -278,11 +523,35 @@ main(int argc, char **argv)
 
         _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_SUCCESS);
         _response.mutable_response()->set_msg("Sensor info request satisfied.");
+
+        gettimeofday(&tv, NULL);
+
+        google::protobuf::Timestamp time_res_sent;
+        time_res_sent.set_seconds(tv.tv_sec);
+        time_res_sent.set_nanos(tv.tv_usec * 1000);
+
+        _response.set_allocated_time_request_received(&time_req_recv);
+        _response.set_allocated_time_response_sent(&time_res_sent);
     };
 
     m_serviceProvider.m_SensorService.CaptureSingle_Handler = [&](const ndn::Name& requesterIdentity, const muas::SensorCtrl_CaptureSingle_Request& _request, muas::SensorCtrl_CaptureSingle_Response& _response){
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+
+        google::protobuf::Timestamp time_req_recv;
+        time_req_recv.set_seconds(tv.tv_sec);
+        time_req_recv.set_nanos(tv.tv_usec * 1000);
+
+        auto time_req_sent = _request.time_request_sent();
+
+        auto req_latency_sec = time_req_recv.seconds() - time_req_sent.seconds();
+        auto req_latency_nanos = time_req_recv.nanos() - time_req_sent.nanos();
+        auto req_latency_ms = req_latency_sec*1000 + (req_latency_nanos/100000);
+        
         NDN_LOG_INFO("CaptureSingle request received");
         auto action = mavsdk::Action{system};
+
+        NDN_LOG_INFO("CaptureSingle request latency: " << req_latency_ms << " ms");
 
         int cam_idx = 0;
         std::string cap_dev = "v4l2:///dev/video";
@@ -297,6 +566,15 @@ main(int argc, char **argv)
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Camera failed to initialize");
             _response.set_capture_id(std::to_string(-1));
+
+            gettimeofday(&tv, NULL);
+
+            google::protobuf::Timestamp time_res_sent;
+            time_res_sent.set_seconds(tv.tv_sec);
+            time_res_sent.set_nanos(tv.tv_usec * 1000);
+
+            _response.set_allocated_time_request_received(&time_req_recv);
+            _response.set_allocated_time_response_sent(&time_res_sent);
         }
         else
         {
@@ -318,7 +596,44 @@ main(int argc, char **argv)
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_SUCCESS);
             _response.mutable_response()->set_msg(msg);
             _response.set_capture_id(std::to_string(next_num));
+
+            gettimeofday(&tv, NULL);
+
+            google::protobuf::Timestamp time_res_sent;
+            time_res_sent.set_seconds(tv.tv_sec);
+            time_res_sent.set_nanos(tv.tv_usec * 1000);
+
+            _response.set_allocated_time_request_received(&time_req_recv);
+            _response.set_allocated_time_response_sent(&time_res_sent);
         }
+    };
+
+    m_serviceProvider.m_EntityService.Echo_Handler = [&](const ndn::Name& requesterIdentity, const muas::Entity_Echo_Request& _request, muas::Entity_Echo_Response& _response){
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+
+        google::protobuf::Timestamp time_req_recv;
+        time_req_recv.set_seconds(tv.tv_sec);
+        time_req_recv.set_nanos(tv.tv_usec * 1000);
+
+        auto time_req_sent = _request.time_request_sent();
+
+        auto req_latency_sec = time_req_recv.seconds() - time_req_sent.seconds();
+        auto req_latency_nanos = time_req_recv.nanos() - time_req_sent.nanos();
+        auto req_latency_ms = req_latency_sec*1000 + (req_latency_nanos/100000);
+
+        NDN_LOG_INFO("Echo request received");
+
+        NDN_LOG_INFO("Echo request latency: " << req_latency_ms << " ms");
+
+        gettimeofday(&tv, NULL);
+
+        google::protobuf::Timestamp time_res_sent;
+        time_res_sent.set_seconds(tv.tv_sec);
+        time_res_sent.set_nanos(tv.tv_usec * 1000);
+
+        _response.set_allocated_time_request_received(&time_req_recv);
+        _response.set_allocated_time_response_sent(&time_res_sent);
     };
 
     NDN_LOG_INFO("IUAS running");
