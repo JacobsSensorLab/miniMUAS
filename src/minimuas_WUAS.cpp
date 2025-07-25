@@ -103,11 +103,10 @@ main(int argc, char **argv)
         providers.push_back(ndn::Name("/muas/iuas-01"));
         muas::FlightCtrl_Takeoff_Request takeoff_request;
 
+        google::protobuf::Timestamp* time_req_sent = takeoff_request.mutable_time_request_sent();
         gettimeofday(&tv, NULL);
-        google::protobuf::Timestamp time_req_sent;
-        time_req_sent.set_seconds(tv.tv_sec);
-        time_req_sent.set_nanos(tv.tv_usec * 1000);
-        takeoff_request.set_allocated_time_request_sent(&time_req_sent);
+        time_req_sent->set_seconds(tv.tv_sec);
+        time_req_sent->set_nanos(tv.tv_usec * 1000);
 
         auto takeoff_start = takeoff_metric.start();
         m_serviceUser.Takeoff_Async(providers, takeoff_request, [&, takeoff_start](const muas::FlightCtrl_Takeoff_Response& _response) {
@@ -123,8 +122,8 @@ main(int argc, char **argv)
             auto time_req_recv = _response.time_request_received();
             auto time_res_sent = _response.time_response_sent();
 
-            auto req_latency_sec = time_req_recv.seconds() - time_req_sent.seconds();
-            auto req_latency_nanos = time_req_recv.nanos() - time_req_sent.nanos();
+            auto req_latency_sec = time_req_recv.seconds() - time_req_sent->seconds();
+            auto req_latency_nanos = time_req_recv.nanos() - time_req_sent->nanos();
             auto req_latency_ms = req_latency_sec*1000 + (req_latency_nanos/100000);
 
             auto res_latency_sec = time_res_recv.seconds() - time_res_sent.seconds();
@@ -151,11 +150,10 @@ main(int argc, char **argv)
         point.set_latitude(35.120881);
         point.set_longitude(-89.934772);
 
+        google::protobuf::Timestamp* time_req_sent = orbit_request.mutable_time_request_sent();
         gettimeofday(&tv, NULL);
-        google::protobuf::Timestamp time_req_sent;
-        time_req_sent.set_seconds(tv.tv_sec);
-        time_req_sent.set_nanos(tv.tv_usec * 1000);
-        orbit_request.set_allocated_time_request_sent(&time_req_sent);
+        time_req_sent->set_seconds(tv.tv_sec);
+        time_req_sent->set_nanos(tv.tv_usec * 1000);
         
         auto orbit_start = orbit_metric.start();
         m_serviceUser.PointOrbit_Async(providers, orbit_request, [&, orbit_start](const muas::IUAS_PointOrbit_Response& _response) {
@@ -171,8 +169,8 @@ main(int argc, char **argv)
             auto time_req_recv = _response.time_request_received();
             auto time_res_sent = _response.time_response_sent();
 
-            auto req_latency_sec = time_req_recv.seconds() - time_req_sent.seconds();
-            auto req_latency_nanos = time_req_recv.nanos() - time_req_sent.nanos();
+            auto req_latency_sec = time_req_recv.seconds() - time_req_sent->seconds();
+            auto req_latency_nanos = time_req_recv.nanos() - time_req_sent->nanos();
             auto req_latency_ms = req_latency_sec*1000 + (req_latency_nanos/100000);
 
             auto res_latency_sec = time_res_recv.seconds() - time_res_sent.seconds();
@@ -230,8 +228,10 @@ main(int argc, char **argv)
             time_res_sent.set_seconds(tv.tv_sec);
             time_res_sent.set_nanos(tv.tv_usec * 1000);
 
-            _response.set_allocated_time_request_received(&time_req_recv);
-            _response.set_allocated_time_response_sent(&time_res_sent);
+            _response.mutable_time_request_received()->set_seconds(time_req_recv.seconds());
+            _response.mutable_time_request_received()->set_nanos(time_req_recv.nanos());
+            _response.mutable_time_response_sent()->set_seconds(time_res_sent.seconds());
+            _response.mutable_time_response_sent()->set_nanos(time_res_sent.nanos());
 
             return;
         }
@@ -247,8 +247,10 @@ main(int argc, char **argv)
             time_res_sent.set_seconds(tv.tv_sec);
             time_res_sent.set_nanos(tv.tv_usec * 1000);
 
-            _response.set_allocated_time_request_received(&time_req_recv);
-            _response.set_allocated_time_response_sent(&time_res_sent);
+            _response.mutable_time_request_received()->set_seconds(time_req_recv.seconds());
+            _response.mutable_time_request_received()->set_nanos(time_req_recv.nanos());
+            _response.mutable_time_response_sent()->set_seconds(time_res_sent.seconds());
+            _response.mutable_time_response_sent()->set_nanos(time_res_sent.nanos());
 
             return;
         }
@@ -266,8 +268,10 @@ main(int argc, char **argv)
                 time_res_sent.set_seconds(tv.tv_sec);
                 time_res_sent.set_nanos(tv.tv_usec * 1000);
 
-                _response.set_allocated_time_request_received(&time_req_recv);
-                _response.set_allocated_time_response_sent(&time_res_sent);
+                _response.mutable_time_request_received()->set_seconds(time_req_recv.seconds());
+                _response.mutable_time_request_received()->set_nanos(time_req_recv.nanos());
+                _response.mutable_time_response_sent()->set_seconds(time_res_sent.seconds());
+                _response.mutable_time_response_sent()->set_nanos(time_res_sent.nanos());
 
                 return;
             }
@@ -286,8 +290,10 @@ main(int argc, char **argv)
             time_res_sent.set_seconds(tv.tv_sec);
             time_res_sent.set_nanos(tv.tv_usec * 1000);
 
-            _response.set_allocated_time_request_received(&time_req_recv);
-            _response.set_allocated_time_response_sent(&time_res_sent);
+            _response.mutable_time_request_received()->set_seconds(time_req_recv.seconds());
+            _response.mutable_time_request_received()->set_nanos(time_req_recv.nanos());
+            _response.mutable_time_response_sent()->set_seconds(time_res_sent.seconds());
+            _response.mutable_time_response_sent()->set_nanos(time_res_sent.nanos());
 
             return;
         }
@@ -301,8 +307,10 @@ main(int argc, char **argv)
         time_res_sent.set_seconds(tv.tv_sec);
         time_res_sent.set_nanos(tv.tv_usec * 1000);
 
-        _response.set_allocated_time_request_received(&time_req_recv);
-        _response.set_allocated_time_response_sent(&time_res_sent);
+        _response.mutable_time_request_received()->set_seconds(time_req_recv.seconds());
+        _response.mutable_time_request_received()->set_nanos(time_req_recv.nanos());
+        _response.mutable_time_response_sent()->set_seconds(time_res_sent.seconds());
+        _response.mutable_time_response_sent()->set_nanos(time_res_sent.nanos());
     };
 
     m_serviceProvider.m_FlightCtrlService.Land_Handler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Land_Request& _request, muas::FlightCtrl_Land_Response& _response){
@@ -335,8 +343,10 @@ main(int argc, char **argv)
             time_res_sent.set_seconds(tv.tv_sec);
             time_res_sent.set_nanos(tv.tv_usec * 1000);
 
-            _response.set_allocated_time_request_received(&time_req_recv);
-            _response.set_allocated_time_response_sent(&time_res_sent);
+            _response.mutable_time_request_received()->set_seconds(time_req_recv.seconds());
+            _response.mutable_time_request_received()->set_nanos(time_req_recv.nanos());
+            _response.mutable_time_response_sent()->set_seconds(time_res_sent.seconds());
+            _response.mutable_time_response_sent()->set_nanos(time_res_sent.nanos());
 
             return;
         }
@@ -353,8 +363,10 @@ main(int argc, char **argv)
             time_res_sent.set_seconds(tv.tv_sec);
             time_res_sent.set_nanos(tv.tv_usec * 1000);
 
-            _response.set_allocated_time_request_received(&time_req_recv);
-            _response.set_allocated_time_response_sent(&time_res_sent);
+            _response.mutable_time_request_received()->set_seconds(time_req_recv.seconds());
+            _response.mutable_time_request_received()->set_nanos(time_req_recv.nanos());
+            _response.mutable_time_response_sent()->set_seconds(time_res_sent.seconds());
+            _response.mutable_time_response_sent()->set_nanos(time_res_sent.nanos());
 
             return;
         }
@@ -368,8 +380,10 @@ main(int argc, char **argv)
         time_res_sent.set_seconds(tv.tv_sec);
         time_res_sent.set_nanos(tv.tv_usec * 1000);
 
-        _response.set_allocated_time_request_received(&time_req_recv);
-        _response.set_allocated_time_response_sent(&time_res_sent);
+        _response.mutable_time_request_received()->set_seconds(time_req_recv.seconds());
+        _response.mutable_time_request_received()->set_nanos(time_req_recv.nanos());
+        _response.mutable_time_response_sent()->set_seconds(time_res_sent.seconds());
+        _response.mutable_time_response_sent()->set_nanos(time_res_sent.nanos());
     };
 
     m_serviceProvider.m_FlightCtrlService.RTL_Handler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_RTL_Request& _request, muas::FlightCtrl_RTL_Response& _response){
@@ -402,8 +416,10 @@ main(int argc, char **argv)
             time_res_sent.set_seconds(tv.tv_sec);
             time_res_sent.set_nanos(tv.tv_usec * 1000);
 
-            _response.set_allocated_time_request_received(&time_req_recv);
-            _response.set_allocated_time_response_sent(&time_res_sent);
+            _response.mutable_time_request_received()->set_seconds(time_req_recv.seconds());
+            _response.mutable_time_request_received()->set_nanos(time_req_recv.nanos());
+            _response.mutable_time_response_sent()->set_seconds(time_res_sent.seconds());
+            _response.mutable_time_response_sent()->set_nanos(time_res_sent.nanos());
 
             return;
         }
@@ -420,8 +436,10 @@ main(int argc, char **argv)
             time_res_sent.set_seconds(tv.tv_sec);
             time_res_sent.set_nanos(tv.tv_usec * 1000);
 
-            _response.set_allocated_time_request_received(&time_req_recv);
-            _response.set_allocated_time_response_sent(&time_res_sent);
+            _response.mutable_time_request_received()->set_seconds(time_req_recv.seconds());
+            _response.mutable_time_request_received()->set_nanos(time_req_recv.nanos());
+            _response.mutable_time_response_sent()->set_seconds(time_res_sent.seconds());
+            _response.mutable_time_response_sent()->set_nanos(time_res_sent.nanos());
 
             return;
         }
@@ -435,8 +453,10 @@ main(int argc, char **argv)
         time_res_sent.set_seconds(tv.tv_sec);
         time_res_sent.set_nanos(tv.tv_usec * 1000);
 
-        _response.set_allocated_time_request_received(&time_req_recv);
-        _response.set_allocated_time_response_sent(&time_res_sent);
+        _response.mutable_time_request_received()->set_seconds(time_req_recv.seconds());
+        _response.mutable_time_request_received()->set_nanos(time_req_recv.nanos());
+        _response.mutable_time_response_sent()->set_seconds(time_res_sent.seconds());
+        _response.mutable_time_response_sent()->set_nanos(time_res_sent.nanos());
     };
 
     m_serviceProvider.m_FlightCtrlService.Kill_Handler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Kill_Request& _request, muas::FlightCtrl_Kill_Response& _response){
@@ -470,8 +490,10 @@ main(int argc, char **argv)
             time_res_sent.set_seconds(tv.tv_sec);
             time_res_sent.set_nanos(tv.tv_usec * 1000);
 
-            _response.set_allocated_time_request_received(&time_req_recv);
-            _response.set_allocated_time_response_sent(&time_res_sent);
+            _response.mutable_time_request_received()->set_seconds(time_req_recv.seconds());
+            _response.mutable_time_request_received()->set_nanos(time_req_recv.nanos());
+            _response.mutable_time_response_sent()->set_seconds(time_res_sent.seconds());
+            _response.mutable_time_response_sent()->set_nanos(time_res_sent.nanos());
 
             return;
         }
@@ -485,8 +507,10 @@ main(int argc, char **argv)
         time_res_sent.set_seconds(tv.tv_sec);
         time_res_sent.set_nanos(tv.tv_usec * 1000);
 
-        _response.set_allocated_time_request_received(&time_req_recv);
-        _response.set_allocated_time_response_sent(&time_res_sent);
+        _response.mutable_time_request_received()->set_seconds(time_req_recv.seconds());
+        _response.mutable_time_request_received()->set_nanos(time_req_recv.nanos());
+        _response.mutable_time_response_sent()->set_seconds(time_res_sent.seconds());
+        _response.mutable_time_response_sent()->set_nanos(time_res_sent.nanos());
     };
 
     m_serviceProvider.m_EntityService.Echo_Handler = [&](const ndn::Name& requesterIdentity, const muas::Entity_Echo_Request& _request, muas::Entity_Echo_Response& _response){
@@ -513,8 +537,10 @@ main(int argc, char **argv)
         time_res_sent.set_seconds(tv.tv_sec);
         time_res_sent.set_nanos(tv.tv_usec * 1000);
 
-        _response.set_allocated_time_request_received(&time_req_recv);
-        _response.set_allocated_time_response_sent(&time_res_sent);
+        _response.mutable_time_request_received()->set_seconds(time_req_recv.seconds());
+        _response.mutable_time_request_received()->set_nanos(time_req_recv.nanos());
+        _response.mutable_time_response_sent()->set_seconds(time_res_sent.seconds());
+        _response.mutable_time_response_sent()->set_nanos(time_res_sent.nanos());
     };
 
     NDN_LOG_INFO("WUAS running");
