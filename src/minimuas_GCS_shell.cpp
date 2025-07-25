@@ -81,13 +81,14 @@ int main(int argc, char **argv)
         std::cout << "Requesting takeoff from WUAS." << std::endl;
         muas::FlightCtrl_Takeoff_Request takeoff_request;
 
-        google::protobuf::Timestamp* time_req_sent = takeoff_request.mutable_time_request_sent();
+        google::protobuf::Timestamp time_req_sent;
         gettimeofday(&tv, NULL);
-        time_req_sent->set_seconds(tv.tv_sec);
-        time_req_sent->set_nanos(tv.tv_usec * 1000);
+        time_req_sent.set_seconds(tv.tv_sec);
+        time_req_sent.set_nanos(tv.tv_usec * 1000);
+        takeoff_request.mutable_time_request_sent()->CopyFrom(time_req_sent);
 
         m_serviceUser.Takeoff_Async(wuas_providers, takeoff_request,
-            [&, takeoff_start](const muas::FlightCtrl_Takeoff_Response& _response) {
+            [&, takeoff_start, time_req_sent](const muas::FlightCtrl_Takeoff_Response& _response) {
                 takeoff_metric.end(takeoff_start, true);
                 NDN_LOG_INFO(_response.DebugString());
 
@@ -100,13 +101,13 @@ int main(int argc, char **argv)
                 auto time_req_recv = _response.time_request_received();
                 auto time_res_sent = _response.time_response_sent();
 
-                auto req_latency_sec = time_req_recv.seconds() - time_req_sent->seconds();
-                auto req_latency_nanos = time_req_recv.nanos() - time_req_sent->nanos();
-                auto req_latency_ms = req_latency_sec*1000 + (req_latency_nanos/100000);
+                auto req_recv_ms = (time_req_recv.seconds()*1000) + (time_req_recv.nanos()/1000000);
+                auto req_sent_ms = (time_req_sent.seconds()*1000) + (time_req_sent.nanos()/1000000);
+                auto req_latency_ms = req_recv_ms - req_sent_ms;
 
-                auto res_latency_sec = time_res_recv.seconds() - time_res_sent.seconds();
-                auto res_latency_nanos = time_res_recv.nanos() - time_res_sent.nanos();
-                auto res_latency_ms = res_latency_sec*1000 + (res_latency_nanos/100000);
+                auto res_recv_ms = (time_res_recv.seconds()*1000) + (time_res_recv.nanos()/1000000);
+                auto res_sent_ms = (time_res_sent.seconds()*1000) + (time_res_sent.nanos()/1000000);
+                auto res_latency_ms = res_recv_ms - res_sent_ms;
 
                 NDN_LOG_INFO("Request latency: " << req_latency_ms << " ms / Response latency: " << res_latency_ms << " ms");
             },
@@ -120,13 +121,14 @@ int main(int argc, char **argv)
         std::cout << "Requesting takeoff from IUAS." << std::endl;
         muas::FlightCtrl_Takeoff_Request takeoff_request;
 
-        google::protobuf::Timestamp* time_req_sent = takeoff_request.mutable_time_request_sent();
+        google::protobuf::Timestamp time_req_sent;
         gettimeofday(&tv, NULL);
-        time_req_sent->set_seconds(tv.tv_sec);
-        time_req_sent->set_nanos(tv.tv_usec * 1000);
+        time_req_sent.set_seconds(tv.tv_sec);
+        time_req_sent.set_nanos(tv.tv_usec * 1000);
+        takeoff_request.mutable_time_request_sent()->CopyFrom(time_req_sent);
 
         m_serviceUser.Takeoff_Async(iuas_providers, takeoff_request,
-            [&, takeoff_start](const muas::FlightCtrl_Takeoff_Response& _response) {
+            [&, takeoff_start, time_req_sent](const muas::FlightCtrl_Takeoff_Response& _response) {
                 takeoff_metric.end(takeoff_start, true);
                 NDN_LOG_INFO(_response.DebugString());
 
@@ -139,13 +141,13 @@ int main(int argc, char **argv)
                 auto time_req_recv = _response.time_request_received();
                 auto time_res_sent = _response.time_response_sent();
 
-                auto req_latency_sec = time_req_recv.seconds() - time_req_sent->seconds();
-                auto req_latency_nanos = time_req_recv.nanos() - time_req_sent->nanos();
-                auto req_latency_ms = req_latency_sec*1000 + (req_latency_nanos/100000);
+                auto req_recv_ms = (time_req_recv.seconds()*1000) + (time_req_recv.nanos()/1000000);
+                auto req_sent_ms = (time_req_sent.seconds()*1000) + (time_req_sent.nanos()/1000000);
+                auto req_latency_ms = req_recv_ms - req_sent_ms;
 
-                auto res_latency_sec = time_res_recv.seconds() - time_res_sent.seconds();
-                auto res_latency_nanos = time_res_recv.nanos() - time_res_sent.nanos();
-                auto res_latency_ms = res_latency_sec*1000 + (res_latency_nanos/100000);
+                auto res_recv_ms = (time_res_recv.seconds()*1000) + (time_res_recv.nanos()/1000000);
+                auto res_sent_ms = (time_res_sent.seconds()*1000) + (time_res_sent.nanos()/1000000);
+                auto res_latency_ms = res_recv_ms - res_sent_ms;
 
                 NDN_LOG_INFO("Request latency: " << req_latency_ms << " ms / Response latency: " << res_latency_ms << " ms");
             },
@@ -158,13 +160,14 @@ int main(int argc, char **argv)
         std::cout << "Requesting RTL." << std::endl;
         muas::FlightCtrl_RTL_Request rtl_request;
 
-        google::protobuf::Timestamp* time_req_sent = rtl_request.mutable_time_request_sent();
+        google::protobuf::Timestamp time_req_sent;
         gettimeofday(&tv, NULL);
-        time_req_sent->set_seconds(tv.tv_sec);
-        time_req_sent->set_nanos(tv.tv_usec * 1000);
+        time_req_sent.set_seconds(tv.tv_sec);
+        time_req_sent.set_nanos(tv.tv_usec * 1000);
+        rtl_request.mutable_time_request_sent()->CopyFrom(time_req_sent);
 
         m_serviceUser.RTL_Async(uas_providers, rtl_request,
-            [&](const muas::FlightCtrl_RTL_Response& _response) {
+            [&, time_req_sent](const muas::FlightCtrl_RTL_Response& _response) {
                 NDN_LOG_INFO(_response.DebugString());
 
                 struct timeval tv;
@@ -176,13 +179,13 @@ int main(int argc, char **argv)
                 auto time_req_recv = _response.time_request_received();
                 auto time_res_sent = _response.time_response_sent();
 
-                auto req_latency_sec = time_req_recv.seconds() - time_req_sent->seconds();
-                auto req_latency_nanos = time_req_recv.nanos() - time_req_sent->nanos();
-                auto req_latency_ms = req_latency_sec*1000 + (req_latency_nanos/100000);
+                auto req_recv_ms = (time_req_recv.seconds()*1000) + (time_req_recv.nanos()/1000000);
+                auto req_sent_ms = (time_req_sent.seconds()*1000) + (time_req_sent.nanos()/1000000);
+                auto req_latency_ms = req_recv_ms - req_sent_ms;
 
-                auto res_latency_sec = time_res_recv.seconds() - time_res_sent.seconds();
-                auto res_latency_nanos = time_res_recv.nanos() - time_res_sent.nanos();
-                auto res_latency_ms = res_latency_sec*1000 + (res_latency_nanos/100000);
+                auto res_recv_ms = (time_res_recv.seconds()*1000) + (time_res_recv.nanos()/1000000);
+                auto res_sent_ms = (time_res_sent.seconds()*1000) + (time_res_sent.nanos()/1000000);
+                auto res_latency_ms = res_recv_ms - res_sent_ms;
 
                 NDN_LOG_INFO("Request latency: " << req_latency_ms << " ms / Response latency: " << res_latency_ms << " ms");
             },
@@ -195,13 +198,14 @@ int main(int argc, char **argv)
         std::cout << "Requesting Kill." << std::endl;
         muas::FlightCtrl_Kill_Request kill_request;
 
-        google::protobuf::Timestamp* time_req_sent = kill_request.mutable_time_request_sent();
+        google::protobuf::Timestamp time_req_sent;
         gettimeofday(&tv, NULL);
-        time_req_sent->set_seconds(tv.tv_sec);
-        time_req_sent->set_nanos(tv.tv_usec * 1000);
+        time_req_sent.set_seconds(tv.tv_sec);
+        time_req_sent.set_nanos(tv.tv_usec * 1000);
+        kill_request.mutable_time_request_sent()->CopyFrom(time_req_sent);
 
         m_serviceUser.Kill_Async(uas_providers, kill_request,
-            [&](const muas::FlightCtrl_Kill_Response& _response) {
+            [&, time_req_sent](const muas::FlightCtrl_Kill_Response& _response) {
                 NDN_LOG_INFO(_response.DebugString());
 
                 struct timeval tv;
@@ -213,13 +217,13 @@ int main(int argc, char **argv)
                 auto time_req_recv = _response.time_request_received();
                 auto time_res_sent = _response.time_response_sent();
 
-                auto req_latency_sec = time_req_recv.seconds() - time_req_sent->seconds();
-                auto req_latency_nanos = time_req_recv.nanos() - time_req_sent->nanos();
-                auto req_latency_ms = req_latency_sec*1000 + (req_latency_nanos/100000);
+                auto req_recv_ms = (time_req_recv.seconds()*1000) + (time_req_recv.nanos()/1000000);
+                auto req_sent_ms = (time_req_sent.seconds()*1000) + (time_req_sent.nanos()/1000000);
+                auto req_latency_ms = req_recv_ms - req_sent_ms;
 
-                auto res_latency_sec = time_res_recv.seconds() - time_res_sent.seconds();
-                auto res_latency_nanos = time_res_recv.nanos() - time_res_sent.nanos();
-                auto res_latency_ms = res_latency_sec*1000 + (res_latency_nanos/100000);
+                auto res_recv_ms = (time_res_recv.seconds()*1000) + (time_res_recv.nanos()/1000000);
+                auto res_sent_ms = (time_res_sent.seconds()*1000) + (time_res_sent.nanos()/1000000);
+                auto res_latency_ms = res_recv_ms - res_sent_ms;
 
                 NDN_LOG_INFO("Request latency: " << req_latency_ms << " ms / Response latency: " << res_latency_ms << " ms");
             },
@@ -233,13 +237,14 @@ int main(int argc, char **argv)
         std::cout << "Requesting sensor info from IUAS." << std::endl;
         muas::SensorCtrl_GetSensorInfo_Request sensor_info_request;
 
-        google::protobuf::Timestamp* time_req_sent = sensor_info_request.mutable_time_request_sent();
+        google::protobuf::Timestamp time_req_sent;
         gettimeofday(&tv, NULL);
-        time_req_sent->set_seconds(tv.tv_sec);
-        time_req_sent->set_nanos(tv.tv_usec * 1000);
+        time_req_sent.set_seconds(tv.tv_sec);
+        time_req_sent.set_nanos(tv.tv_usec * 1000);
+        sensor_info_request.mutable_time_request_sent()->CopyFrom(time_req_sent);
 
         m_serviceUser.GetSensorInfo_Async(iuas_providers, sensor_info_request,
-            [&, getinfo_start](const muas::SensorCtrl_GetSensorInfo_Response& _response) {
+            [&, getinfo_start, time_req_sent](const muas::SensorCtrl_GetSensorInfo_Response& _response) {
                 getinfo_metric.end(getinfo_start, true);
                 if (_response.sensors_size() > 0) {
                     iuas_sensor_idx = _response.sensors(0).id();
@@ -257,13 +262,13 @@ int main(int argc, char **argv)
                 auto time_req_recv = _response.time_request_received();
                 auto time_res_sent = _response.time_response_sent();
 
-                auto req_latency_sec = time_req_recv.seconds() - time_req_sent->seconds();
-                auto req_latency_nanos = time_req_recv.nanos() - time_req_sent->nanos();
-                auto req_latency_ms = req_latency_sec*1000 + (req_latency_nanos/100000);
+                auto req_recv_ms = (time_req_recv.seconds()*1000) + (time_req_recv.nanos()/1000000);
+                auto req_sent_ms = (time_req_sent.seconds()*1000) + (time_req_sent.nanos()/1000000);
+                auto req_latency_ms = req_recv_ms - req_sent_ms;
 
-                auto res_latency_sec = time_res_recv.seconds() - time_res_sent.seconds();
-                auto res_latency_nanos = time_res_recv.nanos() - time_res_sent.nanos();
-                auto res_latency_ms = res_latency_sec*1000 + (res_latency_nanos/100000);
+                auto res_recv_ms = (time_res_recv.seconds()*1000) + (time_res_recv.nanos()/1000000);
+                auto res_sent_ms = (time_res_sent.seconds()*1000) + (time_res_sent.nanos()/1000000);
+                auto res_latency_ms = res_recv_ms - res_sent_ms;
 
                 NDN_LOG_INFO("Request latency: " << req_latency_ms << " ms / Response latency: " << res_latency_ms << " ms");
             },
@@ -277,12 +282,13 @@ int main(int argc, char **argv)
         std::cout << "Requesting sensor capture from IUAS." << std::endl;
         muas::SensorCtrl_CaptureSingle_Request sensor_cap_request;
 
-        google::protobuf::Timestamp* time_req_sent = sensor_cap_request.mutable_time_request_sent();
+        google::protobuf::Timestamp time_req_sent;
         gettimeofday(&tv, NULL);
-        time_req_sent->set_seconds(tv.tv_sec);
-        time_req_sent->set_nanos(tv.tv_usec * 1000);
+        time_req_sent.set_seconds(tv.tv_sec);
+        time_req_sent.set_nanos(tv.tv_usec * 1000);
+        sensor_cap_request.mutable_time_request_sent()->CopyFrom(time_req_sent);
 
-        m_serviceUser.CaptureSingle_Async(iuas_providers, sensor_cap_request, [&, capture_start, idx](const muas::SensorCtrl_CaptureSingle_Response& _response) {
+        m_serviceUser.CaptureSingle_Async(iuas_providers, sensor_cap_request, [&, capture_start, idx, time_req_sent](const muas::SensorCtrl_CaptureSingle_Response& _response) {
                 capture_metric.end(capture_start, true);
                 NDN_LOG_INFO(_response.DebugString());
 
@@ -295,13 +301,13 @@ int main(int argc, char **argv)
                 auto time_req_recv = _response.time_request_received();
                 auto time_res_sent = _response.time_response_sent();
 
-                auto req_latency_sec = time_req_recv.seconds() - time_req_sent->seconds();
-                auto req_latency_nanos = time_req_recv.nanos() - time_req_sent->nanos();
-                auto req_latency_ms = req_latency_sec*1000 + (req_latency_nanos/100000);
+                auto req_recv_ms = (time_req_recv.seconds()*1000) + (time_req_recv.nanos()/1000000);
+                auto req_sent_ms = (time_req_sent.seconds()*1000) + (time_req_sent.nanos()/1000000);
+                auto req_latency_ms = req_recv_ms - req_sent_ms;
 
-                auto res_latency_sec = time_res_recv.seconds() - time_res_sent.seconds();
-                auto res_latency_nanos = time_res_recv.nanos() - time_res_sent.nanos();
-                auto res_latency_ms = res_latency_sec*1000 + (res_latency_nanos/100000);
+                auto res_recv_ms = (time_res_recv.seconds()*1000) + (time_res_recv.nanos()/1000000);
+                auto res_sent_ms = (time_res_sent.seconds()*1000) + (time_res_sent.nanos()/1000000);
+                auto res_latency_ms = res_recv_ms - res_sent_ms;
 
                 NDN_LOG_INFO("Request latency: " << req_latency_ms << " ms / Response latency: " << res_latency_ms << " ms");
 
@@ -320,12 +326,13 @@ int main(int argc, char **argv)
         std::cout << "Requesting ping from some UAS." << std::endl;
         muas::Entity_Echo_Request echo_request;
 
-        google::protobuf::Timestamp* time_req_sent = echo_request.mutable_time_request_sent();
+        google::protobuf::Timestamp time_req_sent;
         gettimeofday(&tv, NULL);
-        time_req_sent->set_seconds(tv.tv_sec);
-        time_req_sent->set_nanos(tv.tv_usec * 1000);
+        time_req_sent.set_seconds(tv.tv_sec);
+        time_req_sent.set_nanos(tv.tv_usec * 1000);
+        echo_request.mutable_time_request_sent()->CopyFrom(time_req_sent);
 
-        m_serviceUser.Echo_Async(uas_providers, echo_request, [&, ping_start](const muas::Entity_Echo_Response& _response) {
+        m_serviceUser.Echo_Async(uas_providers, echo_request, [&, ping_start, time_req_sent](const muas::Entity_Echo_Response& _response) {
                 ping_metric.end(ping_start, true);
                 NDN_LOG_INFO(_response.DebugString());
 
@@ -338,13 +345,13 @@ int main(int argc, char **argv)
                 auto time_req_recv = _response.time_request_received();
                 auto time_res_sent = _response.time_response_sent();
 
-                auto req_latency_sec = time_req_recv.seconds() - time_req_sent->seconds();
-                auto req_latency_nanos = time_req_recv.nanos() - time_req_sent->nanos();
-                auto req_latency_ms = req_latency_sec*1000 + (req_latency_nanos/100000);
+                auto req_recv_ms = (time_req_recv.seconds()*1000) + (time_req_recv.nanos()/1000000);
+                auto req_sent_ms = (time_req_sent.seconds()*1000) + (time_req_sent.nanos()/1000000);
+                auto req_latency_ms = req_recv_ms - req_sent_ms;
 
-                auto res_latency_sec = time_res_recv.seconds() - time_res_sent.seconds();
-                auto res_latency_nanos = time_res_recv.nanos() - time_res_sent.nanos();
-                auto res_latency_ms = res_latency_sec*1000 + (res_latency_nanos/100000);
+                auto res_recv_ms = (time_res_recv.seconds()*1000) + (time_res_recv.nanos()/1000000);
+                auto res_sent_ms = (time_res_sent.seconds()*1000) + (time_res_sent.nanos()/1000000);
+                auto res_latency_ms = res_recv_ms - res_sent_ms;
 
                 NDN_LOG_INFO("Request latency: " << req_latency_ms << " ms / Response latency: " << res_latency_ms << " ms");
             },
