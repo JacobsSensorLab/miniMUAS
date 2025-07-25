@@ -320,7 +320,7 @@ int main(int argc, char **argv)
         );
     };
 
-    auto echo_call = [&]() {
+    auto echo_call = [&](std::vector<ndn::Name> uas_providers) {
         struct timeval tv;
         auto ping_start = ping_metric.start();
         std::cout << "Requesting ping from some UAS." << std::endl;
@@ -403,13 +403,18 @@ int main(int argc, char **argv)
             running = false;
             m_face.getIoContext().stop();
         } else if (command == "ping") {
+            std::string uas;
             int interval, count;
-            if (iss >> interval >> count) {
+            if (iss >> interval >> count >> uas) {
+                std::stringstream nameStream;
+                nameStream << "/muas/" << uas << "-01";
+                std::string name = nameStream.str();
+                std::vector<ndn::Name> uas_providers = { ndn::Name(name) };
                 for (int i = 0; i < count; ++i) {
-                    m_scheduler.schedule(ndn::time::milliseconds(i * interval), [&, i] { echo_call(); });
+                    m_scheduler.schedule(ndn::time::milliseconds(i * interval), [&, i] { echo_call(uas_providers); });
                 }
             } else {
-                std::cerr << "Usage: ping <interval_ms> <count>" << std::endl;
+                std::cerr << "Usage: ping <interval_ms> <count> (wuas/iuas)" << std::endl;
             }
         } else if (command == "rtl") {
             std::string uas;

@@ -210,9 +210,9 @@ main(int argc, char **argv)
 
         auto time_req_sent = _request.time_request_sent();
 
-        auto req_latency_sec = time_req_recv.seconds() - time_req_sent.seconds();
-        auto req_latency_nanos = time_req_recv.nanos() - time_req_sent.nanos();
-        auto req_latency_ms = req_latency_sec*1000 + (req_latency_nanos/100000);
+        auto req_recv_ms = (time_req_recv.seconds()*1000) + (time_req_recv.nanos()/1000000);
+        auto req_sent_ms = (time_req_sent.seconds()*1000) + (time_req_sent.nanos()/1000000);
+        auto req_latency_ms = req_recv_ms - req_sent_ms;
 
         NDN_LOG_INFO("Takeoff request received");
         auto action = mavsdk::Action{system};
@@ -325,9 +325,9 @@ main(int argc, char **argv)
 
         auto time_req_sent = _request.time_request_sent();
 
-        auto req_latency_sec = time_req_recv.seconds() - time_req_sent.seconds();
-        auto req_latency_nanos = time_req_recv.nanos() - time_req_sent.nanos();
-        auto req_latency_ms = req_latency_sec*1000 + (req_latency_nanos/100000);
+        auto req_recv_ms = (time_req_recv.seconds()*1000) + (time_req_recv.nanos()/1000000);
+        auto req_sent_ms = (time_req_sent.seconds()*1000) + (time_req_sent.nanos()/1000000);
+        auto req_latency_ms = req_recv_ms - req_sent_ms;
 
         NDN_LOG_INFO("Land request received");
         auto action = mavsdk::Action{system};
@@ -398,9 +398,9 @@ main(int argc, char **argv)
 
         auto time_req_sent = _request.time_request_sent();
 
-        auto req_latency_sec = time_req_recv.seconds() - time_req_sent.seconds();
-        auto req_latency_nanos = time_req_recv.nanos() - time_req_sent.nanos();
-        auto req_latency_ms = req_latency_sec*1000 + (req_latency_nanos/100000);
+        auto req_recv_ms = (time_req_recv.seconds()*1000) + (time_req_recv.nanos()/1000000);
+        auto req_sent_ms = (time_req_sent.seconds()*1000) + (time_req_sent.nanos()/1000000);
+        auto req_latency_ms = req_recv_ms - req_sent_ms;
 
         NDN_LOG_INFO("RTL request received");
         auto action = mavsdk::Action{system};
@@ -471,9 +471,9 @@ main(int argc, char **argv)
 
         auto time_req_sent = _request.time_request_sent();
 
-        auto req_latency_sec = time_req_recv.seconds() - time_req_sent.seconds();
-        auto req_latency_nanos = time_req_recv.nanos() - time_req_sent.nanos();
-        auto req_latency_ms = req_latency_sec*1000 + (req_latency_nanos/100000);
+        auto req_recv_ms = (time_req_recv.seconds()*1000) + (time_req_recv.nanos()/1000000);
+        auto req_sent_ms = (time_req_sent.seconds()*1000) + (time_req_sent.nanos()/1000000);
+        auto req_latency_ms = req_recv_ms - req_sent_ms;
 
         NDN_LOG_INFO("Kill request received");
         auto action = mavsdk::Action{system};
@@ -525,9 +525,9 @@ main(int argc, char **argv)
 
         auto time_req_sent = _request.time_request_sent();
 
-        auto req_latency_sec = time_req_recv.seconds() - time_req_sent.seconds();
-        auto req_latency_nanos = time_req_recv.nanos() - time_req_sent.nanos();
-        auto req_latency_ms = req_latency_sec*1000 + (req_latency_nanos/100000);
+        auto req_recv_ms = (time_req_recv.seconds()*1000) + (time_req_recv.nanos()/1000000);
+        auto req_sent_ms = (time_req_sent.seconds()*1000) + (time_req_sent.nanos()/1000000);
+        auto req_latency_ms = req_recv_ms - req_sent_ms;
 
         NDN_LOG_INFO("Echo request received");
 
