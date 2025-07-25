@@ -1,3 +1,5 @@
 {
+    "C_Cpp.default.compilerPath": "/nix/store/591apldfgm1gr238rbfc8ib0y1z8ng2y-gcc-wrapper-14-20241116/bin/gcc",
+    "nixEnvSelector.suggestion": false,
     "nixEnvSelector.nixFile": "${workspaceFolder}/shell.nix"
 }
