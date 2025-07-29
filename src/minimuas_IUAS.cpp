@@ -9,6 +9,7 @@
 #include <mavsdk/mavsdk.h>
 #include <mavsdk/component_type.h>
 #include <mavsdk/plugins/action/action.h>
+#include <mavsdk/plugins/mavlink_passthrough/mavlink_passthrough.h>
 #include <mavsdk/plugins/telemetry/telemetry.h>
 
 #include <opencv2/opencv.hpp>
@@ -455,7 +456,8 @@ main(int argc, char **argv)
         auto req_latency_ms = req_recv_ms - req_sent_ms;
 
         NDN_LOG_INFO("PointOrbit request received");
-        auto action = mavsdk::Action{system};
+        // auto action = mavsdk::Action{system};
+        auto passthrough = mavsdk::MavlinkPassthrough{system};
 
         NDN_LOG_INFO("PointOrbit request latency: " << req_latency_ms << " ms");
 
@@ -482,19 +484,25 @@ main(int argc, char **argv)
         auto latitude = pos.latitude();
         auto longitude = pos.longitude();
         auto altitude = pos.altitude();
-
+        
+        float num_turns = 3.0; // default number of turns
         float orbit_radius = 2.0;  // default radius
         float orbit_velocity = 0.5;  // default velocity
 
-        const mavsdk::Action::Result orbit_result = action.do_orbit(
-            orbit_radius,
-            orbit_velocity,
-            mavsdk::Action::OrbitYawBehavior::HoldFrontToCircleCenter,
-            latitude,
-            longitude,
-            altitude
+        mavsdk::MavlinkPassthrough::CommandLong command_long{};
+        command_long.command = MAV_CMD_NAV_LOITER_TURNS;
+        command_long.target_sysid = passthrough.get_target_sysid();
+        command_long.param1 = num_turns;
+        command_long.param3 = orbit_radius;
+        command_long.param5 = latitude;
+        command_long.param6 = longitude;
+        command_long.param7 = 0.0f; // Use current altitude
+
+        const mavsdk::MavlinkPassthrough::Result orbit_result = passthrough.send_command_long(
+            command_long
         );
-        if (orbit_result != mavsdk::Action::Result::Success) {
+
+        if (orbit_result != mavsdk::MavlinkPassthrough::Result::Success) {
             NDN_LOG_INFO("PointOrbit request failed: " << orbit_result);
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Orbit failed");
