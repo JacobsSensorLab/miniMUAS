@@ -15,10 +15,10 @@ stdenv.mkDerivation rec {
   version = "2024-09-27";
 
   src = fetchFromGitHub {
-    owner = "matianxing1992";
+    owner = "UCLA-IRL"; # forked by matianxing1992
     repo = "NAC-ABE";
-    rev = "9804ab17b5fa5d2742e8fccfce02986fbcba1dd0";
-    sha256 = "sha256-O7nB88Ekvo4+ZXm1HupKRDjgjs5PrYHjaGUvEa5P7Q4=";
+    rev = "5ac3eb991d6ed7eef36e6a265e97912961e9807f";
+    sha256 = "sha256-/0zUFYe/EFDdeL6ZwOHw2x/zPbn7OPN5O7E9c1tXnzs=";
   };
 
   cmakeFlags = [

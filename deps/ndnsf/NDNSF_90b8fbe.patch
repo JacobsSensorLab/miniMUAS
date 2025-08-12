@@ -1,0 +1,180 @@
+diff --git a/libndn-service-framework.pc.in b/libndn-service-framework.pc.in
+index 31f65ca..5f7b1f9 100644
+--- a/libndn-service-framework.pc.in
++++ b/libndn-service-framework.pc.in
+@@ -3,8 +3,8 @@ exec_prefix=@exec_prefix@
+ libdir=@libdir@
+ includedir=@includedir@
+ 
+-Name: libndnsf
++Name: libndn-service-framework
+ Description: NDN SERVICE Framework
+ Version: @VERSION@
+-Libs: -L${libdir} @EXTRA_LINKFLAGS@ @EXTRA_LDFLAGS@ -lndnsf @EXTRA_LIBS@ @EXTRA_FRAMEWORKS@
++Libs: -L${libdir} -lndn-service-framework
+ Cflags: -I${includedir} @EXTRA_CXXFLAGS@ @EXTRA_INCLUDES@
+diff --git a/ndn-service-framework/NDNSFMessages.cpp b/ndn-service-framework/NDNSFMessages.cpp
+index 81dd631..7013426 100644
+--- a/ndn-service-framework/NDNSFMessages.cpp
++++ b/ndn-service-framework/NDNSFMessages.cpp
+@@ -1,4 +1,4 @@
+-#include "NDNSFMessages.hpp"
++#include "./NDNSFMessages.hpp"
+ 
+ namespace ndn_service_framework {
+ 
+diff --git a/ndn-service-framework/NDNSFMessages.hpp b/ndn-service-framework/NDNSFMessages.hpp
+index f6d33e3..63b714f 100644
+--- a/ndn-service-framework/NDNSFMessages.hpp
++++ b/ndn-service-framework/NDNSFMessages.hpp
+@@ -5,7 +5,7 @@
+ #include <map>
+ #include <string>
+ #include <vector>
+-#include "common.hpp"
++#include "./common.hpp"
+ 
+ namespace ndn_service_framework {
+ 
+diff --git a/ndn-service-framework/PolicyParser.cpp b/ndn-service-framework/PolicyParser.cpp
+index 8e405ac..9e8c6f9 100644
+--- a/ndn-service-framework/PolicyParser.cpp
++++ b/ndn-service-framework/PolicyParser.cpp
+@@ -1,4 +1,4 @@
+-#include "PolicyParser.hpp"
++#include "./PolicyParser.hpp"
+ 
+ namespace ndn_service_framework {
+ 
+diff --git a/ndn-service-framework/Service.hpp b/ndn-service-framework/Service.hpp
+index f78beb1..473b292 100644
+--- a/ndn-service-framework/Service.hpp
++++ b/ndn-service-framework/Service.hpp
+@@ -1,7 +1,7 @@
+ #ifndef NDN_SERVICE_FRAMEWORK_SERVICE_HPP
+ #define NDN_SERVICE_FRAMEWORK_SERVICE_HPP
+-#include "common.hpp"
+-#include "NDNSFMessages.hpp"
++#include "./common.hpp"
++#include "./NDNSFMessages.hpp"
+ 
+ 
+ 
+diff --git a/ndn-service-framework/ServiceController.hpp b/ndn-service-framework/ServiceController.hpp
+index 26a0fb6..b6b949c 100644
+--- a/ndn-service-framework/ServiceController.hpp
++++ b/ndn-service-framework/ServiceController.hpp
+@@ -1,12 +1,12 @@
+ #ifndef NDN_SERVICE_FRAMEWORK_SERVICE_CONTROLLER_HPP
+ #define NDN_SERVICE_FRAMEWORK_SERVICE_CONTROLLER_HPP
+ 
+-#include "common.hpp"
+-#include "utils.hpp"
++#include "./common.hpp"
++#include "./utils.hpp"
+ #include <iostream>
+ #include <filesystem>
+ #include <vector>
+-#include "PolicyParser.hpp"
++#include "./PolicyParser.hpp"
+ #include <nac-abe/attribute-authority.hpp>
+ 
+ namespace ndn_service_framework
+diff --git a/ndn-service-framework/ServiceProvider.hpp b/ndn-service-framework/ServiceProvider.hpp
+index 2e31cd1..1d0635b 100644
+--- a/ndn-service-framework/ServiceProvider.hpp
++++ b/ndn-service-framework/ServiceProvider.hpp
+@@ -1,14 +1,14 @@
+ #ifndef NDN_SERVICE_FRAMEWORK_SERVICE_PROVIDER_HPP
+ #define NDN_SERVICE_FRAMEWORK_SERVICE_PROVIDER_HPP
+ 
+-#include "common.hpp"
++#include "./common.hpp"
+ 
+-#include "Service.hpp"
+-#include "utils.hpp"
++#include "./Service.hpp"
++#include "./utils.hpp"
+ 
+-#include "BloomFilter.hpp"
+-#include "UserPermissionTable.hpp"
+-#include "NDNSFMessages.hpp"
++#include "./BloomFilter.hpp"
++#include "./UserPermissionTable.hpp"
++#include "./NDNSFMessages.hpp"
+ #include "ConfigManager.hpp"
+ 
+ 
+diff --git a/ndn-service-framework/ServiceStub.cpp b/ndn-service-framework/ServiceStub.cpp
+index 000c456..f08c4e1 100644
+--- a/ndn-service-framework/ServiceStub.cpp
++++ b/ndn-service-framework/ServiceStub.cpp
+@@ -1,5 +1,5 @@
+ 
+-#include "ServiceStub.hpp"
++#include "./ServiceStub.hpp"
+ 
+ namespace ndn_service_framework{
+ 
+diff --git a/ndn-service-framework/ServiceStub.hpp b/ndn-service-framework/ServiceStub.hpp
+index a700ad5..7094910 100644
+--- a/ndn-service-framework/ServiceStub.hpp
++++ b/ndn-service-framework/ServiceStub.hpp
+@@ -1,8 +1,8 @@
+ #ifndef NDN_SERVICE_FRAMEWORK_SERVICE_STUB_HPP
+ #define NDN_SERVICE_FRAMEWORK_SERVICE_STUB_HPP
+-#include "common.hpp"
++#include "./common.hpp"
+ 
+-#include "utils.hpp"
++#include "./utils.hpp"
+ #include <vector>
+ 
+ namespace ndn_service_framework{
+diff --git a/ndn-service-framework/ServiceUser.hpp b/ndn-service-framework/ServiceUser.hpp
+index 7a402a6..92a081c 100644
+--- a/ndn-service-framework/ServiceUser.hpp
++++ b/ndn-service-framework/ServiceUser.hpp
+@@ -1,13 +1,13 @@
+ #ifndef NDN_SERVICE_FRAMEWORK_SERVICE_USER_HPP
+ #define NDN_SERVICE_FRAMEWORK_SERVICE_USER_HPP
+ 
+-#include "common.hpp"
+-#include "ServiceStub.hpp"
+-#include "utils.hpp"
++#include "./common.hpp"
++#include "./ServiceStub.hpp"
++#include "./utils.hpp"
+ 
+-#include "BloomFilter.hpp"
+-#include "UserPermissionTable.hpp"
+-#include "NDNSFMessages.hpp"
++#include "./BloomFilter.hpp"
++#include "./UserPermissionTable.hpp"
++#include "./NDNSFMessages.hpp"
+ #include "ConfigManager.hpp"
+ 
+ 
+diff --git a/ndn-service-framework/utils.cpp b/ndn-service-framework/utils.cpp
+index ff89140..f70b4b1 100644
+--- a/ndn-service-framework/utils.cpp
++++ b/ndn-service-framework/utils.cpp
+@@ -1,4 +1,4 @@
+-#include "utils.hpp"
++#include "./utils.hpp"
+ 
+ namespace ndn_service_framework
+ {
+diff --git a/ndn-service-framework/utils.hpp b/ndn-service-framework/utils.hpp
+index 941f9e5..dc5e698 100644
+--- a/ndn-service-framework/utils.hpp
++++ b/ndn-service-framework/utils.hpp
+@@ -10,7 +10,7 @@
+ #include <boost/format.hpp>
+ #include <ndn-cxx/encoding/buffer-stream.hpp>
+ #include <ndn-cxx/name.hpp>
+-#include <common.hpp>
++#include "./common.hpp"
+ 
+ namespace ndn_service_framework
+ {

@@ -1,3 +1,7 @@
 result
 result/
 .vscode
+build/
+build_manual/
+.cache/
+compile_commands.json

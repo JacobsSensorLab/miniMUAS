@@ -18,17 +18,17 @@
 
 stdenv.mkDerivation rec {
   pname = "NDNSF";
-  version = "2025-03-04";
+  version = "2025-08-12";
 
   src = fetchFromGitHub {
     owner = "matianxing1992";
     repo = "NDN_Service_Framework";
-    rev = "1033c9c910fc9f256407e2740c593f4d562c6393";
-    sha256 = "sha256-9sHffACf4qnGRdYxcgt5kwwEh49c16kBQED2Oj1vqzU=";
+    rev = "90b8fbe1487ee1297b0056dc544da963905c731e";
+    sha256 = "sha256-M49+kK3cTirQfKAe5pvmQXTw3kiYKIs1if2mW+pqkN4=";
   };
 
   patches = [
-    ./NDNSF.patch
+    ./NDNSF_90b8fbe.patch
   ];
 
   nativeBuildInputs = [ pkg-config python313 wafHook ];
