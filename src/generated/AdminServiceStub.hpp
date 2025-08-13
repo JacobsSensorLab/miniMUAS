@@ -22,7 +22,7 @@ namespace muas
     class AdminServiceStub : public ndn_service_framework::ServiceStub
     {
     public:
-        AdminServiceStub(ndn_service_framework::ServiceUser& user);
+        AdminServiceStub(ndn::Face& face, ndn_service_framework::ServiceUser& user);
         virtual ~AdminServiceStub();
 
         

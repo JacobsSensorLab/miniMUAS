@@ -31,7 +31,7 @@ namespace muas
     class EntityServiceStub : public ndn_service_framework::ServiceStub
     {
     public:
-        EntityServiceStub(ndn_service_framework::ServiceUser& user);
+        EntityServiceStub(ndn::Face& face, ndn_service_framework::ServiceUser& user);
         virtual ~EntityServiceStub();
 
         

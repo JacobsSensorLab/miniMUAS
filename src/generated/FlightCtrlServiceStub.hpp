@@ -40,7 +40,7 @@ namespace muas
     class FlightCtrlServiceStub : public ndn_service_framework::ServiceStub
     {
     public:
-        FlightCtrlServiceStub(ndn_service_framework::ServiceUser& user);
+        FlightCtrlServiceStub(ndn::Face& face, ndn_service_framework::ServiceUser& user);
         virtual ~FlightCtrlServiceStub();
 
         

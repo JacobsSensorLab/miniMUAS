@@ -28,7 +28,7 @@ namespace muas
     class SensorServiceStub : public ndn_service_framework::ServiceStub
     {
     public:
-        SensorServiceStub(ndn_service_framework::ServiceUser& user);
+        SensorServiceStub(ndn::Face& face, ndn_service_framework::ServiceUser& user);
         virtual ~SensorServiceStub();
 
         

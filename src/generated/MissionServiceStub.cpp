@@ -2,8 +2,8 @@
 
 NDN_LOG_INIT(muas.MissionServiceStub);
 
-muas::MissionServiceStub::MissionServiceStub(ndn_service_framework::ServiceUser &user)
-    : ndn_service_framework::ServiceStub(user),
+muas::MissionServiceStub::MissionServiceStub(ndn::Face& face, ndn_service_framework::ServiceUser &user)
+    : ndn_service_framework::ServiceStub(face, user),
       serviceName("Mission")
 {
 }
@@ -24,10 +24,14 @@ void muas::MissionServiceStub::GetMissionInfo_Async(const std::vector<ndn::Name>
     GetMissionInfo_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->GetMissionInfo_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = GetMissionInfo_Timeout_Callbacks.find(requestId);
+        if (it != GetMissionInfo_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 
@@ -44,10 +48,14 @@ void muas::MissionServiceStub::GetItem_Async(const std::vector<ndn::Name>& provi
     GetItem_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->GetItem_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = GetItem_Timeout_Callbacks.find(requestId);
+        if (it != GetItem_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 
@@ -64,10 +72,14 @@ void muas::MissionServiceStub::SetItem_Async(const std::vector<ndn::Name>& provi
     SetItem_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->SetItem_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = SetItem_Timeout_Callbacks.find(requestId);
+        if (it != SetItem_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 
@@ -84,10 +96,14 @@ void muas::MissionServiceStub::Clear_Async(const std::vector<ndn::Name>& provide
     Clear_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->Clear_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = Clear_Timeout_Callbacks.find(requestId);
+        if (it != Clear_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 
@@ -104,10 +120,14 @@ void muas::MissionServiceStub::Start_Async(const std::vector<ndn::Name>& provide
     Start_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->Start_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = Start_Timeout_Callbacks.find(requestId);
+        if (it != Start_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 
@@ -124,10 +144,14 @@ void muas::MissionServiceStub::Pause_Async(const std::vector<ndn::Name>& provide
     Pause_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->Pause_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = Pause_Timeout_Callbacks.find(requestId);
+        if (it != Pause_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 
@@ -144,10 +168,14 @@ void muas::MissionServiceStub::Continue_Async(const std::vector<ndn::Name>& prov
     Continue_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->Continue_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = Continue_Timeout_Callbacks.find(requestId);
+        if (it != Continue_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 
@@ -164,10 +192,14 @@ void muas::MissionServiceStub::Terminate_Async(const std::vector<ndn::Name>& pro
     Terminate_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->Terminate_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = Terminate_Timeout_Callbacks.find(requestId);
+        if (it != Terminate_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 

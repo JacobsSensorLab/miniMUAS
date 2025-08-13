@@ -25,7 +25,7 @@ namespace muas
     class IUASServiceStub : public ndn_service_framework::ServiceStub
     {
     public:
-        IUASServiceStub(ndn_service_framework::ServiceUser& user);
+        IUASServiceStub(ndn::Face& face, ndn_service_framework::ServiceUser& user);
         virtual ~IUASServiceStub();
 
         

@@ -2,8 +2,8 @@
 
 NDN_LOG_INIT(muas.FlightCtrlServiceStub);
 
-muas::FlightCtrlServiceStub::FlightCtrlServiceStub(ndn_service_framework::ServiceUser &user)
-    : ndn_service_framework::ServiceStub(user),
+muas::FlightCtrlServiceStub::FlightCtrlServiceStub(ndn::Face& face, ndn_service_framework::ServiceUser &user)
+    : ndn_service_framework::ServiceStub(face, user),
       serviceName("FlightCtrl")
 {
 }
@@ -24,10 +24,14 @@ void muas::FlightCtrlServiceStub::SwitchMode_Async(const std::vector<ndn::Name>&
     SwitchMode_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->SwitchMode_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = SwitchMode_Timeout_Callbacks.find(requestId);
+        if (it != SwitchMode_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 
@@ -44,10 +48,14 @@ void muas::FlightCtrlServiceStub::Takeoff_Async(const std::vector<ndn::Name>& pr
     Takeoff_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->Takeoff_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = Takeoff_Timeout_Callbacks.find(requestId);
+        if (it != Takeoff_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 
@@ -64,10 +72,14 @@ void muas::FlightCtrlServiceStub::Land_Async(const std::vector<ndn::Name>& provi
     Land_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->Land_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = Land_Timeout_Callbacks.find(requestId);
+        if (it != Land_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 
@@ -84,10 +96,14 @@ void muas::FlightCtrlServiceStub::RTL_Async(const std::vector<ndn::Name>& provid
     RTL_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->RTL_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = RTL_Timeout_Callbacks.find(requestId);
+        if (it != RTL_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 
@@ -104,10 +120,14 @@ void muas::FlightCtrlServiceStub::Kill_Async(const std::vector<ndn::Name>& provi
     Kill_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->Kill_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = Kill_Timeout_Callbacks.find(requestId);
+        if (it != Kill_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 
@@ -124,10 +144,14 @@ void muas::FlightCtrlServiceStub::SetSpeed_Async(const std::vector<ndn::Name>& p
     SetSpeed_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->SetSpeed_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = SetSpeed_Timeout_Callbacks.find(requestId);
+        if (it != SetSpeed_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 
@@ -144,10 +168,14 @@ void muas::FlightCtrlServiceStub::Reposition_Async(const std::vector<ndn::Name>&
     Reposition_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->Reposition_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = Reposition_Timeout_Callbacks.find(requestId);
+        if (it != Reposition_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 

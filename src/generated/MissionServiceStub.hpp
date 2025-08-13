@@ -43,7 +43,7 @@ namespace muas
     class MissionServiceStub : public ndn_service_framework::ServiceStub
     {
     public:
-        MissionServiceStub(ndn_service_framework::ServiceUser& user);
+        MissionServiceStub(ndn::Face& face, ndn_service_framework::ServiceUser& user);
         virtual ~MissionServiceStub();
 
         

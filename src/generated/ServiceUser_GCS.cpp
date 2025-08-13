@@ -6,35 +6,35 @@ muas::ServiceUser_GCS::ServiceUser_GCS(ndn::Face& face, ndn::Name group_prefix, 
     :ndn_service_framework::ServiceUser(face, group_prefix, identityCert, attrAuthorityCertificate, trustSchemaPath),
     
         
-    m_EntityServiceStub(*this),
+    m_EntityServiceStub(face, *this),
         
     
         
-    m_AdminServiceStub(*this),
+    m_AdminServiceStub(face, *this),
         
     
         
-    m_WUASServiceStub(*this),
+    m_WUASServiceStub(face, *this),
         
     
         
-    m_IUASServiceStub(*this),
+    m_IUASServiceStub(face, *this),
         
     
         
-    m_MissionServiceStub(*this),
+    m_MissionServiceStub(face, *this),
         
     
         
-    m_FlightCtrlServiceStub(*this),
+    m_FlightCtrlServiceStub(face, *this),
         
     
         
-    m_MAVLinkServiceStub(*this),
+    m_MAVLinkServiceStub(face, *this),
         
     
         
-    m_SensorServiceStub(*this)
+    m_SensorServiceStub(face, *this)
         
     
 {

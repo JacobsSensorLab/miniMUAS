@@ -22,7 +22,7 @@ namespace muas
     class MAVLinkServiceStub : public ndn_service_framework::ServiceStub
     {
     public:
-        MAVLinkServiceStub(ndn_service_framework::ServiceUser& user);
+        MAVLinkServiceStub(ndn::Face& face, ndn_service_framework::ServiceUser& user);
         virtual ~MAVLinkServiceStub();
 
         

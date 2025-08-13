@@ -22,7 +22,7 @@ namespace muas
     class WUASServiceStub : public ndn_service_framework::ServiceStub
     {
     public:
-        WUASServiceStub(ndn_service_framework::ServiceUser& user);
+        WUASServiceStub(ndn::Face& face, ndn_service_framework::ServiceUser& user);
         virtual ~WUASServiceStub();
 
         

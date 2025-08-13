@@ -2,8 +2,8 @@
 
 NDN_LOG_INIT(muas.EntityServiceStub);
 
-muas::EntityServiceStub::EntityServiceStub(ndn_service_framework::ServiceUser &user)
-    : ndn_service_framework::ServiceStub(user),
+muas::EntityServiceStub::EntityServiceStub(ndn::Face& face, ndn_service_framework::ServiceUser &user)
+    : ndn_service_framework::ServiceStub(face, user),
       serviceName("Entity")
 {
 }
@@ -24,10 +24,14 @@ void muas::EntityServiceStub::Echo_Async(const std::vector<ndn::Name>& providers
     Echo_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->Echo_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = Echo_Timeout_Callbacks.find(requestId);
+        if (it != Echo_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 
@@ -44,10 +48,14 @@ void muas::EntityServiceStub::GetEntityInfo_Async(const std::vector<ndn::Name>& 
     GetEntityInfo_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->GetEntityInfo_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = GetEntityInfo_Timeout_Callbacks.find(requestId);
+        if (it != GetEntityInfo_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 
@@ -64,10 +72,14 @@ void muas::EntityServiceStub::GetPosition_Async(const std::vector<ndn::Name>& pr
     GetPosition_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->GetPosition_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = GetPosition_Timeout_Callbacks.find(requestId);
+        if (it != GetPosition_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 
@@ -84,10 +96,14 @@ void muas::EntityServiceStub::GetOrientation_Async(const std::vector<ndn::Name>&
     GetOrientation_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->GetOrientation_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = GetOrientation_Timeout_Callbacks.find(requestId);
+        if (it != GetOrientation_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 

@@ -2,8 +2,8 @@
 
 NDN_LOG_INIT(muas.AdminServiceStub);
 
-muas::AdminServiceStub::AdminServiceStub(ndn_service_framework::ServiceUser &user)
-    : ndn_service_framework::ServiceStub(user),
+muas::AdminServiceStub::AdminServiceStub(ndn::Face& face, ndn_service_framework::ServiceUser &user)
+    : ndn_service_framework::ServiceStub(face, user),
       serviceName("Admin")
 {
 }
@@ -24,10 +24,14 @@ void muas::AdminServiceStub::Test_Async(const std::vector<ndn::Name>& providers,
     Test_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->Test_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = Test_Timeout_Callbacks.find(requestId);
+        if (it != Test_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 

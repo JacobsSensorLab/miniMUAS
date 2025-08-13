@@ -6,11 +6,11 @@ muas::ServiceUser_IUAS::ServiceUser_IUAS(ndn::Face& face, ndn::Name group_prefix
     :ndn_service_framework::ServiceUser(face, group_prefix, identityCert, attrAuthorityCertificate, trustSchemaPath),
     
         
-    m_EntityServiceStub(*this),
+    m_EntityServiceStub(face, *this),
         
     
         
-    m_AdminServiceStub(*this)
+    m_AdminServiceStub(face, *this)
         
     
 {

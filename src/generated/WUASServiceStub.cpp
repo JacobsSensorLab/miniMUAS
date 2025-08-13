@@ -2,8 +2,8 @@
 
 NDN_LOG_INIT(muas.WUASServiceStub);
 
-muas::WUASServiceStub::WUASServiceStub(ndn_service_framework::ServiceUser &user)
-    : ndn_service_framework::ServiceStub(user),
+muas::WUASServiceStub::WUASServiceStub(ndn::Face& face, ndn_service_framework::ServiceUser &user)
+    : ndn_service_framework::ServiceStub(face, user),
       serviceName("WUAS")
 {
 }
@@ -24,10 +24,14 @@ void muas::WUASServiceStub::QuadRaster_Async(const std::vector<ndn::Name>& provi
     QuadRaster_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
     
-    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request] { 
         // time out
         this->QuadRaster_Callbacks.erase(requestId);
-        _timeout_callback(_request);
+        // check if timeout_callback is still valid
+        auto it = QuadRaster_Timeout_Callbacks.find(requestId);
+        if (it != QuadRaster_Timeout_Callbacks.end()) {
+            it->second(_request);
+        }
     });
 }
 
