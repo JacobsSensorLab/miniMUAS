@@ -11,7 +11,7 @@ muas::AdminServiceStub::AdminServiceStub(ndn_service_framework::ServiceUser &use
 muas::AdminServiceStub::~AdminServiceStub(){}
 
 
-void muas::AdminServiceStub::Test_Async(const std::vector<ndn::Name>& providers, const muas::Admin_Test_Request &_request, muas::Test_Callback _callback,  const size_t strategy)
+void muas::AdminServiceStub::Test_Async(const std::vector<ndn::Name>& providers, const muas::Admin_Test_Request &_request, muas::Test_Callback _callback, muas::Test_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("Test_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::Admin_Test_Response response;
@@ -21,7 +21,14 @@ void muas::AdminServiceStub::Test_Async(const std::vector<ndn::Name>& providers,
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("Admin"), ndn::Name("Test"), requestId, payload, strategy);
     Test_Callbacks.emplace(requestId, _callback);
+    Test_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->Test_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
 
@@ -62,6 +69,8 @@ void muas::AdminServiceStub::OnResponseDecryptionSuccessCallback(const ndn::Name
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    Test_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }

@@ -16,6 +16,7 @@ namespace muas
 {
     
     using Generic_Callback = std::function<void(const muas::MAVLink_Generic_Response &)>;
+    using Generic_Timeout_Callback = std::function<void(const muas::MAVLink_Generic_Request &)>;
     
 
     class MAVLinkServiceStub : public ndn_service_framework::ServiceStub
@@ -25,7 +26,7 @@ namespace muas
         virtual ~MAVLinkServiceStub();
 
         
-        void Generic_Async(const std::vector<ndn::Name>& providers, const muas::MAVLink_Generic_Request &_request, muas::Generic_Callback _callback,  const size_t strategy);
+        void Generic_Async(const std::vector<ndn::Name>& providers, const muas::MAVLink_Generic_Request &_request, muas::Generic_Callback _callback, muas::Generic_Timeout_Callback _timeout_callback, int timeout_ms,  const size_t strategy);
               
 
         void OnResponseDecryptionSuccessCallback(const ndn::Name& serviceProviderName,const ndn::Name& ServiceName,const ndn::Name& FunctionName, const ndn::Name& RequestID,const ndn::Buffer &buffer) override;
@@ -35,6 +36,7 @@ namespace muas
         std::map<ndn::Name,size_t> strategyMap;
         
         std::map<ndn::Name,Generic_Callback> Generic_Callbacks;
+        std::map<ndn::Name,Generic_Timeout_Callback> Generic_Timeout_Callbacks;
         
         ndn::Name serviceName;
     };

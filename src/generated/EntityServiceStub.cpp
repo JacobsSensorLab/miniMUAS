@@ -11,7 +11,7 @@ muas::EntityServiceStub::EntityServiceStub(ndn_service_framework::ServiceUser &u
 muas::EntityServiceStub::~EntityServiceStub(){}
 
 
-void muas::EntityServiceStub::Echo_Async(const std::vector<ndn::Name>& providers, const muas::Entity_Echo_Request &_request, muas::Echo_Callback _callback,  const size_t strategy)
+void muas::EntityServiceStub::Echo_Async(const std::vector<ndn::Name>& providers, const muas::Entity_Echo_Request &_request, muas::Echo_Callback _callback, muas::Echo_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("Echo_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::Entity_Echo_Response response;
@@ -21,10 +21,17 @@ void muas::EntityServiceStub::Echo_Async(const std::vector<ndn::Name>& providers
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("Entity"), ndn::Name("Echo"), requestId, payload, strategy);
     Echo_Callbacks.emplace(requestId, _callback);
+    Echo_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->Echo_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
-void muas::EntityServiceStub::GetEntityInfo_Async(const std::vector<ndn::Name>& providers, const muas::Entity_GetEntityInfo_Request &_request, muas::GetEntityInfo_Callback _callback,  const size_t strategy)
+void muas::EntityServiceStub::GetEntityInfo_Async(const std::vector<ndn::Name>& providers, const muas::Entity_GetEntityInfo_Request &_request, muas::GetEntityInfo_Callback _callback, muas::GetEntityInfo_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("GetEntityInfo_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::Entity_GetEntityInfo_Response response;
@@ -34,10 +41,17 @@ void muas::EntityServiceStub::GetEntityInfo_Async(const std::vector<ndn::Name>& 
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("Entity"), ndn::Name("GetEntityInfo"), requestId, payload, strategy);
     GetEntityInfo_Callbacks.emplace(requestId, _callback);
+    GetEntityInfo_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->GetEntityInfo_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
-void muas::EntityServiceStub::GetPosition_Async(const std::vector<ndn::Name>& providers, const muas::Entity_GetPosition_Request &_request, muas::GetPosition_Callback _callback,  const size_t strategy)
+void muas::EntityServiceStub::GetPosition_Async(const std::vector<ndn::Name>& providers, const muas::Entity_GetPosition_Request &_request, muas::GetPosition_Callback _callback, muas::GetPosition_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("GetPosition_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::Entity_GetPosition_Response response;
@@ -47,10 +61,17 @@ void muas::EntityServiceStub::GetPosition_Async(const std::vector<ndn::Name>& pr
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("Entity"), ndn::Name("GetPosition"), requestId, payload, strategy);
     GetPosition_Callbacks.emplace(requestId, _callback);
+    GetPosition_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->GetPosition_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
-void muas::EntityServiceStub::GetOrientation_Async(const std::vector<ndn::Name>& providers, const muas::Entity_GetOrientation_Request &_request, muas::GetOrientation_Callback _callback,  const size_t strategy)
+void muas::EntityServiceStub::GetOrientation_Async(const std::vector<ndn::Name>& providers, const muas::Entity_GetOrientation_Request &_request, muas::GetOrientation_Callback _callback, muas::GetOrientation_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("GetOrientation_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::Entity_GetOrientation_Response response;
@@ -60,7 +81,14 @@ void muas::EntityServiceStub::GetOrientation_Async(const std::vector<ndn::Name>&
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("Entity"), ndn::Name("GetOrientation"), requestId, payload, strategy);
     GetOrientation_Callbacks.emplace(requestId, _callback);
+    GetOrientation_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->GetOrientation_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
 
@@ -101,6 +129,8 @@ void muas::EntityServiceStub::OnResponseDecryptionSuccessCallback(const ndn::Nam
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    Echo_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }
@@ -135,6 +165,8 @@ void muas::EntityServiceStub::OnResponseDecryptionSuccessCallback(const ndn::Nam
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    GetEntityInfo_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }
@@ -169,6 +201,8 @@ void muas::EntityServiceStub::OnResponseDecryptionSuccessCallback(const ndn::Nam
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    GetPosition_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }
@@ -203,6 +237,8 @@ void muas::EntityServiceStub::OnResponseDecryptionSuccessCallback(const ndn::Nam
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    GetOrientation_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }

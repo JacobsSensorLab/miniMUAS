@@ -11,7 +11,7 @@ muas::MAVLinkServiceStub::MAVLinkServiceStub(ndn_service_framework::ServiceUser 
 muas::MAVLinkServiceStub::~MAVLinkServiceStub(){}
 
 
-void muas::MAVLinkServiceStub::Generic_Async(const std::vector<ndn::Name>& providers, const muas::MAVLink_Generic_Request &_request, muas::Generic_Callback _callback,  const size_t strategy)
+void muas::MAVLinkServiceStub::Generic_Async(const std::vector<ndn::Name>& providers, const muas::MAVLink_Generic_Request &_request, muas::Generic_Callback _callback, muas::Generic_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("Generic_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::MAVLink_Generic_Response response;
@@ -21,7 +21,14 @@ void muas::MAVLinkServiceStub::Generic_Async(const std::vector<ndn::Name>& provi
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("MAVLink"), ndn::Name("Generic"), requestId, payload, strategy);
     Generic_Callbacks.emplace(requestId, _callback);
+    Generic_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->Generic_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
 
@@ -62,6 +69,8 @@ void muas::MAVLinkServiceStub::OnResponseDecryptionSuccessCallback(const ndn::Na
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    Generic_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }

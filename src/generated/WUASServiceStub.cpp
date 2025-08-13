@@ -11,7 +11,7 @@ muas::WUASServiceStub::WUASServiceStub(ndn_service_framework::ServiceUser &user)
 muas::WUASServiceStub::~WUASServiceStub(){}
 
 
-void muas::WUASServiceStub::QuadRaster_Async(const std::vector<ndn::Name>& providers, const muas::WUAS_QuadRaster_Request &_request, muas::QuadRaster_Callback _callback,  const size_t strategy)
+void muas::WUASServiceStub::QuadRaster_Async(const std::vector<ndn::Name>& providers, const muas::WUAS_QuadRaster_Request &_request, muas::QuadRaster_Callback _callback, muas::QuadRaster_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("QuadRaster_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::WUAS_QuadRaster_Response response;
@@ -21,7 +21,14 @@ void muas::WUASServiceStub::QuadRaster_Async(const std::vector<ndn::Name>& provi
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("WUAS"), ndn::Name("QuadRaster"), requestId, payload, strategy);
     QuadRaster_Callbacks.emplace(requestId, _callback);
+    QuadRaster_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->QuadRaster_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
 
@@ -62,6 +69,8 @@ void muas::WUASServiceStub::OnResponseDecryptionSuccessCallback(const ndn::Name 
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    QuadRaster_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }

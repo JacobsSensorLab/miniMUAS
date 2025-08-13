@@ -11,7 +11,7 @@ muas::FlightCtrlServiceStub::FlightCtrlServiceStub(ndn_service_framework::Servic
 muas::FlightCtrlServiceStub::~FlightCtrlServiceStub(){}
 
 
-void muas::FlightCtrlServiceStub::SwitchMode_Async(const std::vector<ndn::Name>& providers, const muas::FlightCtrl_SwitchMode_Request &_request, muas::SwitchMode_Callback _callback,  const size_t strategy)
+void muas::FlightCtrlServiceStub::SwitchMode_Async(const std::vector<ndn::Name>& providers, const muas::FlightCtrl_SwitchMode_Request &_request, muas::SwitchMode_Callback _callback, muas::SwitchMode_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("SwitchMode_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::FlightCtrl_SwitchMode_Response response;
@@ -21,10 +21,17 @@ void muas::FlightCtrlServiceStub::SwitchMode_Async(const std::vector<ndn::Name>&
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("FlightCtrl"), ndn::Name("SwitchMode"), requestId, payload, strategy);
     SwitchMode_Callbacks.emplace(requestId, _callback);
+    SwitchMode_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->SwitchMode_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
-void muas::FlightCtrlServiceStub::Takeoff_Async(const std::vector<ndn::Name>& providers, const muas::FlightCtrl_Takeoff_Request &_request, muas::Takeoff_Callback _callback,  const size_t strategy)
+void muas::FlightCtrlServiceStub::Takeoff_Async(const std::vector<ndn::Name>& providers, const muas::FlightCtrl_Takeoff_Request &_request, muas::Takeoff_Callback _callback, muas::Takeoff_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("Takeoff_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::FlightCtrl_Takeoff_Response response;
@@ -34,10 +41,17 @@ void muas::FlightCtrlServiceStub::Takeoff_Async(const std::vector<ndn::Name>& pr
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("FlightCtrl"), ndn::Name("Takeoff"), requestId, payload, strategy);
     Takeoff_Callbacks.emplace(requestId, _callback);
+    Takeoff_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->Takeoff_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
-void muas::FlightCtrlServiceStub::Land_Async(const std::vector<ndn::Name>& providers, const muas::FlightCtrl_Land_Request &_request, muas::Land_Callback _callback,  const size_t strategy)
+void muas::FlightCtrlServiceStub::Land_Async(const std::vector<ndn::Name>& providers, const muas::FlightCtrl_Land_Request &_request, muas::Land_Callback _callback, muas::Land_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("Land_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::FlightCtrl_Land_Response response;
@@ -47,10 +61,17 @@ void muas::FlightCtrlServiceStub::Land_Async(const std::vector<ndn::Name>& provi
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("FlightCtrl"), ndn::Name("Land"), requestId, payload, strategy);
     Land_Callbacks.emplace(requestId, _callback);
+    Land_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->Land_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
-void muas::FlightCtrlServiceStub::RTL_Async(const std::vector<ndn::Name>& providers, const muas::FlightCtrl_RTL_Request &_request, muas::RTL_Callback _callback,  const size_t strategy)
+void muas::FlightCtrlServiceStub::RTL_Async(const std::vector<ndn::Name>& providers, const muas::FlightCtrl_RTL_Request &_request, muas::RTL_Callback _callback, muas::RTL_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("RTL_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::FlightCtrl_RTL_Response response;
@@ -60,10 +81,17 @@ void muas::FlightCtrlServiceStub::RTL_Async(const std::vector<ndn::Name>& provid
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("FlightCtrl"), ndn::Name("RTL"), requestId, payload, strategy);
     RTL_Callbacks.emplace(requestId, _callback);
+    RTL_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->RTL_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
-void muas::FlightCtrlServiceStub::Kill_Async(const std::vector<ndn::Name>& providers, const muas::FlightCtrl_Kill_Request &_request, muas::Kill_Callback _callback,  const size_t strategy)
+void muas::FlightCtrlServiceStub::Kill_Async(const std::vector<ndn::Name>& providers, const muas::FlightCtrl_Kill_Request &_request, muas::Kill_Callback _callback, muas::Kill_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("Kill_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::FlightCtrl_Kill_Response response;
@@ -73,10 +101,17 @@ void muas::FlightCtrlServiceStub::Kill_Async(const std::vector<ndn::Name>& provi
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("FlightCtrl"), ndn::Name("Kill"), requestId, payload, strategy);
     Kill_Callbacks.emplace(requestId, _callback);
+    Kill_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->Kill_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
-void muas::FlightCtrlServiceStub::SetSpeed_Async(const std::vector<ndn::Name>& providers, const muas::FlightCtrl_SetSpeed_Request &_request, muas::SetSpeed_Callback _callback,  const size_t strategy)
+void muas::FlightCtrlServiceStub::SetSpeed_Async(const std::vector<ndn::Name>& providers, const muas::FlightCtrl_SetSpeed_Request &_request, muas::SetSpeed_Callback _callback, muas::SetSpeed_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("SetSpeed_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::FlightCtrl_SetSpeed_Response response;
@@ -86,10 +121,17 @@ void muas::FlightCtrlServiceStub::SetSpeed_Async(const std::vector<ndn::Name>& p
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("FlightCtrl"), ndn::Name("SetSpeed"), requestId, payload, strategy);
     SetSpeed_Callbacks.emplace(requestId, _callback);
+    SetSpeed_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->SetSpeed_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
-void muas::FlightCtrlServiceStub::Reposition_Async(const std::vector<ndn::Name>& providers, const muas::FlightCtrl_Reposition_Request &_request, muas::Reposition_Callback _callback,  const size_t strategy)
+void muas::FlightCtrlServiceStub::Reposition_Async(const std::vector<ndn::Name>& providers, const muas::FlightCtrl_Reposition_Request &_request, muas::Reposition_Callback _callback, muas::Reposition_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("Reposition_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::FlightCtrl_Reposition_Response response;
@@ -99,7 +141,14 @@ void muas::FlightCtrlServiceStub::Reposition_Async(const std::vector<ndn::Name>&
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("FlightCtrl"), ndn::Name("Reposition"), requestId, payload, strategy);
     Reposition_Callbacks.emplace(requestId, _callback);
+    Reposition_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->Reposition_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
 
@@ -140,6 +189,8 @@ void muas::FlightCtrlServiceStub::OnResponseDecryptionSuccessCallback(const ndn:
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    SwitchMode_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }
@@ -174,6 +225,8 @@ void muas::FlightCtrlServiceStub::OnResponseDecryptionSuccessCallback(const ndn:
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    Takeoff_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }
@@ -208,6 +261,8 @@ void muas::FlightCtrlServiceStub::OnResponseDecryptionSuccessCallback(const ndn:
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    Land_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }
@@ -242,6 +297,8 @@ void muas::FlightCtrlServiceStub::OnResponseDecryptionSuccessCallback(const ndn:
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    RTL_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }
@@ -276,6 +333,8 @@ void muas::FlightCtrlServiceStub::OnResponseDecryptionSuccessCallback(const ndn:
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    Kill_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }
@@ -310,6 +369,8 @@ void muas::FlightCtrlServiceStub::OnResponseDecryptionSuccessCallback(const ndn:
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    SetSpeed_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }
@@ -344,6 +405,8 @@ void muas::FlightCtrlServiceStub::OnResponseDecryptionSuccessCallback(const ndn:
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    Reposition_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }

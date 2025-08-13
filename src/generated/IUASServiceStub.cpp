@@ -11,7 +11,7 @@ muas::IUASServiceStub::IUASServiceStub(ndn_service_framework::ServiceUser &user)
 muas::IUASServiceStub::~IUASServiceStub(){}
 
 
-void muas::IUASServiceStub::PointOrbit_Async(const std::vector<ndn::Name>& providers, const muas::IUAS_PointOrbit_Request &_request, muas::PointOrbit_Callback _callback,  const size_t strategy)
+void muas::IUASServiceStub::PointOrbit_Async(const std::vector<ndn::Name>& providers, const muas::IUAS_PointOrbit_Request &_request, muas::PointOrbit_Callback _callback, muas::PointOrbit_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("PointOrbit_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::IUAS_PointOrbit_Response response;
@@ -21,10 +21,17 @@ void muas::IUASServiceStub::PointOrbit_Async(const std::vector<ndn::Name>& provi
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("IUAS"), ndn::Name("PointOrbit"), requestId, payload, strategy);
     PointOrbit_Callbacks.emplace(requestId, _callback);
+    PointOrbit_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->PointOrbit_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
-void muas::IUASServiceStub::PointHover_Async(const std::vector<ndn::Name>& providers, const muas::IUAS_PointHover_Request &_request, muas::PointHover_Callback _callback,  const size_t strategy)
+void muas::IUASServiceStub::PointHover_Async(const std::vector<ndn::Name>& providers, const muas::IUAS_PointHover_Request &_request, muas::PointHover_Callback _callback, muas::PointHover_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("PointHover_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::IUAS_PointHover_Response response;
@@ -34,7 +41,14 @@ void muas::IUASServiceStub::PointHover_Async(const std::vector<ndn::Name>& provi
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("IUAS"), ndn::Name("PointHover"), requestId, payload, strategy);
     PointHover_Callbacks.emplace(requestId, _callback);
+    PointHover_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->PointHover_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
 
@@ -75,6 +89,8 @@ void muas::IUASServiceStub::OnResponseDecryptionSuccessCallback(const ndn::Name 
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    PointOrbit_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }
@@ -109,6 +125,8 @@ void muas::IUASServiceStub::OnResponseDecryptionSuccessCallback(const ndn::Name 
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    PointHover_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }

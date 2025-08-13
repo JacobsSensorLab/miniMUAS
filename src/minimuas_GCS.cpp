@@ -111,6 +111,10 @@ main(int argc, char **argv)
 
                 NDN_LOG_INFO("Request latency: " << req_latency_ms << " ms / Response latency: " << res_latency_ms << " ms");
             },
+            [&](const muas::FlightCtrl_Takeoff_Request& _request) {
+                NDN_LOG_INFO("Timeout " << _request.DebugString());
+            },
+            3000,
             ndn_service_framework::tlv::NoCoordination
         );
     };
@@ -151,6 +155,10 @@ main(int argc, char **argv)
 
                 NDN_LOG_INFO("Request latency: " << req_latency_ms << " ms / Response latency: " << res_latency_ms << " ms");
             },
+            [&](const muas::FlightCtrl_Takeoff_Request& _request) {
+                NDN_LOG_INFO("Timeout " << _request.DebugString());
+            },
+            3000,
             ndn_service_framework::tlv::NoCoordination
         );
     };
@@ -196,6 +204,10 @@ main(int argc, char **argv)
 
                 NDN_LOG_INFO("Request latency: " << req_latency_ms << " ms / Response latency: " << res_latency_ms << " ms");
             },
+            [&](const muas::SensorCtrl_GetSensorInfo_Request& _request) {
+                NDN_LOG_INFO("Timeout " << _request.DebugString());
+            },
+            3000,
             ndn_service_framework::tlv::NoCoordination
         );
     };
@@ -240,6 +252,10 @@ main(int argc, char **argv)
                     getCapture(iuas_providers.at(0).toUri(), iuas_sensor_idx, img_idx);
                 }).detach();
             },
+            [&](const muas::SensorCtrl_CaptureSingle_Request& _request) {
+                NDN_LOG_INFO("Timeout " << _request.DebugString());
+            },
+            3000,
             ndn_service_framework::tlv::NoCoordination
         );
     };

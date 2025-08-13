@@ -11,7 +11,7 @@ muas::MissionServiceStub::MissionServiceStub(ndn_service_framework::ServiceUser 
 muas::MissionServiceStub::~MissionServiceStub(){}
 
 
-void muas::MissionServiceStub::GetMissionInfo_Async(const std::vector<ndn::Name>& providers, const muas::Mission_GetMissionInfo_Request &_request, muas::GetMissionInfo_Callback _callback,  const size_t strategy)
+void muas::MissionServiceStub::GetMissionInfo_Async(const std::vector<ndn::Name>& providers, const muas::Mission_GetMissionInfo_Request &_request, muas::GetMissionInfo_Callback _callback, muas::GetMissionInfo_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("GetMissionInfo_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::Mission_GetMissionInfo_Response response;
@@ -21,10 +21,17 @@ void muas::MissionServiceStub::GetMissionInfo_Async(const std::vector<ndn::Name>
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("Mission"), ndn::Name("GetMissionInfo"), requestId, payload, strategy);
     GetMissionInfo_Callbacks.emplace(requestId, _callback);
+    GetMissionInfo_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->GetMissionInfo_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
-void muas::MissionServiceStub::GetItem_Async(const std::vector<ndn::Name>& providers, const muas::Mission_GetItem_Request &_request, muas::GetItem_Callback _callback,  const size_t strategy)
+void muas::MissionServiceStub::GetItem_Async(const std::vector<ndn::Name>& providers, const muas::Mission_GetItem_Request &_request, muas::GetItem_Callback _callback, muas::GetItem_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("GetItem_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::Mission_GetItem_Response response;
@@ -34,10 +41,17 @@ void muas::MissionServiceStub::GetItem_Async(const std::vector<ndn::Name>& provi
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("Mission"), ndn::Name("GetItem"), requestId, payload, strategy);
     GetItem_Callbacks.emplace(requestId, _callback);
+    GetItem_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->GetItem_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
-void muas::MissionServiceStub::SetItem_Async(const std::vector<ndn::Name>& providers, const muas::Mission_SetItem_Request &_request, muas::SetItem_Callback _callback,  const size_t strategy)
+void muas::MissionServiceStub::SetItem_Async(const std::vector<ndn::Name>& providers, const muas::Mission_SetItem_Request &_request, muas::SetItem_Callback _callback, muas::SetItem_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("SetItem_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::Mission_SetItem_Response response;
@@ -47,10 +61,17 @@ void muas::MissionServiceStub::SetItem_Async(const std::vector<ndn::Name>& provi
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("Mission"), ndn::Name("SetItem"), requestId, payload, strategy);
     SetItem_Callbacks.emplace(requestId, _callback);
+    SetItem_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->SetItem_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
-void muas::MissionServiceStub::Clear_Async(const std::vector<ndn::Name>& providers, const muas::Mission_Clear_Request &_request, muas::Clear_Callback _callback,  const size_t strategy)
+void muas::MissionServiceStub::Clear_Async(const std::vector<ndn::Name>& providers, const muas::Mission_Clear_Request &_request, muas::Clear_Callback _callback, muas::Clear_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("Clear_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::Mission_Clear_Response response;
@@ -60,10 +81,17 @@ void muas::MissionServiceStub::Clear_Async(const std::vector<ndn::Name>& provide
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("Mission"), ndn::Name("Clear"), requestId, payload, strategy);
     Clear_Callbacks.emplace(requestId, _callback);
+    Clear_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->Clear_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
-void muas::MissionServiceStub::Start_Async(const std::vector<ndn::Name>& providers, const muas::Mission_Start_Request &_request, muas::Start_Callback _callback,  const size_t strategy)
+void muas::MissionServiceStub::Start_Async(const std::vector<ndn::Name>& providers, const muas::Mission_Start_Request &_request, muas::Start_Callback _callback, muas::Start_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("Start_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::Mission_Start_Response response;
@@ -73,10 +101,17 @@ void muas::MissionServiceStub::Start_Async(const std::vector<ndn::Name>& provide
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("Mission"), ndn::Name("Start"), requestId, payload, strategy);
     Start_Callbacks.emplace(requestId, _callback);
+    Start_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->Start_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
-void muas::MissionServiceStub::Pause_Async(const std::vector<ndn::Name>& providers, const muas::Mission_Pause_Request &_request, muas::Pause_Callback _callback,  const size_t strategy)
+void muas::MissionServiceStub::Pause_Async(const std::vector<ndn::Name>& providers, const muas::Mission_Pause_Request &_request, muas::Pause_Callback _callback, muas::Pause_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("Pause_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::Mission_Pause_Response response;
@@ -86,10 +121,17 @@ void muas::MissionServiceStub::Pause_Async(const std::vector<ndn::Name>& provide
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("Mission"), ndn::Name("Pause"), requestId, payload, strategy);
     Pause_Callbacks.emplace(requestId, _callback);
+    Pause_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->Pause_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
-void muas::MissionServiceStub::Continue_Async(const std::vector<ndn::Name>& providers, const muas::Mission_Continue_Request &_request, muas::Continue_Callback _callback,  const size_t strategy)
+void muas::MissionServiceStub::Continue_Async(const std::vector<ndn::Name>& providers, const muas::Mission_Continue_Request &_request, muas::Continue_Callback _callback, muas::Continue_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("Continue_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::Mission_Continue_Response response;
@@ -99,10 +141,17 @@ void muas::MissionServiceStub::Continue_Async(const std::vector<ndn::Name>& prov
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("Mission"), ndn::Name("Continue"), requestId, payload, strategy);
     Continue_Callbacks.emplace(requestId, _callback);
+    Continue_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->Continue_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
-void muas::MissionServiceStub::Terminate_Async(const std::vector<ndn::Name>& providers, const muas::Mission_Terminate_Request &_request, muas::Terminate_Callback _callback,  const size_t strategy)
+void muas::MissionServiceStub::Terminate_Async(const std::vector<ndn::Name>& providers, const muas::Mission_Terminate_Request &_request, muas::Terminate_Callback _callback, muas::Terminate_Timeout_Callback _timeout_callback, int timeout_ms, const size_t strategy)
 {
     NDN_LOG_INFO("Terminate_Async "<<"provider:"<<providers.size()<<" request:"<<_request.DebugString());
     muas::Mission_Terminate_Response response;
@@ -112,7 +161,14 @@ void muas::MissionServiceStub::Terminate_Async(const std::vector<ndn::Name>& pro
     ndn::Name requestId(ndn::time::toIsoString(ndn::time::system_clock::now()));
     m_user->PublishRequest(providers, ndn::Name("Mission"), ndn::Name("Terminate"), requestId, payload, strategy);
     Terminate_Callbacks.emplace(requestId, _callback);
+    Terminate_Timeout_Callbacks.emplace(requestId, _timeout_callback);
     strategyMap.emplace(requestId, strategy);
+    
+    m_scheduler.schedule(ndn::time::milliseconds(timeout_ms), [this, requestId, _request, _timeout_callback] { 
+        // time out
+        this->Terminate_Callbacks.erase(requestId);
+        _timeout_callback(_request);
+    });
 }
 
 
@@ -153,6 +209,8 @@ void muas::MissionServiceStub::OnResponseDecryptionSuccessCallback(const ndn::Na
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    GetMissionInfo_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }
@@ -187,6 +245,8 @@ void muas::MissionServiceStub::OnResponseDecryptionSuccessCallback(const ndn::Na
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    GetItem_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }
@@ -221,6 +281,8 @@ void muas::MissionServiceStub::OnResponseDecryptionSuccessCallback(const ndn::Na
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    SetItem_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }
@@ -255,6 +317,8 @@ void muas::MissionServiceStub::OnResponseDecryptionSuccessCallback(const ndn::Na
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    Clear_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }
@@ -289,6 +353,8 @@ void muas::MissionServiceStub::OnResponseDecryptionSuccessCallback(const ndn::Na
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    Start_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }
@@ -323,6 +389,8 @@ void muas::MissionServiceStub::OnResponseDecryptionSuccessCallback(const ndn::Na
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    Pause_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }
@@ -357,6 +425,8 @@ void muas::MissionServiceStub::OnResponseDecryptionSuccessCallback(const ndn::Na
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    Continue_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }
@@ -391,6 +461,8 @@ void muas::MissionServiceStub::OnResponseDecryptionSuccessCallback(const ndn::Na
                     }else{
                         NDN_LOG_INFO("OnResponseDecryptionSuccessCallback: Keep callback for ndn_service_framework::tlv::NoCoordination");
                     }
+                    // remove timeout callback if receive any response
+                    Terminate_Timeout_Callbacks.erase(RequestID);
                 }
             }
         }

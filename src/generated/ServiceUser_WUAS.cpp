@@ -50,6 +50,8 @@ muas::ServiceUser_WUAS::~ServiceUser_WUAS() {}
 
 void muas::ServiceUser_WUAS::OnResponse(const ndn::svs::SVSPubSub::SubscriptionData &subscription)
 {
+        if(!isFresh(subscription)) return;
+
         ndn::Name RequesterName, providerName,ServiceName, FunctionName, RequestId;
         //std::tie(ServiceProviderName, RequesterName, ServiceName, FunctionName, RequestId) =
         auto results=ndn_service_framework::parseResponseName(subscription.name);

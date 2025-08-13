@@ -132,8 +132,13 @@ main(int argc, char **argv)
                 auto res_latency_ms = res_recv_ms - res_sent_ms;
 
             NDN_LOG_INFO("Request latency: " << req_latency_ms << " ms / Response latency: " << res_latency_ms << " ms");
-        }
-        , ndn_service_framework::tlv::NoCoordination);
+            },
+            [&](const muas::FlightCtrl_Takeoff_Request& _request) {
+                NDN_LOG_INFO("Timeout " << _request.DebugString());
+            },
+            3000,
+            ndn_service_framework::tlv::NoCoordination
+        );
     };
 
     auto orbit = [&]() {
@@ -183,8 +188,13 @@ main(int argc, char **argv)
             if (_response.response().code() == muas::NDNSF_Response_miniMUAS_Code_SUCCESS) {
                 NDN_LOG_INFO("IUAS Point Orbit successfully initialized.");
             }
-        }
-        , ndn_service_framework::tlv::NoCoordination);
+        },
+        [&](const muas::IUAS_PointOrbit_Request& _request) {
+            NDN_LOG_INFO("Timeout " << _request.DebugString());
+        },
+        3000,
+        ndn_service_framework::tlv::NoCoordination
+        );
     };
 
     auto interrogate = [&]() {

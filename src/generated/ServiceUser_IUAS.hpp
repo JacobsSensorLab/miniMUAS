@@ -19,29 +19,29 @@ namespace muas
         virtual ~ServiceUser_IUAS();
 
         
-        void Echo_Async(const std::vector<ndn::Name>& providers, const muas::Entity_Echo_Request &_request, muas::Echo_Callback _callback,  const size_t strategy = ndn_service_framework::tlv::FirstResponding)
+        void Echo_Async(const std::vector<ndn::Name>& providers, const muas::Entity_Echo_Request &_request, muas::Echo_Callback _callback,  muas::Echo_Timeout_Callback _timeout_callback, int timeout_ms,  const size_t strategy = ndn_service_framework::tlv::FirstResponding)
         {
-            m_EntityServiceStub.Echo_Async(providers, _request, _callback, strategy);
+            m_EntityServiceStub.Echo_Async(providers, _request, _callback, _timeout_callback, timeout_ms, strategy);
         }
         
-        void GetEntityInfo_Async(const std::vector<ndn::Name>& providers, const muas::Entity_GetEntityInfo_Request &_request, muas::GetEntityInfo_Callback _callback,  const size_t strategy = ndn_service_framework::tlv::FirstResponding)
+        void GetEntityInfo_Async(const std::vector<ndn::Name>& providers, const muas::Entity_GetEntityInfo_Request &_request, muas::GetEntityInfo_Callback _callback,  muas::GetEntityInfo_Timeout_Callback _timeout_callback, int timeout_ms,  const size_t strategy = ndn_service_framework::tlv::FirstResponding)
         {
-            m_EntityServiceStub.GetEntityInfo_Async(providers, _request, _callback, strategy);
+            m_EntityServiceStub.GetEntityInfo_Async(providers, _request, _callback, _timeout_callback, timeout_ms, strategy);
         }
         
-        void GetPosition_Async(const std::vector<ndn::Name>& providers, const muas::Entity_GetPosition_Request &_request, muas::GetPosition_Callback _callback,  const size_t strategy = ndn_service_framework::tlv::FirstResponding)
+        void GetPosition_Async(const std::vector<ndn::Name>& providers, const muas::Entity_GetPosition_Request &_request, muas::GetPosition_Callback _callback,  muas::GetPosition_Timeout_Callback _timeout_callback, int timeout_ms,  const size_t strategy = ndn_service_framework::tlv::FirstResponding)
         {
-            m_EntityServiceStub.GetPosition_Async(providers, _request, _callback, strategy);
+            m_EntityServiceStub.GetPosition_Async(providers, _request, _callback, _timeout_callback, timeout_ms, strategy);
         }
         
-        void GetOrientation_Async(const std::vector<ndn::Name>& providers, const muas::Entity_GetOrientation_Request &_request, muas::GetOrientation_Callback _callback,  const size_t strategy = ndn_service_framework::tlv::FirstResponding)
+        void GetOrientation_Async(const std::vector<ndn::Name>& providers, const muas::Entity_GetOrientation_Request &_request, muas::GetOrientation_Callback _callback,  muas::GetOrientation_Timeout_Callback _timeout_callback, int timeout_ms,  const size_t strategy = ndn_service_framework::tlv::FirstResponding)
         {
-            m_EntityServiceStub.GetOrientation_Async(providers, _request, _callback, strategy);
+            m_EntityServiceStub.GetOrientation_Async(providers, _request, _callback, _timeout_callback, timeout_ms, strategy);
         }
         
-        void Test_Async(const std::vector<ndn::Name>& providers, const muas::Admin_Test_Request &_request, muas::Test_Callback _callback,  const size_t strategy = ndn_service_framework::tlv::FirstResponding)
+        void Test_Async(const std::vector<ndn::Name>& providers, const muas::Admin_Test_Request &_request, muas::Test_Callback _callback,  muas::Test_Timeout_Callback _timeout_callback, int timeout_ms,  const size_t strategy = ndn_service_framework::tlv::FirstResponding)
         {
-            m_AdminServiceStub.Test_Async(providers, _request, _callback, strategy);
+            m_AdminServiceStub.Test_Async(providers, _request, _callback, _timeout_callback, timeout_ms, strategy);
         }
         
 
