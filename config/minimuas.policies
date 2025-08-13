@@ -3,64 +3,29 @@ provider-policies
 {  
     provider-policy  
     {  
-        for /FlightCtrl/Takeoff ; service name without provider  
-        allow ; allowed provider prefixes  
-        { 
-            /muas/iuas-01
-            /muas/wuas-01
-        } 
+        for /muas/iuas-01
+        allow  
+        {
+            /FlightCtrl/Takeoff
+            /FlightCtrl/Land
+             /FlightCtrl/Kill
+             /FlightCtrl/RTL
+             /Sensor/GetSensorInfo
+             /Sensor/CaptureSingle
+             /IUAS/PointOrbit
+        }
     }  
     provider-policy  
     {  
-        for /FlightCtrl/Land ; service name without provider  
-        allow ; allowed provider prefixes  
-        { 
-            /muas/iuas-01
-            /muas/wuas-01
-        }   
-    } 
-    provider-policy  
-    {  
-        for /FlightCtrl/Kill ; service name without provider  
-        allow ; allowed provider prefixes  
-        { 
-            /muas/iuas-01
-            /muas/wuas-01
-        }   
+        for /muas/wuas-01
+        allow  
+        {
+            /FlightCtrl/Takeoff
+            /FlightCtrl/Land
+             /FlightCtrl/Kill
+             /FlightCtrl/RTL
+        }
     }  
-    provider-policy  
-    {  
-        for /FlightCtrl/RTL ; service name without provider  
-        allow ; allowed provider prefixes  
-        { 
-            /muas/iuas-01
-            /muas/wuas-01
-        }   
-    } 
-    provider-policy  
-    {  
-        for /Sensor/GetSensorInfo ; service name without provider  
-        allow ; allowed provider prefixes  
-        { 
-            /muas/iuas-01
-        }   
-    } 
-    provider-policy  
-    {  
-        for /Sensor/CaptureSingle ; service name without provider  
-        allow ; allowed provider prefixes  
-        { 
-            /muas/iuas-01
-        }   
-    } 
-    provider-policy  
-    {  
-        for /IUAS/PointOrbit ; service name without provider  
-        allow ; allowed provider prefixes  
-        { 
-            /muas/iuas-01
-        }   
-    } 
 }  
 
 user-policies  
@@ -95,5 +60,5 @@ user-policies
             /muas/iuas-01/Sensor/CaptureSingle
         }
     }  
-  
+ 
 }  
