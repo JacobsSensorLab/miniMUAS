@@ -1,6 +1,8 @@
 #include <iostream>
 #include <string>
 #include <sys/time.h>
+#include <chrono>
+#include <thread>
 
 #include "./generated/messages.pb.h"
 #include <ndn-service-framework/common.hpp>
@@ -9,6 +11,7 @@
 #include <mavsdk/mavsdk.h>
 #include <mavsdk/component_type.h>
 #include <mavsdk/plugins/action/action.h>
+#include <mavsdk/plugins/offboard/offboard.h>
 #include <mavsdk/plugins/mavlink_passthrough/mavlink_passthrough.h>
 #include <mavsdk/plugins/telemetry/telemetry.h>
 
@@ -19,6 +22,9 @@
 #include <string.h>
 #include <dirent.h>
 #include <ctype.h>
+
+using std::chrono::seconds;
+using std::this_thread::sleep_for;
 
 NDN_LOG_INIT(muas.iuas_drone);
 
@@ -97,9 +103,10 @@ main(int argc, char **argv)
     m_telemetry.set_rate_in_air(0.5);
     m_telemetry.set_rate_gps_info(0.5);
 
+    auto m_offboard = mavsdk::Offboard{system};
+
     std::string identity = argv[1];
     std::string conf_dir = "/usr/local/bin";
-    ndn::Face m_face;
     auto sensor_idx = 0;
     muas::Sensor sensor;
     std::string sensor_namespace = identity + "/sensor/" + std::to_string(sensor_idx);
@@ -108,6 +115,8 @@ main(int argc, char **argv)
     sensor.set_id(sensor_idx);
     sensor.set_data_namespace(sensor_namespace);
 
+    ndn::Face m_face;
+    ndn::Scheduler m_scheduler(m_face.getIoContext());
     ndn::security::KeyChain m_keyChain;
     ndn::security::Certificate gs_certificate(
         m_keyChain.getPib()
@@ -125,6 +134,65 @@ main(int argc, char **argv)
             .getDefaultCertificate()
         , conf_dir + "/trust-any.conf"
     );
+
+    auto offboard_orbit = [&]() {
+        NDN_LOG_INFO("Reading home position in Global coordinates");
+
+        const auto res_and_gps_origin = m_telemetry.get_gps_global_origin();
+        if (res_and_gps_origin.first != mavsdk::Telemetry::Result::Success) {
+            std::cerr << "Telemetry failed: " << res_and_gps_origin.first << '\n';
+        }
+        mavsdk::Telemetry::GpsGlobalOrigin origin = res_and_gps_origin.second;
+        std::cerr << "Origin (lat, lon, alt amsl):\n " << origin << '\n';
+
+        NDN_LOG_INFO("Starting Offboard position control in Global coordinates");
+        
+        // Send it once before starting offboard, otherwise it will be rejected.
+        // this goes to the center of the ellipse, using the default altitude type (altitude relative to home)
+        const mavsdk::Offboard::PositionGlobalYaw north{
+            35.120881,
+            -89.934772,
+            6.0f,
+            0.0f
+        };
+        m_offboard.set_position_global(north);
+
+        mavsdk::Offboard::Result offboard_result = m_offboard.start();
+        if (offboard_result != mavsdk::Offboard::Result::Success) {
+            NDN_LOG_INFO("Offboard start failed: " << offboard_result);
+        }
+
+        NDN_LOG_INFO("Offboard started");
+        NDN_LOG_INFO("Going to coordinate near center of ellipse");
+        sleep_for(seconds(10));
+
+        offboard_result = m_offboard.stop();
+        if (offboard_result != mavsdk::Offboard::Result::Success) {
+            std::cerr << "Offboard stop failed: " << offboard_result << '\n';
+        }
+
+        NDN_LOG_INFO("Wait for a bit");
+        mavsdk::Offboard::VelocityBodyYawspeed stay{};
+        m_offboard.set_velocity_body(stay);
+        sleep_for(seconds(2));
+        
+        NDN_LOG_INFO("Fly a circle sideways");
+        mavsdk::Offboard::VelocityBodyYawspeed circle{};
+        circle.right_m_s = -5.0f;
+        circle.yawspeed_deg_s = 30.0f;
+        m_offboard.set_velocity_body(circle);
+        sleep_for(seconds(15));
+
+        NDN_LOG_INFO("Wait for a bit");
+        m_offboard.set_velocity_body(stay);
+        sleep_for(seconds(2));
+
+        offboard_result = m_offboard.stop();
+        if (offboard_result != mavsdk::Offboard::Result::Success) {
+            NDN_LOG_INFO("Offboard stop failed: " << offboard_result);
+        }
+        NDN_LOG_INFO("Offboard stopped");
+    };
 
     m_serviceProvider.m_FlightCtrlService.Takeoff_Handler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Takeoff_Request& _request, muas::FlightCtrl_Takeoff_Response& _response){
         struct timeval tv;
@@ -441,7 +509,7 @@ main(int argc, char **argv)
         _response.mutable_time_response_sent()->set_nanos(time_res_sent.nanos());
     };
 
-    m_serviceProvider.m_IUASService.PointOrbit_Handler = [&](const ndn::Name& requesterIdentity, const muas::IUAS_PointOrbit_Request& _request, muas::IUAS_PointOrbit_Response& _response){
+    m_serviceProvider.m_IUASService.PointOrbit_Handler = [&, offboard_orbit](const ndn::Name& requesterIdentity, const muas::IUAS_PointOrbit_Request& _request, muas::IUAS_PointOrbit_Response& _response){
         struct timeval tv;
         gettimeofday(&tv, NULL);
 
@@ -492,6 +560,7 @@ main(int argc, char **argv)
         mavsdk::MavlinkPassthrough::CommandLong command_long{};
         command_long.command = MAV_CMD_NAV_LOITER_TURNS;
         command_long.target_sysid = passthrough.get_target_sysid();
+        command_long.target_compid = passthrough.get_target_compid();
         command_long.param1 = num_turns;
         command_long.param3 = orbit_radius;
         command_long.param5 = latitude;
@@ -505,7 +574,9 @@ main(int argc, char **argv)
         if (orbit_result != mavsdk::MavlinkPassthrough::Result::Success) {
             NDN_LOG_INFO("PointOrbit request failed: " << orbit_result);
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
-            _response.mutable_response()->set_msg("Orbit failed");
+            _response.mutable_response()->set_msg("Orbit failed. Attempting offboard control.");
+            std::cout << "Beginning offboard orbit in 3 seconds." << std::endl;
+            m_scheduler.schedule(ndn::time::milliseconds(3000), offboard_orbit);
 
             gettimeofday(&tv, NULL);
 

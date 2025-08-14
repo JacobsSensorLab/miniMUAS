@@ -23,8 +23,8 @@ stdenv.mkDerivation rec {
   src = fetchFromGitHub {
     owner = "matianxing1992";
     repo = "NDN_Service_Framework";
-    rev = "90b8fbe1487ee1297b0056dc544da963905c731e";
-    sha256 = "sha256-M49+kK3cTirQfKAe5pvmQXTw3kiYKIs1if2mW+pqkN4=";
+    rev = "17b943402ff911028fe5dc91b929b8a638515c12";
+    sha256 = "sha256-sM/1tqHYQG+HtYlM+/pjNa7uW4MRPpRx4dWalTtN5ng=";
   };
 
   patches = [
