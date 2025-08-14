@@ -1,40 +1,42 @@
-name /muas/controller/NDNSF/ControllerPolicy/v1 ; policy name  
-provider-policies  
-{  
-    provider-policy  
-    {  
-        for /muas/iuas-01
-        allow  
-        {
-            /FlightCtrl/Takeoff
-            /FlightCtrl/Land
-             /FlightCtrl/Kill
-             /FlightCtrl/RTL
-             /Sensor/GetSensorInfo
-             /Sensor/CaptureSingle
-             /IUAS/PointOrbit
-        }
-    }  
-    provider-policy  
-    {  
-        for /muas/wuas-01
-        allow  
-        {
-            /FlightCtrl/Takeoff
-            /FlightCtrl/Land
-             /FlightCtrl/Kill
-             /FlightCtrl/RTL
-        }
-    }  
-}  
+name /muas/controller/NDNSF/ControllerPolicy/v1
 
-user-policies  
-{  
-    user-policy  
-    {  
-        for /muas/gcs-01/ ; user full name  
-        allow ; allowed services  
-        {  
+provider-policies
+{
+    provider-policy
+    {
+        for /muas/iuas-01
+        allow
+        {
+            /FlightCtrl/Takeoff
+            /FlightCtrl/Land
+            /FlightCtrl/Kill
+            /FlightCtrl/RTL
+            /Sensor/GetSensorInfo
+            /Sensor/CaptureSingle
+            /IUAS/PointOrbit
+        }
+    }
+    
+    provider-policy
+    {
+        for /muas/wuas-01
+        allow
+        {
+            /FlightCtrl/Takeoff
+            /FlightCtrl/Land
+            /FlightCtrl/Kill
+            /FlightCtrl/RTL
+        }
+    }
+}
+
+user-policies
+{
+    user-policy
+    {
+        for /muas/gcs-01/
+        allow
+        {
             /muas/wuas-01/FlightCtrl/Takeoff
             /muas/wuas-01/FlightCtrl/RTL
             /muas/wuas-01/FlightCtrl/Land
@@ -46,12 +48,13 @@ user-policies
             /muas/iuas-01/Sensor/GetSensorInfo
             /muas/iuas-01/Sensor/CaptureSingle
         }
-    }  
-    user-policy  
-    {  
-        for /muas/wuas-01/ ; user full name
-        allow ; allowed services
-        {  
+    }
+
+    user-policy
+    {
+        for /muas/wuas-01/
+        allow
+        {
             /muas/iuas-01/IUAS/PointOrbit
             /muas/iuas-01/FlightCtrl/Takeoff
             /muas/iuas-01/FlightCtrl/Land
@@ -59,6 +62,5 @@ user-policies
             /muas/iuas-01/Sensor/GetSensorInfo
             /muas/iuas-01/Sensor/CaptureSingle
         }
-    }  
- 
-}  
+    }
+}
