@@ -25,7 +25,7 @@ let
   # ];
 in stdenv.mkDerivation {
   pname = "minimuas";
-  version = "2025-08-12";
+  version = "2025-09-15";
 
   src = ./.;
 
