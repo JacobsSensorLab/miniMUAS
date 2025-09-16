@@ -27,22 +27,8 @@ using std::this_thread::sleep_for;
 
 auto pointOrbit(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsdk::System> system, std::shared_ptr<ndn::Scheduler> scheduler, std::function<void()> offboard_orbit) {
     auto pointOrbitHandler = [&, offboard_orbit](const ndn::Name& requesterIdentity, const muas::IUAS_PointOrbit_Request& _request, muas::IUAS_PointOrbit_Response& _response){
-        auto set_response = [&](const google::protobuf::Timestamp& time_req_recv) {
-            struct timeval tv;
-            gettimeofday(&tv, NULL);
-
-            google::protobuf::Timestamp time_res_sent;
-            time_res_sent.set_seconds(tv.tv_sec);
-            time_res_sent.set_nanos(tv.tv_usec * 1000);
-
-            _response.mutable_time_request_received()->set_seconds(time_req_recv.seconds());
-            _response.mutable_time_request_received()->set_nanos(time_req_recv.nanos());
-            _response.mutable_time_response_sent()->set_seconds(time_res_sent.seconds());
-            _response.mutable_time_response_sent()->set_nanos(time_res_sent.nanos());
-        };
-
         auto time_req_sent = _request.time_request_sent();
-        auto [req_latency_ms, time_req_recv] = request_ts_init(time_req_sent);
+        auto [req_latency_ms, time_req_recv] = set_request_ts(time_req_sent);
 
         NDN_LOG_INFO("PointOrbit request received");
         // auto action = mavsdk::Action{system};
@@ -54,7 +40,7 @@ auto pointOrbit(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<ma
             NDN_LOG_INFO("PointOrbit request denied: IUAS has not taken off");
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("IUAS has not taken off");
-            set_response(time_req_recv);
+            set_response_ts(time_req_recv, _response);
             return;
         }
 
@@ -87,13 +73,13 @@ auto pointOrbit(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<ma
             _response.mutable_response()->set_msg("Orbit failed. Attempting offboard control.");
             std::cout << "Beginning offboard orbit in 3 seconds." << std::endl;
             scheduler->schedule(ndn::time::milliseconds(3000), offboard_orbit);
-            set_response(time_req_recv);
+            set_response_ts(time_req_recv, _response);
             return;
         }
         
         _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_SUCCESS);
         _response.mutable_response()->set_msg("Beginning orbit routine at target position");
-        set_response(time_req_recv);
+        set_response_ts(time_req_recv, _response);
     };
 
     return pointOrbitHandler;

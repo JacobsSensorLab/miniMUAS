@@ -27,22 +27,8 @@ using std::this_thread::sleep_for;
 
 auto takeoff(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsdk::System> system) {
     auto takeoffHandler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Takeoff_Request& _request, muas::FlightCtrl_Takeoff_Response& _response){
-        auto set_response = [&](const google::protobuf::Timestamp& time_req_recv) {
-            struct timeval tv;
-            gettimeofday(&tv, NULL);
-
-            google::protobuf::Timestamp time_res_sent;
-            time_res_sent.set_seconds(tv.tv_sec);
-            time_res_sent.set_nanos(tv.tv_usec * 1000);
-
-            _response.mutable_time_request_received()->set_seconds(time_req_recv.seconds());
-            _response.mutable_time_request_received()->set_nanos(time_req_recv.nanos());
-            _response.mutable_time_response_sent()->set_seconds(time_res_sent.seconds());
-            _response.mutable_time_response_sent()->set_nanos(time_res_sent.nanos());
-        };
-
         auto time_req_sent = _request.time_request_sent();
-        auto [req_latency_ms, time_req_recv] = request_ts_init(time_req_sent);
+        auto [req_latency_ms, time_req_recv] = set_request_ts(time_req_sent);
 
         NDN_LOG_INFO("Takeoff request received");
         auto action = mavsdk::Action{system};
@@ -53,7 +39,7 @@ auto takeoff(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsd
             NDN_LOG_INFO("Takeoff request denied: need more than 5 satellites (" << telemetry->gps_info().num_satellites << ")");
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Not enough satellites");
-            set_response(time_req_recv);
+            set_response_ts(time_req_recv, _response);
             return;
         }
 
@@ -61,7 +47,7 @@ auto takeoff(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsd
             NDN_LOG_INFO("Takeoff request denied: Already in the air!");
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("UAS has already taken off");
-            set_response(time_req_recv);
+            set_response_ts(time_req_recv, _response);
             return;
         }
 
@@ -71,7 +57,7 @@ auto takeoff(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsd
                 NDN_LOG_INFO("Arming failed: " << arm_result);
                 _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
                 _response.mutable_response()->set_msg("Arming failed");
-                set_response(time_req_recv);
+                set_response_ts(time_req_recv, _response);
                 return;
             }
             NDN_LOG_INFO("Armed");
@@ -82,13 +68,13 @@ auto takeoff(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsd
             NDN_LOG_INFO("Takeoff failed: " << takeoff_result);
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Takeoff failed");
-            set_response(time_req_recv);
+            set_response_ts(time_req_recv, _response);
             return;
         }
         
         _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_SUCCESS);
         _response.mutable_response()->set_msg("Taking off");
-        set_response(time_req_recv);
+        set_response_ts(time_req_recv, _response);
     };
 
     return takeoffHandler;
@@ -96,22 +82,8 @@ auto takeoff(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsd
 
 auto land(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsdk::System> system) {
     auto landHandler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Land_Request& _request, muas::FlightCtrl_Land_Response& _response){
-        auto set_response = [&](const google::protobuf::Timestamp& time_req_recv) {
-            struct timeval tv;
-            gettimeofday(&tv, NULL);
-
-            google::protobuf::Timestamp time_res_sent;
-            time_res_sent.set_seconds(tv.tv_sec);
-            time_res_sent.set_nanos(tv.tv_usec * 1000);
-
-            _response.mutable_time_request_received()->set_seconds(time_req_recv.seconds());
-            _response.mutable_time_request_received()->set_nanos(time_req_recv.nanos());
-            _response.mutable_time_response_sent()->set_seconds(time_res_sent.seconds());
-            _response.mutable_time_response_sent()->set_nanos(time_res_sent.nanos());
-        };
-
         auto time_req_sent = _request.time_request_sent();
-        auto [req_latency_ms, time_req_recv] = request_ts_init(time_req_sent);
+        auto [req_latency_ms, time_req_recv] = set_request_ts(time_req_sent);
 
         NDN_LOG_INFO("Land request received");
         auto action = mavsdk::Action{system};
@@ -122,7 +94,7 @@ auto land(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsdk::
             NDN_LOG_INFO("Land request denied: Already grounded!");
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Already grounded");
-            set_response(time_req_recv);
+            set_response_ts(time_req_recv, _response);
             return;
         }
 
@@ -131,13 +103,13 @@ auto land(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsdk::
             NDN_LOG_INFO("Landing failed: " << land_result);
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Landing failed");
-            set_response(time_req_recv);
+            set_response_ts(time_req_recv, _response);
             return;
         }
 
         _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_SUCCESS);
         _response.mutable_response()->set_msg("Landing");
-        set_response(time_req_recv);
+        set_response_ts(time_req_recv, _response);
     };
 
     return landHandler;
@@ -145,22 +117,8 @@ auto land(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsdk::
 
 auto rtl(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsdk::System> system) {
     auto rtlHandler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_RTL_Request& _request, muas::FlightCtrl_RTL_Response& _response){
-        auto set_response = [&](const google::protobuf::Timestamp& time_req_recv) {
-            struct timeval tv;
-            gettimeofday(&tv, NULL);
-
-            google::protobuf::Timestamp time_res_sent;
-            time_res_sent.set_seconds(tv.tv_sec);
-            time_res_sent.set_nanos(tv.tv_usec * 1000);
-
-            _response.mutable_time_request_received()->set_seconds(time_req_recv.seconds());
-            _response.mutable_time_request_received()->set_nanos(time_req_recv.nanos());
-            _response.mutable_time_response_sent()->set_seconds(time_res_sent.seconds());
-            _response.mutable_time_response_sent()->set_nanos(time_res_sent.nanos());
-        };
-
         auto time_req_sent = _request.time_request_sent();
-        auto [req_latency_ms, time_req_recv] = request_ts_init(time_req_sent);
+        auto [req_latency_ms, time_req_recv] = set_request_ts(time_req_sent);
 
         NDN_LOG_INFO("RTL request received");
         auto action = mavsdk::Action{system};
@@ -171,7 +129,7 @@ auto rtl(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsdk::S
             NDN_LOG_INFO("RTL request denied: Already grounded!");
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Already grounded");
-            set_response(time_req_recv);
+            set_response_ts(time_req_recv, _response);
             return;
         }
 
@@ -180,13 +138,13 @@ auto rtl(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsdk::S
             NDN_LOG_INFO("RTL failed: " << rtl_result);
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("RTL failed");
-            set_response(time_req_recv);
+            set_response_ts(time_req_recv, _response);
             return;
         }
 
         _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_SUCCESS);
         _response.mutable_response()->set_msg("Initiating RTL");
-        set_response(time_req_recv);
+        set_response_ts(time_req_recv, _response);
     };
 
     return rtlHandler;
@@ -194,22 +152,8 @@ auto rtl(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsdk::S
 
 auto kill(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsdk::System> system) {
     auto killHandler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Kill_Request& _request, muas::FlightCtrl_Kill_Response& _response){
-        auto set_response = [&](const google::protobuf::Timestamp& time_req_recv) {
-            struct timeval tv;
-            gettimeofday(&tv, NULL);
-
-            google::protobuf::Timestamp time_res_sent;
-            time_res_sent.set_seconds(tv.tv_sec);
-            time_res_sent.set_nanos(tv.tv_usec * 1000);
-
-            _response.mutable_time_request_received()->set_seconds(time_req_recv.seconds());
-            _response.mutable_time_request_received()->set_nanos(time_req_recv.nanos());
-            _response.mutable_time_response_sent()->set_seconds(time_res_sent.seconds());
-            _response.mutable_time_response_sent()->set_nanos(time_res_sent.nanos());
-        };
-
         auto time_req_sent = _request.time_request_sent();
-        auto [req_latency_ms, time_req_recv] = request_ts_init(time_req_sent);
+        auto [req_latency_ms, time_req_recv] = set_request_ts(time_req_sent);
 
         NDN_LOG_INFO("Kill request received");
         auto action = mavsdk::Action{system};
@@ -221,13 +165,13 @@ auto kill(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsdk::
             NDN_LOG_INFO("Kill command failed: " << kill_result);
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Kill command failed");
-            set_response(time_req_recv);
+            set_response_ts(time_req_recv, _response);
             return;
         }
 
         _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_SUCCESS);
         _response.mutable_response()->set_msg("Killed");
-        set_response(time_req_recv);
+        set_response_ts(time_req_recv, _response);
     };
 
     return killHandler;

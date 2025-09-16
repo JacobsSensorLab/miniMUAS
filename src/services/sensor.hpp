@@ -71,22 +71,8 @@ int get_next_file_number(const char *directory) {
 
 auto getSensorInfo(muas::Sensor sensor) {
     auto getSensorInfoHandler = [&, sensor](const ndn::Name& requesterIdentity, const muas::SensorCtrl_GetSensorInfo_Request& _request, muas::SensorCtrl_GetSensorInfo_Response& _response){
-        auto set_response = [&](const google::protobuf::Timestamp& time_req_recv) {
-            struct timeval tv;
-            gettimeofday(&tv, NULL);
-
-            google::protobuf::Timestamp time_res_sent;
-            time_res_sent.set_seconds(tv.tv_sec);
-            time_res_sent.set_nanos(tv.tv_usec * 1000);
-
-            _response.mutable_time_request_received()->set_seconds(time_req_recv.seconds());
-            _response.mutable_time_request_received()->set_nanos(time_req_recv.nanos());
-            _response.mutable_time_response_sent()->set_seconds(time_res_sent.seconds());
-            _response.mutable_time_response_sent()->set_nanos(time_res_sent.nanos());
-        };
-
         auto time_req_sent = _request.time_request_sent();
-        auto [req_latency_ms, time_req_recv] = request_ts_init(time_req_sent);
+        auto [req_latency_ms, time_req_recv] = set_request_ts(time_req_sent);
         
         NDN_LOG_INFO("SensorInfo request received");
         NDN_LOG_INFO("SensorInfo request latency: " << req_latency_ms << " ms");
@@ -99,7 +85,7 @@ auto getSensorInfo(muas::Sensor sensor) {
 
         _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_SUCCESS);
         _response.mutable_response()->set_msg("Sensor info request satisfied.");
-        set_response(time_req_recv);
+        set_response_ts(time_req_recv, _response);
     };
 
     return getSensorInfoHandler;
@@ -107,22 +93,8 @@ auto getSensorInfo(muas::Sensor sensor) {
 
 auto captureSingle() {
     auto captureSingleHandler = [&](const ndn::Name& requesterIdentity, const muas::SensorCtrl_CaptureSingle_Request& _request, muas::SensorCtrl_CaptureSingle_Response& _response){
-        auto set_response = [&](const google::protobuf::Timestamp& time_req_recv) {
-            struct timeval tv;
-            gettimeofday(&tv, NULL);
-
-            google::protobuf::Timestamp time_res_sent;
-            time_res_sent.set_seconds(tv.tv_sec);
-            time_res_sent.set_nanos(tv.tv_usec * 1000);
-
-            _response.mutable_time_request_received()->set_seconds(time_req_recv.seconds());
-            _response.mutable_time_request_received()->set_nanos(time_req_recv.nanos());
-            _response.mutable_time_response_sent()->set_seconds(time_res_sent.seconds());
-            _response.mutable_time_response_sent()->set_nanos(time_res_sent.nanos());
-        };
-
         auto time_req_sent = _request.time_request_sent();
-        auto [req_latency_ms, time_req_recv] = request_ts_init(time_req_sent);
+        auto [req_latency_ms, time_req_recv] = set_request_ts(time_req_sent);
         
         NDN_LOG_INFO("CaptureSingle request received");
 
@@ -141,7 +113,7 @@ auto captureSingle() {
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Camera failed to initialize");
             _response.set_capture_id(std::to_string(-1));
-            set_response(time_req_recv);        }
+            set_response_ts(time_req_recv, _response);        }
         else
         {
             cv::Mat frame;
@@ -162,7 +134,7 @@ auto captureSingle() {
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_SUCCESS);
             _response.mutable_response()->set_msg(msg);
             _response.set_capture_id(std::to_string(next_num));
-            set_response(time_req_recv);        }
+            set_response_ts(time_req_recv, _response);        }
     };
 
     return captureSingleHandler;
