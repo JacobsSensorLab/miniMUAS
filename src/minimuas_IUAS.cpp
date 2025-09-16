@@ -47,30 +47,40 @@ main(int argc, char **argv)
         exit(1);
     }
 
+    // Configure autopilot connection details
     mavsdk::Mavsdk mav{mavsdk::Mavsdk::Configuration{mavsdk::ComponentType::CompanionComputer}};
     mavsdk::ConnectionResult connection_result = mav.add_any_connection(argv[2]);
 
+    // Only start app if autopilot connection is successful
     if (connection_result != mavsdk::ConnectionResult::Success) {
         std::cerr << "Connection failed: " << connection_result << '\n';
         return 1;
     }
 
+    // Trying to get a handle for the autopilot
     auto opt_system = mav.first_autopilot(-1);
     if (!opt_system) {
         std::cerr << "Timed out waiting for system\n";
         return 1;
     }
 
+    // Unwrapping the autopilot from the optional
     auto system = opt_system.value();
     
+    // Instantiating a global telemetry object using MAVSDK Telemtry plugin
     auto m_telemetry = std::make_shared<mavsdk::Telemetry>(system);
+
+    // Setting refresh rates for desired parameters; must be done
     m_telemetry->set_rate_in_air(0.5);
     m_telemetry->set_rate_gps_info(0.5);
 
+    // Instantiating an offboard instance using MAVSDK Offboard plugin
     auto m_offboard = mavsdk::Offboard{system};
 
     std::string identity = argv[1];
     std::string conf_dir = "/usr/local/bin";
+
+    // Defining hard-coded sensor parameters
     auto sensor_idx = 0;
     muas::Sensor sensor;
     std::string sensor_namespace = identity + "/sensor/" + std::to_string(sensor_idx);
@@ -79,6 +89,7 @@ main(int argc, char **argv)
     sensor.set_id(sensor_idx);
     sensor.set_data_namespace(sensor_namespace);
 
+    // Same as minimuas_GCS_shell
     ndn::Face m_face;
     auto m_scheduler = std::make_shared<ndn::Scheduler>(m_face.getIoContext());
     ndn::security::KeyChain m_keyChain;
@@ -88,6 +99,8 @@ main(int argc, char **argv)
         .getDefaultKey()
         .getDefaultCertificate()
     );
+
+    // Instantiating the IUAS service provider to listen and serve requests
     muas::ServiceProvider_IUAS m_serviceProvider(
           m_face
         , "/muas"
@@ -99,6 +112,9 @@ main(int argc, char **argv)
         , conf_dir + "/trust-any.conf"
     );
 
+    // A hard-coded routine to tell UAS to fly to a coordinate and orbit it
+    // Relies on MAVSDK Offboard plugin
+    // TODO: fix issue where UAS lands instead of orbit point
     auto offboard_orbit = [&]() {
         NDN_LOG_INFO("Reading home position in Global coordinates");
 
@@ -158,6 +174,7 @@ main(int argc, char **argv)
         NDN_LOG_INFO("Offboard stopped");
     };
 
+    // Assigning the appropriate service request handlers; handlers are defined in the services directory
     m_serviceProvider.m_FlightCtrlService.Takeoff_Handler = takeoff(m_telemetry, system);
     m_serviceProvider.m_FlightCtrlService.Land_Handler = land(m_telemetry, system);
     m_serviceProvider.m_FlightCtrlService.RTL_Handler = rtl(m_telemetry, system);
@@ -170,7 +187,7 @@ main(int argc, char **argv)
     NDN_LOG_INFO("IUAS running");
     try {
         while (1) {
-            m_face.processEvents(ndn::time::milliseconds(0),true);
+            m_face.processEvents(ndn::time::milliseconds(0),true); // main event loop runs until terminated
         }
     } catch (const std::exception& e) {
         std::cerr << "ERROR: " << e.what() << std::endl;

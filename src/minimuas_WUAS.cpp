@@ -22,10 +22,11 @@ NDN_LOG_INIT(muas.wuas_drone);
 int
 main(int argc, char **argv)
 {
+    // Legacy latency measurement system left for reference
     auto takeoff_metric = std::make_shared<Metrics>(true, true);
     auto orbit_metric = std::make_shared<Metrics>(true, true);
 
-    bool single_request_sent = false;
+    bool single_request_sent = false; // To check whether the WUAS has requested the IUAS to takeoff and orbit yet
 
     if (argc != 3)
     {
@@ -38,28 +39,37 @@ main(int argc, char **argv)
         exit(1);
     }
 
+   // Configure autopilot connection details
     mavsdk::Mavsdk mav{mavsdk::Mavsdk::Configuration{mavsdk::ComponentType::CompanionComputer}};
     mavsdk::ConnectionResult connection_result = mav.add_any_connection(argv[2]);
 
+    // Only start app if autopilot connection is successful
     if (connection_result != mavsdk::ConnectionResult::Success) {
         std::cerr << "Connection failed: " << connection_result << '\n';
         return 1;
     }
 
+    // Trying to get a handle for the autopilot
     auto opt_system = mav.first_autopilot(-1);
     if (!opt_system) {
         std::cerr << "Timed out waiting for system\n";
         return 1;
     }
 
+    // Unwrapping the autopilot from the optional
     auto system = opt_system.value();
     
+    // Instantiating a global telemetry object using MAVSDK Telemtry plugin
     auto m_telemetry = std::make_shared<mavsdk::Telemetry>(system);
+
+    // Setting refresh rates for desired parameters; must be done
     m_telemetry->set_rate_in_air(0.5);
     m_telemetry->set_rate_gps_info(0.5);
 
     std::string identity = argv[1];
     std::string conf_dir = "/usr/local/bin";
+
+    // Same as minimuas_GCS_shell
     ndn::Face m_face;
     ndn::Scheduler m_scheduler(m_face.getIoContext());
     ndn::security::KeyChain m_keyChain;
@@ -70,6 +80,7 @@ main(int argc, char **argv)
         .getDefaultCertificate()
     );
 
+    // Defining hard-coded sensor parameters
     muas::Sensor sensor;
     char sensor_namespace[200];
     snprintf(sensor_namespace, sizeof(sensor_namespace), "/muas/%s/sensor/0", identity.c_str());
@@ -78,6 +89,7 @@ main(int argc, char **argv)
     sensor.set_id(0);
     sensor.set_data_namespace(sensor_namespace);
 
+    // Instantiating WUAS service provider
     muas::ServiceProvider_WUAS m_serviceProvider(
           m_face
         , "/muas"
@@ -89,6 +101,7 @@ main(int argc, char **argv)
         , conf_dir + "/trust-any.conf"
     );
 
+    // Instantiating WUAS service user behind shared pointer
     auto m_serviceUser = std::make_shared<muas::ServiceUser_WUAS>(
           m_face
         , "/muas"
@@ -101,12 +114,14 @@ main(int argc, char **argv)
         , conf_dir + "/trust-any.conf"
     );
 
+    // Simple hard-coded routine to request IUAS services
     auto interrogate = [&]() {
         std::cout << "Beginning interrogation." << std::endl;
         m_scheduler.schedule(ndn::time::milliseconds(0), takeoff(m_serviceUser, takeoff_metric));
         m_scheduler.schedule(ndn::time::milliseconds(5000), orbit(m_serviceUser, orbit_metric));
     };
 
+    // Legacy metrics system left for reference
     auto OutputMetrics = [&]() {
         takeoff_metric->printStats();
         takeoff_metric->exportCSV("wuas_takeoff.csv");
@@ -114,6 +129,7 @@ main(int argc, char **argv)
         orbit_metric->exportCSV("wuas_orbit.csv");
     };
 
+    // Assigning handlers for services
     m_serviceProvider.m_FlightCtrlService.Takeoff_Handler = takeoff(m_telemetry, system);
     m_serviceProvider.m_FlightCtrlService.Land_Handler = land(m_telemetry, system);
     m_serviceProvider.m_FlightCtrlService.RTL_Handler = rtl(m_telemetry, system);
@@ -123,6 +139,7 @@ main(int argc, char **argv)
     NDN_LOG_INFO("WUAS running");
     try {
         while (1) {
+            // Once WUAS has taken off and has not commanded IUAS yet, start the interrogation routine
             if (m_telemetry->in_air() && !single_request_sent) {
                 std::cout << "Beginning interrogation in 10 seconds." << std::endl;
                 m_scheduler.schedule(ndn::time::milliseconds(10000), interrogate);

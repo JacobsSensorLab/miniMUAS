@@ -12,6 +12,7 @@
 
 NDN_LOG_INIT(muas.main_gcs);
 
+/// A function to pull sensor data from the producer to GCS independent of NDNSF; we are using 'ndnget'
 void getCapture(const std::string& producer_id, int sensor_id, int idx) {
     namespace bp = boost::process;
 
@@ -47,13 +48,13 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    std::string identity = argv[1];
-    std::string conf_dir = "/usr/local/bin";
-    int iuas_sensor_idx = 0;
+    std::string identity = argv[1]; // Node's NDN name from input args
+    std::string conf_dir = "/usr/local/bin"; // config directory
+    int iuas_sensor_idx = 0; // hard-coded stuff
 
-    ndn::Face m_face;
-    ndn::Scheduler m_scheduler(m_face.getIoContext());
-    ndn::security::KeyChain m_keyChain;
+    ndn::Face m_face; // create an application face
+    ndn::Scheduler m_scheduler(m_face.getIoContext()); // get face's scheduler
+    ndn::security::KeyChain m_keyChain; // create a keychain object
     ndn::security::Certificate gs_certificate(
         m_keyChain
             .getPib()
@@ -62,6 +63,7 @@ int main(int argc, char **argv)
             .getDefaultCertificate()
     );
 
+    // Instantiate a GCS service user module
     muas::ServiceUser_GCS m_serviceUser(
         m_face, "/muas",
         gs_certificate,
@@ -69,12 +71,14 @@ int main(int argc, char **argv)
         conf_dir + "/trust-any.conf"
     );
 
+    // Defining some global provider vectors for convenience
     std::vector<ndn::Name> wuas_providers = { ndn::Name("/muas/wuas-01") };
     std::vector<ndn::Name> iuas_providers = { ndn::Name("/muas/iuas-01") };
     std::vector<ndn::Name> uas_providers = { ndn::Name("/muas/iuas-01"), ndn::Name("/muas/wuas-01") };
 
     m_face.processEvents(ndn::time::milliseconds(1000));
 
+    // Send request to WUAS to takeoff
     auto wuas_takeoff_call = [&]() {
         struct timeval tv;
         auto takeoff_start = takeoff_metric.start();
@@ -119,6 +123,7 @@ int main(int argc, char **argv)
         );
     };
 
+    // Send request to IUAS to takeoff
     auto iuas_takeoff_call = [&]() {
         struct timeval tv;
         auto takeoff_start = takeoff_metric.start();
@@ -163,6 +168,7 @@ int main(int argc, char **argv)
         );
     };
 
+    // Send RTL request to designated provider
     auto rtl_call = [&](std::vector<ndn::Name> uas_providers) {
         struct timeval tv;
         std::cout << "Requesting RTL." << std::endl;
@@ -205,6 +211,7 @@ int main(int argc, char **argv)
         );
     };
 
+    // Send kill request to designated provider
     auto kill_call = [&](std::vector<ndn::Name> uas_providers) {
         struct timeval tv;
         std::cout << "Requesting Kill." << std::endl;
@@ -247,6 +254,7 @@ int main(int argc, char **argv)
         );
     };
 
+    // Send request to get sensor info from designated provider
     auto info_call = [&]() {
         struct timeval tv;
         auto getinfo_start = getinfo_metric.start();
@@ -296,6 +304,7 @@ int main(int argc, char **argv)
         );
     };
 
+    // Sends a request to the designated provider to capture sensor data
     auto cap_call = [&](int idx) {
         struct timeval tv;
         auto capture_start = capture_metric.start();
@@ -344,6 +353,7 @@ int main(int argc, char **argv)
         );
     };
 
+    // Sends an echo request to the designated providers
     auto echo_call = [&](std::vector<ndn::Name> uas_providers) {
         struct timeval tv;
         auto ping_start = ping_metric.start();
@@ -408,6 +418,7 @@ int main(int argc, char **argv)
     std::atomic<bool> running(true);
 
     // Start NDN event processing in a background thread
+    // TODO: fix error where program will core dump when exit or quit is entered into command loop
     std::thread faceThread([&]() {
         try {
             m_face.processEvents(ndn::time::milliseconds(0), true);
