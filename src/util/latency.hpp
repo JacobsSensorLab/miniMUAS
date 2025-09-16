@@ -5,12 +5,13 @@
 #include "./generated/messages.pb.h"
 #include <ndn-service-framework/NDNSFMessages.hpp>
 
+/// Determine how long request took to arrive
 std::pair<long, google::protobuf::Timestamp>
 set_request_ts(const google::protobuf::Timestamp& time_req_sent) {
     struct timeval tv;
     gettimeofday(&tv, NULL);
 
-    google::protobuf::Timestamp time_req_recv;
+    google::protobuf::Timestamp time_req_recv; // to hold time request received
     time_req_recv.set_seconds(tv.tv_sec);
     time_req_recv.set_nanos(tv.tv_usec * 1000);
 
@@ -20,13 +21,14 @@ set_request_ts(const google::protobuf::Timestamp& time_req_sent) {
     return {req_recv_ms - req_sent_ms, time_req_recv};
 }
 
+/// Attach latency information to response message
 template <typename ResponseT>
 void set_response_ts(const google::protobuf::Timestamp& time_req_recv, ResponseT& response)
 {
     struct timeval tv;
     gettimeofday(&tv, NULL);
 
-    google::protobuf::Timestamp time_res_sent;
+    google::protobuf::Timestamp time_res_sent; // to hold time response sent
     time_res_sent.set_seconds(tv.tv_sec);
     time_res_sent.set_nanos(tv.tv_usec * 1000);
 

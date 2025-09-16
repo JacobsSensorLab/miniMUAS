@@ -28,6 +28,7 @@
 using std::chrono::seconds;
 using std::this_thread::sleep_for;
 
+/// TODO: rewrite sensor capture implementation
 int get_next_file_number(const char *directory) {
     DIR *dir;
     struct dirent *entry;
@@ -39,6 +40,7 @@ int get_next_file_number(const char *directory) {
         return 0;
     }
 
+    // Has something to do with the numerical file naming
     while ((entry = readdir(dir)) != NULL) {
         const char *filename = entry->d_name;
         int len = strlen(filename);
@@ -69,6 +71,7 @@ int get_next_file_number(const char *directory) {
     return max_num + 1;
 }
 
+/// Request service provider's sensor payload information
 auto getSensorInfo(muas::Sensor sensor) {
     auto getSensorInfoHandler = [&, sensor](const ndn::Name& requesterIdentity, const muas::SensorCtrl_GetSensorInfo_Request& _request, muas::SensorCtrl_GetSensorInfo_Response& _response){
         auto time_req_sent = _request.time_request_sent();
@@ -77,6 +80,7 @@ auto getSensorInfo(muas::Sensor sensor) {
         NDN_LOG_INFO("SensorInfo request received");
         NDN_LOG_INFO("SensorInfo request latency: " << req_latency_ms << " ms");
 
+        // Create a sensor object and adding sensor attributes
         muas::Sensor* s = _response.add_sensors();
         s->set_name(sensor.name());
         s->set_id(sensor.id());
@@ -91,20 +95,22 @@ auto getSensorInfo(muas::Sensor sensor) {
     return getSensorInfoHandler;
 }
 
+/// Request service provider to capture a single reading from a sensor
 auto captureSingle() {
     auto captureSingleHandler = [&](const ndn::Name& requesterIdentity, const muas::SensorCtrl_CaptureSingle_Request& _request, muas::SensorCtrl_CaptureSingle_Response& _response){
         auto time_req_sent = _request.time_request_sent();
         auto [req_latency_ms, time_req_recv] = set_request_ts(time_req_sent);
         
         NDN_LOG_INFO("CaptureSingle request received");
-
         NDN_LOG_INFO("CaptureSingle request latency: " << req_latency_ms << " ms");
 
+        // Open the video device which is hopefully at index 0
         int cam_idx = 0;
         std::string cap_dev = "v4l2:///dev/video";
         std::string cap_str = cap_dev + std::to_string(cam_idx);
-
         std::cout << "Trying to open camera (" << cap_str << ")..." << std::endl;
+        
+        // Create a video capture object
         cv::VideoCapture capture(cap_str, cv::CAP_V4L2);
         if (!capture.isOpened())
         {
@@ -113,17 +119,21 @@ auto captureSingle() {
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
             _response.mutable_response()->set_msg("Camera failed to initialize");
             _response.set_capture_id(std::to_string(-1));
-            set_response_ts(time_req_recv, _response);        }
+            set_response_ts(time_req_recv, _response);
+        }
         else
         {
-            cv::Mat frame;
+            cv::Mat frame; // create a frame
 
             capture >> frame;
-            const char *directory = "./captures";  // current directory
+            const char *directory = "./captures";  // in program directory
             int next_num = get_next_file_number(directory);
 
+            // Naming the file based on current ones
             char filename[256];
             snprintf(filename, sizeof(filename), "%s/%d.png", directory, next_num);
+            
+            // Write frame to file
             cv::imwrite(filename,frame);
             NDN_LOG_INFO("Saved " << filename);
 

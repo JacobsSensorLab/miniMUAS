@@ -25,16 +25,17 @@
 using std::chrono::seconds;
 using std::this_thread::sleep_for;
 
+/// Request service provider to takeoff
 auto takeoff(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsdk::System> system) {
     auto takeoffHandler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Takeoff_Request& _request, muas::FlightCtrl_Takeoff_Response& _response){
         auto time_req_sent = _request.time_request_sent();
         auto [req_latency_ms, time_req_recv] = set_request_ts(time_req_sent);
-
-        NDN_LOG_INFO("Takeoff request received");
         auto action = mavsdk::Action{system};
 
+        NDN_LOG_INFO("Takeoff request received");
         NDN_LOG_INFO("Takeoff request latency: " << req_latency_ms << " ms");
 
+        // Check if 3D lock is attained; minimum of 5 for stability
         if (telemetry->gps_info().num_satellites < 5) {
             NDN_LOG_INFO("Takeoff request denied: need more than 5 satellites (" << telemetry->gps_info().num_satellites << ")");
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
@@ -43,6 +44,7 @@ auto takeoff(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsd
             return;
         }
 
+        // If UAS is airborne, ignore
         if (telemetry->in_air()) {
             NDN_LOG_INFO("Takeoff request denied: Already in the air!");
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
@@ -51,6 +53,7 @@ auto takeoff(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsd
             return;
         }
 
+        // If UAS is not armed, arm it
         if (!telemetry->armed()) {
             const mavsdk::Action::Result arm_result = action.arm();
             if (arm_result != mavsdk::Action::Result::Success) {
@@ -63,6 +66,7 @@ auto takeoff(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsd
             NDN_LOG_INFO("Armed");
         }
 
+        // Use MAVSDK Action plugin to send takeoff command to autopilot
         const mavsdk::Action::Result takeoff_result = action.takeoff();
         if (takeoff_result != mavsdk::Action::Result::Success) {
             NDN_LOG_INFO("Takeoff failed: " << takeoff_result);
@@ -80,16 +84,17 @@ auto takeoff(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsd
     return takeoffHandler;
 }
 
+/// Request service provider to land
 auto land(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsdk::System> system) {
     auto landHandler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Land_Request& _request, muas::FlightCtrl_Land_Response& _response){
         auto time_req_sent = _request.time_request_sent();
         auto [req_latency_ms, time_req_recv] = set_request_ts(time_req_sent);
-
-        NDN_LOG_INFO("Land request received");
         auto action = mavsdk::Action{system};
 
+        NDN_LOG_INFO("Land request received");
         NDN_LOG_INFO("Land request latency: " << req_latency_ms << " ms");
         
+        // If UAS is grounded, ignore
         if (!telemetry->in_air()) {
             NDN_LOG_INFO("Land request denied: Already grounded!");
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
@@ -98,6 +103,7 @@ auto land(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsdk::
             return;
         }
 
+        // Use MAVSDK Action plugin to send land command to autopilot
         const mavsdk::Action::Result land_result = action.land();
         if (land_result != mavsdk::Action::Result::Success) {
             NDN_LOG_INFO("Landing failed: " << land_result);
@@ -115,16 +121,17 @@ auto land(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsdk::
     return landHandler;
 }
 
+/// Request service provider to return to launch
 auto rtl(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsdk::System> system) {
     auto rtlHandler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_RTL_Request& _request, muas::FlightCtrl_RTL_Response& _response){
         auto time_req_sent = _request.time_request_sent();
         auto [req_latency_ms, time_req_recv] = set_request_ts(time_req_sent);
-
-        NDN_LOG_INFO("RTL request received");
         auto action = mavsdk::Action{system};
 
+        NDN_LOG_INFO("RTL request received");
         NDN_LOG_INFO("RTL request latency: " << req_latency_ms << " ms");
 
+        // If UAS is airborne, ignore
         if (!telemetry->in_air()) {
             NDN_LOG_INFO("RTL request denied: Already grounded!");
             _response.mutable_response()->set_code(muas::NDNSF_Response_miniMUAS_Code_ERROR);
@@ -133,6 +140,7 @@ auto rtl(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsdk::S
             return;
         }
 
+        // Use MAVSDK Action plugin to send RTL command to autopilot
         const mavsdk::Action::Result rtl_result = action.return_to_launch();
         if (rtl_result != mavsdk::Action::Result::Success) {
             NDN_LOG_INFO("RTL failed: " << rtl_result);
@@ -150,16 +158,17 @@ auto rtl(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsdk::S
     return rtlHandler;
 }
 
+Request service provider to stop all motors
 auto kill(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsdk::System> system) {
     auto killHandler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Kill_Request& _request, muas::FlightCtrl_Kill_Response& _response){
         auto time_req_sent = _request.time_request_sent();
         auto [req_latency_ms, time_req_recv] = set_request_ts(time_req_sent);
-
-        NDN_LOG_INFO("Kill request received");
         auto action = mavsdk::Action{system};
 
+        NDN_LOG_INFO("Kill request received");
         NDN_LOG_INFO("Kill request latency: " << req_latency_ms << " ms");
 
+        // Use MAVSDK Action plugin to send kill command to autopilot
         const mavsdk::Action::Result kill_result = action.kill();
         if (kill_result != mavsdk::Action::Result::Success) {
             NDN_LOG_INFO("Kill command failed: " << kill_result);

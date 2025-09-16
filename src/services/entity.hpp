@@ -11,6 +11,7 @@
 
 #include "../util/latency.hpp"
 
+/// Request a provider to respond with a timestamp for RTT calculation
 auto echo() {
     auto echoHandler = [](const ndn::Name& requesterIdentity, const muas::Entity_Echo_Request& _request, muas::Entity_Echo_Response& _response){
         auto time_req_sent = _request.time_request_sent();

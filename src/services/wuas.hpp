@@ -13,6 +13,7 @@
 #include <mavsdk/plugins/action/action.h>
 #include <mavsdk/plugins/telemetry/telemetry.h>
 
+/// TODO: break this down into modular pieces
 std::function<void()> takeoff(std::shared_ptr<muas::ServiceUser_WUAS> serviceUser, std::shared_ptr<Metrics> takeoff_metric) {
     auto takeoffRoutine = [&]() {
         struct timeval tv;
@@ -34,7 +35,7 @@ std::function<void()> takeoff(std::shared_ptr<muas::ServiceUser_WUAS> serviceUse
             struct timeval tv;
             gettimeofday(&tv, NULL);
 
-            google::protobuf::Timestamp time_res_recv;
+            google::protobuf::Timestamp time_res_recv; // to hold time response came back
             time_res_recv.set_seconds(tv.tv_sec);
             time_res_recv.set_nanos(tv.tv_usec * 1000);
             auto time_req_recv = _response.time_request_received();
@@ -53,14 +54,15 @@ std::function<void()> takeoff(std::shared_ptr<muas::ServiceUser_WUAS> serviceUse
             [&](const muas::FlightCtrl_Takeoff_Request& _request) {
                 NDN_LOG_INFO("Timeout " << _request.DebugString());
             },
-            3000,
-            ndn_service_framework::tlv::NoCoordination
+            3000, // Timeout duration in ms
+            ndn_service_framework::tlv::NoCoordination // Coordination strategy
         );
     };
 
     return takeoffRoutine;
 }
 
+/// TODO: break this down into modular pieces
 std::function<void()> orbit(std::shared_ptr<muas::ServiceUser_WUAS> serviceUser, std::shared_ptr<Metrics> orbit_metric) {
     auto orbitRoutine = [&]() {
         struct timeval tv;
