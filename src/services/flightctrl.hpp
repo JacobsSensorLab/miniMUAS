@@ -25,7 +25,7 @@
 using std::chrono::seconds;
 using std::this_thread::sleep_for;
 
-/// Request service provider to takeoff
+// Request service provider to takeoff
 auto takeoff(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsdk::System> system) {
     auto takeoffHandler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Takeoff_Request& _request, muas::FlightCtrl_Takeoff_Response& _response){
         auto time_req_sent = _request.time_request_sent();
@@ -158,7 +158,7 @@ auto rtl(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsdk::S
     return rtlHandler;
 }
 
-Request service provider to stop all motors
+//Request service provider to stop all motors
 auto kill(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<mavsdk::System> system) {
     auto killHandler = [&](const ndn::Name& requesterIdentity, const muas::FlightCtrl_Kill_Request& _request, muas::FlightCtrl_Kill_Response& _response){
         auto time_req_sent = _request.time_request_sent();
