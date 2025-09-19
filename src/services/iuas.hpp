@@ -56,6 +56,7 @@ auto pointOrbit(std::shared_ptr<mavsdk::Telemetry> telemetry, std::shared_ptr<ma
         float orbit_velocity = 0.5;  // default velocity
 
         // Attempting to use MAVLink Passthrough to engage CIRCLE mode on autopilot
+        // POSSIBLE CAUSE FOR LANDING BEHAVIOR (LOGS SHOW UAS CHANGED TO LOITER MODE)
         mavsdk::MavlinkPassthrough::CommandLong command_long{};
         command_long.command = MAV_CMD_NAV_LOITER_TURNS;
         command_long.target_sysid = passthrough.get_target_sysid();
