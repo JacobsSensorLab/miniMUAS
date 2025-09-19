@@ -13,9 +13,9 @@ let
     mavsdk
     opencv
   ];
-  mcc-env = (pkgs.callPackage /home/pmle/mini_compile_commands {}).wrap pkgs.clangStdenv;
+  # mcc-env = (pkgs.callPackage /home/pmle/mini_compile_commands {}).wrap pkgs.clangStdenv;
 
-in with pkgs; mkShell.override {stdenv = mcc-env;} {
+in with pkgs; mkShell.override {} {
 
   packages = [
     pkg-config
