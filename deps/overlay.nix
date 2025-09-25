@@ -16,4 +16,6 @@ final: prev: {
   mavlink = final.callPackage ./mavlink {};
 
   tinyxml2 = final.callPackage ./tinyxml2 {};
+
+  minimuas-files = final.callPackage ./minimuas-files {};
 }

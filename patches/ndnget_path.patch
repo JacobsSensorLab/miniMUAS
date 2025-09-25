@@ -1,0 +1,26 @@
+diff --git a/src/minimuas_GCS.cpp b/src/minimuas_GCS.cpp
+index 96f5e2b..50f5e45 100644
+--- a/src/minimuas_GCS.cpp
++++ b/src/minimuas_GCS.cpp
+@@ -26,7 +26,7 @@ void getCapture(const std::string& producer_id, int sensor_id, int idx) {
+         NDN_LOG_INFO("ndnget " + name + " > " + filename);
+ 
+         // Pass the filename directly as an output redirection target
+-        bp::child c("ndnget", name, bp::std_out > filename);
++        bp::child c("@ndn-tools@/bin/ndnget", name, bp::std_out > filename);
+         c.wait();
+ 
+         std::cout << "Saved " << filename << std::endl;
+diff --git a/src/minimuas_GCS_shell.cpp b/src/minimuas_GCS_shell.cpp
+index 1b097e2..0b0d916 100644
+--- a/src/minimuas_GCS_shell.cpp
++++ b/src/minimuas_GCS_shell.cpp
+@@ -26,7 +26,7 @@ void getCapture(const std::string& producer_id, int sensor_id, int idx) {
+         NDN_LOG_INFO("ndnget " + name + " > " + filename);
+ 
+         // Pass the filename directly as an output redirection target
+-        bp::child c("ndnget", name, bp::std_out > filename);
++        bp::child c("@ndn-tools@/bin/ndnget", name, bp::std_out > filename);
+         c.wait();
+ 
+         std::cout << "Saved " << filename << std::endl;

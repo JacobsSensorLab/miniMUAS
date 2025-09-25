@@ -1,0 +1,65 @@
+diff --git a/src/minimuas_GCS.cpp b/src/minimuas_GCS.cpp
+index 89ba541..322cfc2 100644
+--- a/src/minimuas_GCS.cpp
++++ b/src/minimuas_GCS.cpp
+@@ -50,7 +50,7 @@ main(int argc, char **argv)
+     std::string identity = argv[1];
+     int interval_in_ms = std::stoi(argv[2]);
+     int count = std::stoi(argv[3]);
+-    std::string conf_dir = "/usr/local/bin";
++    std::string conf_dir = "@minimuas-files@/config";
+     int delay = 0000;
+ 
+     int iuas_sensor_idx = 0;
+diff --git a/src/minimuas_GCS_shell.cpp b/src/minimuas_GCS_shell.cpp
+index 73d5cc2..5409595 100644
+--- a/src/minimuas_GCS_shell.cpp
++++ b/src/minimuas_GCS_shell.cpp
+@@ -48,7 +48,7 @@ int main(int argc, char **argv)
+     }
+ 
+     std::string identity = argv[1];
+-    std::string conf_dir = "/usr/local/bin";
++    std::string conf_dir = "@minimuas-files@/config";
+     int iuas_sensor_idx = 0;
+ 
+     ndn::Face m_face;
+diff --git a/src/minimuas_IUAS.cpp b/src/minimuas_IUAS.cpp
+index c156b95..f36a1cc 100644
+--- a/src/minimuas_IUAS.cpp
++++ b/src/minimuas_IUAS.cpp
+@@ -106,7 +106,7 @@ main(int argc, char **argv)
+     auto m_offboard = mavsdk::Offboard{system};
+ 
+     std::string identity = argv[1];
+-    std::string conf_dir = "/usr/local/bin";
++    std::string conf_dir = "@minimuas-files@/config";
+     auto sensor_idx = 0;
+     muas::Sensor sensor;
+     std::string sensor_namespace = identity + "/sensor/" + std::to_string(sensor_idx);
+diff --git a/src/minimuas_WUAS.cpp b/src/minimuas_WUAS.cpp
+index d0dcc16..7463fe1 100644
+--- a/src/minimuas_WUAS.cpp
++++ b/src/minimuas_WUAS.cpp
+@@ -55,7 +55,7 @@ main(int argc, char **argv)
+     m_telemetry.set_rate_gps_info(0.5);
+ 
+     std::string identity = argv[1];
+-    std::string conf_dir = "/usr/local/bin";
++    std::string conf_dir = "@minimuas-files@/config";
+     ndn::Face m_face;
+     ndn::Scheduler m_scheduler(m_face.getIoContext());
+     ndn::security::KeyChain m_keyChain;
+diff --git a/src/service-controller.cpp b/src/service-controller.cpp
+index 4cbb273..7d7ec5f 100644
+--- a/src/service-controller.cpp
++++ b/src/service-controller.cpp
+@@ -12,7 +12,7 @@
+ int
+ main(int argc, char** argv)
+ {
+-  std::string conf_dir = "/usr/local/bin";
++  std::string conf_dir = "@minimuas-files@/config";
+ 
+   try {
+     ndn::Face m_face;
