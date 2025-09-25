@@ -1,5 +1,5 @@
 diff --git a/src/minimuas_GCS.cpp b/src/minimuas_GCS.cpp
-index 89ba541..322cfc2 100644
+index 16ba63a..30a32d4 100644
 --- a/src/minimuas_GCS.cpp
 +++ b/src/minimuas_GCS.cpp
 @@ -50,7 +50,7 @@ main(int argc, char **argv)
@@ -12,46 +12,46 @@ index 89ba541..322cfc2 100644
  
      int iuas_sensor_idx = 0;
 diff --git a/src/minimuas_GCS_shell.cpp b/src/minimuas_GCS_shell.cpp
-index 73d5cc2..5409595 100644
+index 8cec112..62955fd 100644
 --- a/src/minimuas_GCS_shell.cpp
 +++ b/src/minimuas_GCS_shell.cpp
-@@ -48,7 +48,7 @@ int main(int argc, char **argv)
+@@ -49,7 +49,7 @@ int main(int argc, char **argv)
      }
  
-     std::string identity = argv[1];
--    std::string conf_dir = "/usr/local/bin";
-+    std::string conf_dir = "@minimuas-files@/config";
-     int iuas_sensor_idx = 0;
+     std::string identity = argv[1]; // Node's NDN name from input args
+-    std::string conf_dir = "/usr/local/bin"; // config directory
++    std::string conf_dir = "@minimuas-files@/config"; // config directory
+     int iuas_sensor_idx = 0; // hard-coded stuff
  
-     ndn::Face m_face;
+     ndn::Face m_face; // create an application face
 diff --git a/src/minimuas_IUAS.cpp b/src/minimuas_IUAS.cpp
-index c156b95..f36a1cc 100644
+index 66a661d..0b7d0a4 100644
 --- a/src/minimuas_IUAS.cpp
 +++ b/src/minimuas_IUAS.cpp
-@@ -106,7 +106,7 @@ main(int argc, char **argv)
+@@ -78,7 +78,7 @@ main(int argc, char **argv)
      auto m_offboard = mavsdk::Offboard{system};
  
      std::string identity = argv[1];
 -    std::string conf_dir = "/usr/local/bin";
 +    std::string conf_dir = "@minimuas-files@/config";
+ 
+     // Defining hard-coded sensor parameters
      auto sensor_idx = 0;
-     muas::Sensor sensor;
-     std::string sensor_namespace = identity + "/sensor/" + std::to_string(sensor_idx);
 diff --git a/src/minimuas_WUAS.cpp b/src/minimuas_WUAS.cpp
-index d0dcc16..7463fe1 100644
+index 2999e86..9640a58 100644
 --- a/src/minimuas_WUAS.cpp
 +++ b/src/minimuas_WUAS.cpp
-@@ -55,7 +55,7 @@ main(int argc, char **argv)
-     m_telemetry.set_rate_gps_info(0.5);
+@@ -67,7 +67,7 @@ main(int argc, char **argv)
+     m_telemetry->set_rate_gps_info(0.5);
  
      std::string identity = argv[1];
 -    std::string conf_dir = "/usr/local/bin";
 +    std::string conf_dir = "@minimuas-files@/config";
+ 
+     // Same as minimuas_GCS_shell
      ndn::Face m_face;
-     ndn::Scheduler m_scheduler(m_face.getIoContext());
-     ndn::security::KeyChain m_keyChain;
 diff --git a/src/service-controller.cpp b/src/service-controller.cpp
-index 4cbb273..7d7ec5f 100644
+index 4cbb273..6507506 100644
 --- a/src/service-controller.cpp
 +++ b/src/service-controller.cpp
 @@ -12,7 +12,7 @@
