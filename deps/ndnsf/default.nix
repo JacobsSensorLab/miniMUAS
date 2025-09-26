@@ -29,6 +29,7 @@ stdenv.mkDerivation rec {
 
   patches = [
     ./NDNSF_90b8fbe.patch
+    ./ndnsf_config.patch
   ];
 
   nativeBuildInputs = [ pkg-config python313 wafHook ];

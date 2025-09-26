@@ -1,0 +1,13 @@
+diff --git a/ndn-service-framework/ConfigManager.hpp b/ndn-service-framework/ConfigManager.hpp
+index b21d5fc..a0a3995 100644
+--- a/ndn-service-framework/ConfigManager.hpp
++++ b/ndn-service-framework/ConfigManager.hpp
+@@ -16,7 +16,7 @@ namespace ndn_service_framework {
+ 
+ class ConfigManager {
+ public:
+-  ConfigManager(const std::string& path = "/etc/ndn/ndnsf.conf")
++  ConfigManager(const std::string& path = "./ndnsf/ndnsf.conf")
+     : m_path(path)
+   {
+     // 内存数据只用于快速查询，持久化由文件负责
