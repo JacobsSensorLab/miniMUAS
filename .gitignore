@@ -5,4 +5,9 @@ result/
 CMakeFiles/
 build/
 build_manual/
-compile_commands.jsonresults/
+compile_commands.json
+results/
+__pycache__/
+*.py[cod]
+.DS_Store
+/test.jpg
