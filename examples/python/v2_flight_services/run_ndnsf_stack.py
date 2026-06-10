@@ -32,7 +32,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--controller-startup-wait-s", type=float, default=1.0)
     parser.add_argument("--provider-startup-wait-s", type=float, default=2.0)
     parser.add_argument("--timeout-ms", type=int, default=5000)
-    parser.add_argument("--investigate-timeout-ms", type=int, default=15000)
+    parser.add_argument(
+        "--investigate-timeout-ms",
+        type=int,
+        default=None,
+        help="Default 15000, or 300000 when --mavlink-endpoint is set (real flight time)",
+    )
     parser.add_argument("--skip-preflight", action="store_true")
     parser.add_argument(
         "--native-orbit",
@@ -41,6 +46,22 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Advertise native circle-mode capability on the IUAS provider "
             "(--no-native-orbit exercises the guided fallback path end-to-end)"
+        ),
+    )
+    parser.add_argument(
+        "--mavlink-endpoint",
+        default=None,
+        help=(
+            "Fly IUAS investigations on ArduPilot SITL / a real autopilot "
+            "(from inside the container: tcp:host.docker.internal:5762)"
+        ),
+    )
+    parser.add_argument(
+        "--camera",
+        default="synthetic",
+        help=(
+            "Frame source for WUAS published frames and IUAS capture "
+            "artifacts: synthetic, file:<path>, or opencv:<index|url>"
         ),
     )
     parser.add_argument(
@@ -63,6 +84,12 @@ def common_args(args) -> list[str]:
 
 def planned_commands(args) -> list[list[str]]:
     common = common_args(args)
+    iuas_extra: list[str] = [
+        "--native-orbit" if args.native_orbit else "--no-native-orbit",
+        "--camera", args.camera,
+    ]
+    if args.mavlink_endpoint:
+        iuas_extra += ["--mavlink-endpoint", args.mavlink_endpoint]
     return [
         [
             sys.executable,
@@ -79,7 +106,7 @@ def planned_commands(args) -> list[list[str]]:
             sys.executable,
             str(SCRIPT_DIR / "run_iuas_provider.py"),
             *common,
-            "--native-orbit" if args.native_orbit else "--no-native-orbit",
+            *iuas_extra,
         ],
         [
             sys.executable,
@@ -87,6 +114,7 @@ def planned_commands(args) -> list[list[str]]:
             *common,
             "--timeout-ms", str(args.timeout_ms),
             "--investigate-timeout-ms", str(args.investigate_timeout_ms),
+            "--camera", args.camera,
         ],
     ]
 
@@ -121,6 +149,8 @@ def terminate(processes: list[subprocess.Popen]) -> None:
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.investigate_timeout_ms is None:
+        args.investigate_timeout_ms = 300000 if args.mavlink_endpoint else 15000
     commands = planned_commands(args)
     if args.dry_run or not args.run:
         for command in commands:

@@ -137,6 +137,13 @@ RUN apt-get update \
     && python3 setup.py build_ext --inplace \
     && python3 -c "import sys; sys.path.insert(0, '.'); import ndnsf; print('ndnsf in-tree import OK')"
 
+# --- Layer 8b: pymavlink for the optional MAVLink-backed IUAS flight path ----
+# Used when run_iuas_provider.py is given --mavlink-endpoint (e.g.
+# tcp:host.docker.internal:5762 to reach ArduPilot SITL on the host).
+# A separate layer so toggling it never invalidates the NDNSF build above.
+# pyyaml: relay.drone.mavlink imports relay.scenario, which needs it.
+RUN python3 -m pip install --no-cache-dir pymavlink pyyaml
+
 # --- Layer 9: container-friendly nfd-start/nfd-stop ---------------------------
 # The PPA's nfd-start is a systemd wrapper, and containers have no systemd
 # PID 1. These shims sit earlier in PATH (/usr/local/bin) and run the nfd

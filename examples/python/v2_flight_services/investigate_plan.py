@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 import os
 from pathlib import Path
 import sys
+import time
 from typing import Any
 
 from contracts import (
@@ -331,8 +332,24 @@ def execute_investigation(
     tick_dt_s: float = 0.25,
     max_ticks: int = 4000,
     uas_ipbrc_root: Path | None = None,
+    link: Any | None = None,
+    vehicle: Any | None = None,
+    profile: Any | None = None,
+    realtime: bool = False,
+    frame_source: Any | None = None,
 ) -> InvestigationOutcome:
-    """Run the compiled plan to a terminal status on simulated time."""
+    """Run the compiled plan to a terminal status.
+
+    Default: an in-process simulated vehicle on simulated time. Passing a
+    real `link` + `vehicle` pair (see `mavlink_flight.connect_flight_link`)
+    with `realtime=True` flies the identical plan against an autopilot:
+    contexts then carry wall-clock time and live telemetry, with
+    `tick_dt_s` as the control period and `max_ticks * tick_dt_s` as the
+    wall-time budget. `profile` overrides the default capability profile;
+    supply it whenever supplying a link so the orbit ladder matches what
+    the link can actually do. `frame_source` (see `camera.py`) supplies
+    capture-artifact payloads; default is the synthetic pattern.
+    """
 
     add_flight_path(uas_ipbrc_root)
 
@@ -349,7 +366,8 @@ def execute_investigation(
     )
 
     started_ns = gps_time_ns()
-    profile = default_capability_profile(native_orbit=native_orbit)
+    if profile is None:
+        profile = default_capability_profile(native_orbit=native_orbit)
     compiled = compile_investigation(
         request,
         vehicle_id=vehicle_id,
@@ -369,14 +387,17 @@ def execute_investigation(
             mode=compiled.mode,
         )
 
-    # Vehicle starts standoff_m south of the target at ground level, armed.
-    start_position = Position(
-        lat=request.target.lat_deg - request.standoff_m / EARTH_M_PER_DEG_LAT,
-        lon=request.target.lon_deg,
-        alt=request.target.alt_m or 0.0,
-    )
-    vehicle = SimVehicle(id=vehicle_id, position=start_position)
-    link = SimFlightLink(vehicle, position_type=Position)
+    if link is None:
+        # Vehicle starts standoff_m south of the target at ground level, armed.
+        start_position = Position(
+            lat=request.target.lat_deg - request.standoff_m / EARTH_M_PER_DEG_LAT,
+            lon=request.target.lon_deg,
+            alt=request.target.alt_m or 0.0,
+        )
+        vehicle = SimVehicle(id=vehicle_id, position=start_position)
+        link = SimFlightLink(vehicle, position_type=Position)
+    elif vehicle is None:
+        raise ValueError("a vehicle must accompany an externally supplied link")
 
     artifacts: list[SensorArtifact] = []
     artifact_payloads: list[bytes] = []
@@ -385,20 +406,22 @@ def execute_investigation(
         del capture_link
         artifact_time = gps_time_ns()
         position = vehicle.position
-        artifact_payloads.append(
-            synthetic_frame_bytes(
-                mission_id=request.mission_id,
-                vehicle_id=vehicle_id,
-                sensor_id=sensor_id,
-                gps_time_ns=artifact_time,
-                metadata={
-                    "target_id": request.source_detection_id,
-                    "lat_deg": f"{position.lat:.8f}",
-                    "lon_deg": f"{position.lon:.8f}",
-                    "alt_m": f"{position.alt:.2f}",
-                },
-            )
+        capture_kwargs = dict(
+            mission_id=request.mission_id,
+            vehicle_id=vehicle_id,
+            sensor_id=sensor_id,
+            gps_time_ns=artifact_time,
+            metadata={
+                "target_id": request.source_detection_id,
+                "lat_deg": f"{position.lat:.8f}",
+                "lon_deg": f"{position.lon:.8f}",
+                "alt_m": f"{position.alt:.2f}",
+            },
         )
+        if frame_source is not None:
+            artifact_payloads.append(frame_source.capture(**capture_kwargs))
+        else:
+            artifact_payloads.append(synthetic_frame_bytes(**capture_kwargs))
         artifacts.append(
             SensorArtifact(
                 data_name=mission_sensor_name(
@@ -456,6 +479,15 @@ def execute_investigation(
     )
 
     def contexts() -> Iterator[FlightContext]:
+        if realtime:
+            start_t = time.monotonic()
+            for _ in range(max_ticks):
+                yield FlightContext(
+                    now_s=time.monotonic() - start_t,
+                    vehicles={vehicle_id: vehicle},
+                )
+                time.sleep(tick_dt_s)
+            return
         for tick in range(max_ticks):
             yield FlightContext(
                 now_s=tick * tick_dt_s,
@@ -500,7 +532,7 @@ def execute_investigation(
         ),
         mode=compiled.mode,
         event_names=tuple(event_names),
-        command_log=tuple(link.command_log),
+        command_log=tuple(getattr(link, "command_log", ()) or ()),
         artifact_payloads=tuple(artifact_payloads),
     )
 

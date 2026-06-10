@@ -1,0 +1,59 @@
+name /muas/v2/controller/NDNSF/ControllerPolicy/v1
+
+provider-policies
+{
+    provider-policy
+    {
+        for /muas/v2/gcs
+        allow
+        {
+            /muas/v2/gcs/perception/detect-object
+        }
+    }
+
+    provider-policy
+    {
+        for /muas/v2/iuas-01
+        allow
+        {
+            /muas/v2/iuas-01/flight/investigate
+            /muas/v2/iuas-01/flight/rtl
+        }
+    }
+
+    provider-policy
+    {
+        for /muas/v2/wuas-01
+        allow
+        {
+            /muas/v2/wuas-01/flight/execute
+            /muas/v2/wuas-01/telemetry/state
+            /muas/v2/wuas-01/sensor/capture
+        }
+    }
+}
+
+user-policies
+{
+    user-policy
+    {
+        for /muas/v2/gcs
+        allow
+        {
+            /muas/v2/wuas-01/flight/execute
+            /muas/v2/wuas-01/telemetry/state
+            /muas/v2/wuas-01/sensor/capture
+        }
+    }
+
+    user-policy
+    {
+        for /muas/v2/wuas-01
+        allow
+        {
+            /muas/v2/gcs/perception/detect-object
+            /muas/v2/iuas-01/flight/investigate
+            /muas/v2/iuas-01/flight/rtl
+        }
+    }
+}

@@ -113,7 +113,15 @@ See `docker/README.md` for build details and troubleshooting.
 The data plane is implemented: WUAS publishes the camera frame as signed
 segmented Data under its mission name, GCS fetches and verifies it before
 detecting, the IUAS publishes its sensor artifacts the same way, and WUAS
-fetches them back after the mission. Payloads are deterministic synthetic
-frames until a real camera is integrated; see `dataplane.py`.
+fetches them back after the mission. Frame bodies come from a `--camera`
+source: `synthetic` (default), `file:<path>` (real image bytes; works in
+the container), or `opencv:<index|url>` (live webcam/RTSP capture). See
+`camera.py` and `dataplane.py`.
+
+The IUAS can fly investigations on ArduPilot SITL or a real autopilot via
+MAVLink (`mavlink_flight.py`): `python3 run_sitl_investigation.py` for the
+host-side flight without NDN, or
+`./run_v2_stack_container.sh stack --mavlink-endpoint tcp:host.docker.internal:5762`
+for the full mission with real flight. See `docs/v2_flight_services.md`.
 
 The service contract is documented in `docs/v2_flight_services.md`.

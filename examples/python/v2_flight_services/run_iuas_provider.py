@@ -28,7 +28,8 @@ from contracts import (
     vehicle_flight_service,
     vehicle_telemetry_state_name,
 )
-from dataplane import publish_segmented, synthetic_frame_bytes
+from camera import frame_source_from_spec
+from dataplane import publish_segmented
 from ndnsf_runtime import (
     add_common_arguments,
     add_ndnsf_path,
@@ -71,6 +72,32 @@ def build_parser() -> argparse.ArgumentParser:
         default="simulated-circle-mode",
         help="Notes value reported by the fabricated fallback response",
     )
+    parser.add_argument(
+        "--mavlink-endpoint",
+        default=None,
+        help=(
+            "Fly investigations on a real autopilot/SITL via MAVLink "
+            "(e.g. udp:127.0.0.1:14550, tcp:host.docker.internal:5762). "
+            "Request altitudes are interpreted as AGL and rebased onto the "
+            "detected ground ASL. Requires relay.flight and pymavlink."
+        ),
+    )
+    parser.add_argument("--mavlink-home-alt-m", type=float, default=None)
+    parser.add_argument("--mavlink-tick-dt-s", type=float, default=0.5)
+    parser.add_argument(
+        "--mavlink-max-ticks",
+        type=int,
+        default=1200,
+        help="Wall-time flight budget = max_ticks * tick_dt_s (default 600s)",
+    )
+    parser.add_argument(
+        "--camera",
+        default="synthetic",
+        help=(
+            "Capture-artifact frame source: synthetic, file:<path>, or "
+            "opencv:<index|url> (see camera.py)"
+        ),
+    )
     return parser
 
 
@@ -79,6 +106,7 @@ def _fabricated_result(
     *,
     vehicle_id: str,
     execution_mode: str,
+    frame_source,
 ) -> tuple[FlightTaskResult, list[bytes]]:
     """v0 behavior: report success without flying anything."""
 
@@ -105,7 +133,7 @@ def _fabricated_result(
         ),
         metadata={"target_id": request.source_detection_id},
     )
-    payload = synthetic_frame_bytes(
+    payload = frame_source.capture(
         mission_id=request.mission_id,
         vehicle_id=vehicle_id,
         sensor_id="front",
@@ -159,6 +187,49 @@ def main() -> int:
         )
         return 0
 
+    # Frame source for capture artifacts (synthetic by default).
+    try:
+        frame_source = frame_source_from_spec(args.camera)
+    except Exception as exc:
+        print_json("iuas.camera.unavailable", camera=args.camera, error=str(exc))
+        return 2
+    print_json("iuas.camera.ready", **frame_source.describe())
+
+    # Optional MAVLink-backed flight: same compiled plans, real autopilot.
+    mav = None  # (link, vehicle, home_alt_m)
+    if args.mavlink_endpoint:
+        if investigate_mod is None:
+            print_json(
+                "iuas.mavlink.unavailable",
+                reason="relay.flight is required for MAVLink execution",
+            )
+            return 2
+        import mavlink_flight
+
+        try:
+            mav_link, mav_vehicle, mav_home = mavlink_flight.connect_flight_link(
+                args.mavlink_endpoint,
+                vehicle_id=args.vehicle_id,
+                home_alt_m=args.mavlink_home_alt_m,
+                uas_ipbrc_root=uas_root,
+            )
+        except Exception as exc:
+            print_json(
+                "iuas.mavlink.connect_failed",
+                endpoint=args.mavlink_endpoint,
+                error=str(exc),
+            )
+            return 2
+        mav = (mav_link, mav_vehicle, mav_home)
+        pos = mav_vehicle.position
+        print_json(
+            "iuas.mavlink.connected",
+            endpoint=args.mavlink_endpoint,
+            lat=round(pos.lat, 7),
+            lon=round(pos.lon, 7),
+            home_alt_m=round(mav_home, 2),
+        )
+
     add_ndnsf_path(args.ndnsf_root)
     from ndnsf import AckDecision, ServiceProvider
 
@@ -193,11 +264,20 @@ def main() -> int:
                 segments=producer.segment_count,
             )
 
+    def active_flight_profile():
+        """relay.flight capability profile for the vehicle actually flying."""
+
+        if mav is not None:
+            import mavlink_flight
+
+            return mavlink_flight.mavlink_capability_profile()
+        return investigate_mod.default_capability_profile(
+            native_orbit=args.native_orbit,
+        )
+
     def build_capability_profile() -> CapabilityProfile:
         if investigate_mod is not None:
-            native = investigate_mod.default_capability_profile(
-                native_orbit=args.native_orbit,
-            )
+            native = active_flight_profile()
             return CapabilityProfile(
                 vehicle_id=args.vehicle_id,
                 gps_time_ns=gps_time_ns(),
@@ -230,9 +310,7 @@ def main() -> int:
         compiled = investigate_mod.compile_investigation(
             request,
             vehicle_id=args.vehicle_id,
-            profile=investigate_mod.default_capability_profile(
-                native_orbit=args.native_orbit
-            ),
+            profile=active_flight_profile(),
         )
         if compiled.rejected:
             return AckDecision(
@@ -249,6 +327,7 @@ def main() -> int:
                 request,
                 vehicle_id=args.vehicle_id,
                 execution_mode=args.execution_mode,
+                frame_source=frame_source,
             )
             publish_artifacts(result.artifacts, payloads)
             print_json(
@@ -260,12 +339,71 @@ def main() -> int:
             )
             return result.to_bytes()
 
-        outcome = investigate_mod.execute_investigation(
-            request,
-            vehicle_id=args.vehicle_id,
-            native_orbit=args.native_orbit,
-            uas_ipbrc_root=uas_root,
-        )
+        if mav is not None:
+            import mavlink_flight
+
+            mav_link, mav_vehicle, mav_home = mav
+            if not mavlink_flight.ensure_airborne(
+                mav_link,
+                mav_vehicle,
+                target_agl_m=request.approach_alt_m,
+                home_alt_m=mav_home,
+            ):
+                now = gps_time_ns()
+                result = FlightTaskResult(
+                    task_id=(
+                        f"{args.vehicle_id}-investigate-"
+                        f"{request.source_detection_id}"
+                    ),
+                    status="failed",
+                    started_at_gps_ns=now,
+                    completed_at_gps_ns=gps_time_ns(),
+                    artifacts=[],
+                    notes="mavlink preflight failed",
+                )
+                print_json(
+                    "iuas.investigation.completed",
+                    task_id=result.task_id,
+                    status=result.status,
+                    execution="mavlink-preflight-failed",
+                )
+                return result.to_bytes()
+            # Over MAVLink, request altitudes are AGL; rebase onto ground ASL.
+            flown = InvestigatePointRequest(
+                mission_id=request.mission_id,
+                source_detection_id=request.source_detection_id,
+                target=GeoPoint(
+                    lat_deg=request.target.lat_deg,
+                    lon_deg=request.target.lon_deg,
+                    alt_m=mav_home + (request.target.alt_m or 0.0),
+                ),
+                approach_alt_m=mav_home + request.approach_alt_m,
+                standoff_m=request.standoff_m,
+                circle_radius_m=request.circle_radius_m,
+                circle_count=request.circle_count,
+                sensor_plan=list(request.sensor_plan),
+                constraints=request.constraints,
+            )
+            outcome = investigate_mod.execute_investigation(
+                flown,
+                vehicle_id=args.vehicle_id,
+                uas_ipbrc_root=uas_root,
+                link=mav_link,
+                vehicle=mav_vehicle,
+                profile=mavlink_flight.mavlink_capability_profile(),
+                realtime=True,
+                tick_dt_s=args.mavlink_tick_dt_s,
+                max_ticks=args.mavlink_max_ticks,
+                frame_source=frame_source,
+            )
+        else:
+            outcome = investigate_mod.execute_investigation(
+                request,
+                vehicle_id=args.vehicle_id,
+                native_orbit=args.native_orbit,
+                uas_ipbrc_root=uas_root,
+                frame_source=frame_source,
+            )
         publish_artifacts(
             outcome.result.artifacts,
             list(outcome.artifact_payloads),

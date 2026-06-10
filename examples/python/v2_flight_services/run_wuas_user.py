@@ -23,13 +23,13 @@ from contracts import (
     vehicle_flight_service,
     vehicle_telemetry_state_name,
 )
+from camera import frame_source_from_spec
 from dataplane import (
     FRAME_CONTENT_TYPE,
     fetch_segmented,
     parse_frame,
     publish_segmented,
     sha256_hex,
-    synthetic_frame_bytes,
 )
 from ndnsf_runtime import (
     add_common_arguments,
@@ -53,6 +53,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--investigate-timeout-ms", type=int, default=15000)
     parser.add_argument("--artifact-fetch-timeout-ms", type=int, default=5000)
     parser.add_argument("--capability-fetch-timeout-ms", type=int, default=3000)
+    parser.add_argument(
+        "--camera",
+        default="synthetic",
+        help=(
+            "Published-frame source: synthetic, file:<path>, or "
+            "opencv:<index|url> (see camera.py)"
+        ),
+    )
     parser.add_argument("--list-services", action="store_true")
     return parser
 
@@ -87,6 +95,14 @@ def main() -> int:
     from ndnsf import ServiceUser
 
     with optional_local_nfd(args.start_local_nfd):
+        try:
+            frame_source = frame_source_from_spec(args.camera)
+        except Exception as exc:
+            print_json(
+                "wuas.camera.unavailable", camera=args.camera, error=str(exc)
+            )
+            return 2
+        print_json("wuas.camera.ready", **frame_source.describe())
         user = ServiceUser(**user_kwargs(args, args.user))
         if args.list_services:
             for entry in user.get_allowed_services():
@@ -115,7 +131,7 @@ def main() -> int:
             ),
             content_type=FRAME_CONTENT_TYPE,
         )
-        frame_payload = synthetic_frame_bytes(
+        frame_payload = frame_source.capture(
             mission_id=args.mission_id,
             vehicle_id=args.wuas_id,
             sensor_id="front",
@@ -241,7 +257,10 @@ def main() -> int:
                 return 1
 
         frame_producer.stop()
-        return 0
+        # A delivered-but-failed task (e.g. the IUAS could not get the
+        # vehicle airborne) is a failed mission for exit-code purposes,
+        # even though the NDN exchange itself succeeded.
+        return 0 if result.status == "completed" else 1
 
 
 if __name__ == "__main__":
