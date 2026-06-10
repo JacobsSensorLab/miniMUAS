@@ -318,6 +318,86 @@ requests to hosts. miniMUAS therefore uses only the standard
 ACK/selection request path, and no changes are carried in the NDNSF
 library.
 
+## MAVLink / SITL Slice
+
+`mavlink_flight.py` bridges UAS-IPBRC's `MavlinkDroneLink` (pymavlink,
+identical against ArduPilot SITL and real autopilots) to the flight
+executor's link surface. Plan compilation is untouched by design: the same
+`compile_investigation` output executes, the runner ticks on the wall
+clock, position truth is GLOBAL_POSITION_INT telemetry, and the link
+exposes yaw control but no native orbit, so the capability ladder reports
+`guided-yaw-path`. Request altitudes are interpreted as AGL over MAVLink
+and rebased onto the ground ASL auto-detected from the first position fix.
+
+Host-side validation (no NDN), against UAS-IPBRC's SITL chain:
+
+```sh
+cd ~/Documents/Dev/UAS-IPBRC && scripts/launch_sitl_chain.sh 0
+# wait ~20s for EKF convergence, then:
+cd ~/Documents/Dev/miniMUAS/examples/python/v2_flight_services
+python3 run_sitl_investigation.py          # udp:127.0.0.1:14550
+```
+
+The runner arms, takes off, synthesizes a target north of the vehicle,
+flies the full investigate plan in real time, and finishes with RTL.
+Requires pymavlink on the host (the UAS-IPBRC nix shell provides it).
+
+Full NDN mission with the IUAS flying SITL (the container reaches the
+host's SITL through ArduPilot's spare TCP serial port):
+
+```sh
+./run_v2_stack_container.sh stack --mavlink-endpoint tcp:host.docker.internal:5762
+```
+
+The stack runner raises the WUAS investigate timeout to 300s for real
+flight time, and the IUAS capability profile published over telemetry
+reflects the MAVLink link (no `orbit` extra), so the WUAS's
+`expected_mode` prediction is `guided-yaw-path` and `mode_as_predicted`
+still holds. Note the provider serves one vehicle: concurrent
+investigations are not arbitrated in this slice.
+
+Validated 2026-06-10: host flight completed in ~12s of SITL time
+(5x speedup, 22 link commands, RTL finish); full container mission
+completed with an investigate RTT of 89.4s, `mode_as_predicted: true`,
+and the IUAS artifact fetched back over NDN at real flight coordinates.
+Preflight handles a vehicle parked in RTL/LAND from a previous flight by
+forcing GUIDED before arming. Two standalone diagnostics remain in the
+tree for transport debugging (`probe_mavlink_stream.py`,
+`probe2_adapter_path.py`): the first checks whether an endpoint delivers
+position telemetry on request, the second replicates the adapter's
+connect sequence stage by stage.
+
+## Camera Frame Sources
+
+Frames travel in a self-describing container (`dataplane.build_frame_bytes`:
+magic, length-prefixed JSON header with `kind`/`body_len`/`body_sha256`,
+opaque body) so the body can be real pixels instead of the synthetic
+pattern without changing the publish/fetch/verify path. The role scripts
+take a `--camera <spec>` flag, applied by the stack runner to both the
+WUAS published frame and the IUAS capture artifacts:
+
+    synthetic            deterministic pattern (default; no dependencies)
+    file:<path>          real bytes from a file, directory, or glob,
+                         cycled per capture; works in the container
+    opencv:<index|url>   live JPEG capture via opencv-python: a webcam
+                         index or a stream URL (RTSP, etc.); for the dev
+                         host and the companion computers
+
+`python3 camera.py <spec>...` round-trips one capture per spec through
+the container format offline. Examples:
+
+```sh
+# full NDN mission, frames sourced from a real image file:
+./run_v2_stack_container.sh stack --camera file:/work/miniMUAS/some.jpg
+
+# real SITL flight, capture artifact from the host webcam:
+python3 run_sitl_investigation.py --camera opencv:0
+```
+
+OpenCV is intentionally not installed in the container image; use the
+file source there, or opencv on hosts and companion computers that have
+cameras.
+
 The real runtime path requires the NDNSF Python extension module
 `ndnsf._ndnsf`. If the source tree has not built that extension yet, the mock
 mission and dry-run commands still validate the contract, but the real

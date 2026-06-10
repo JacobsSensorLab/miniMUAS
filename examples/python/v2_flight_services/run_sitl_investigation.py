@@ -73,6 +73,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="synthetic",
         help="Capture frame source: synthetic, file:<path>, or opencv:<index|url>",
     )
+    parser.add_argument(
+        "--save-artifacts-dir",
+        type=Path,
+        default=None,
+        help="Write captured artifact bodies (e.g. webcam JPEGs) to this directory",
+    )
     return parser
 
 
@@ -168,6 +174,24 @@ def main() -> int:
         link_commands=[name for name, _ in outcome.command_log],
         final_agl_m=round(final.alt - home_alt_m, 2),
     )
+
+    if args.save_artifacts_dir:
+        from dataplane import split_frame
+
+        outdir = args.save_artifacts_dir.expanduser()
+        outdir.mkdir(parents=True, exist_ok=True)
+        ext_by_kind = {"image/jpeg": ".jpg", "image/png": ".png"}
+        for index, payload in enumerate(outcome.artifact_payloads, 1):
+            header, body = split_frame(payload)
+            ext = ext_by_kind.get(header.get("kind"), ".bin")
+            path = outdir / f"artifact_{index}_{header['gps_time_ns']}{ext}"
+            path.write_bytes(body)
+            print_json(
+                "sitl.artifact.saved",
+                path=str(path),
+                bytes=len(body),
+                kind=header.get("kind"),
+            )
 
     if args.finish == "rtl":
         link.rtl()
