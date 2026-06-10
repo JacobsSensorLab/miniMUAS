@@ -20,6 +20,14 @@ from contracts import (
     mission_frame_name,
     vehicle_flight_service,
 )
+from dataplane import (
+    FRAME_CONTENT_TYPE,
+    fetch_segmented,
+    parse_frame,
+    publish_segmented,
+    sha256_hex,
+    synthetic_frame_bytes,
+)
 from ndnsf_runtime import (
     add_common_arguments,
     add_ndnsf_path,
@@ -40,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ack-timeout-ms", type=int, default=300)
     parser.add_argument("--timeout-ms", type=int, default=5000)
     parser.add_argument("--investigate-timeout-ms", type=int, default=15000)
+    parser.add_argument("--artifact-fetch-timeout-ms", type=int, default=5000)
     parser.add_argument("--list-services", action="store_true")
     return parser
 
@@ -100,8 +109,23 @@ def main() -> int:
                 position=GeoPoint(lat_deg=35.1208, lon_deg=-89.9347, alt_m=40.0),
                 yaw_deg=90.0,
             ),
+            content_type=FRAME_CONTENT_TYPE,
         )
-        print_json("wuas.frame.referenced", frame=frame.data_name)
+        frame_payload = synthetic_frame_bytes(
+            mission_id=args.mission_id,
+            vehicle_id=args.wuas_id,
+            sensor_id="front",
+            gps_time_ns=frame_time,
+            metadata={"yaw_deg": "90.0"},
+        )
+        frame_producer = publish_segmented(frame.data_name, frame_payload)
+        print_json(
+            "wuas.frame.published",
+            frame=frame.data_name,
+            bytes=len(frame_payload),
+            segments=frame_producer.segment_count,
+            sha256=sha256_hex(frame_payload),
+        )
 
         detection_payload = DetectionRequest(
             mission_id=args.mission_id,
@@ -154,6 +178,32 @@ def main() -> int:
             status=result.status,
             artifacts=[artifact.data_name for artifact in result.artifacts],
         )
+
+        # Close the loop on the data plane: fetch the close-range sensor
+        # artifacts the IUAS published, exactly as the GCS would.
+        for artifact in result.artifacts:
+            try:
+                payload = fetch_segmented(
+                    artifact.data_name,
+                    timeout_ms=args.artifact_fetch_timeout_ms,
+                )
+                header = parse_frame(payload)
+                print_json(
+                    "wuas.artifact.fetched",
+                    artifact=artifact.data_name,
+                    bytes=len(payload),
+                    sha256=header["sha256"],
+                    sensor_id=header.get("sensor_id"),
+                )
+            except Exception as exc:
+                print_json(
+                    "wuas.artifact.fetch_failed",
+                    artifact=artifact.data_name,
+                    error=str(exc),
+                )
+                return 1
+
+        frame_producer.stop()
         return 0
 
 

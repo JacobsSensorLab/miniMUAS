@@ -35,6 +35,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--investigate-timeout-ms", type=int, default=15000)
     parser.add_argument("--skip-preflight", action="store_true")
     parser.add_argument(
+        "--native-orbit",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Advertise native circle-mode capability on the IUAS provider "
+            "(--no-native-orbit exercises the guided fallback path end-to-end)"
+        ),
+    )
+    parser.add_argument(
         "--library-dir",
         action="append",
         default=[],
@@ -70,6 +79,7 @@ def planned_commands(args) -> list[list[str]]:
             sys.executable,
             str(SCRIPT_DIR / "run_iuas_provider.py"),
             *common,
+            "--native-orbit" if args.native_orbit else "--no-native-orbit",
         ],
         [
             sys.executable,

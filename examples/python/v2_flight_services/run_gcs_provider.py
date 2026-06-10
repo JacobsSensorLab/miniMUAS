@@ -13,6 +13,7 @@ from contracts import (
     gps_time_ns,
     mission_evidence_name,
 )
+from dataplane import fetch_segmented, parse_frame
 from ndnsf_runtime import (
     add_common_arguments,
     add_ndnsf_path,
@@ -30,6 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--service", default=gcs_detection_service())
     parser.add_argument("--lat-offset-deg", type=float, default=0.00008)
     parser.add_argument("--lon-offset-deg", type=float, default=0.00006)
+    parser.add_argument("--frame-fetch-timeout-ms", type=int, default=5000)
     return parser
 
 
@@ -44,7 +46,7 @@ def main() -> int:
         return 0
 
     add_ndnsf_path(args.ndnsf_root)
-    from ndnsf import AckDecision, ServiceProvider
+    from ndnsf import AckDecision, ServiceProvider, ServiceResponse
 
     provider = ServiceProvider(
         **provider_kwargs(args, args.provider_prefix, args.provider_id)
@@ -59,8 +61,36 @@ def main() -> int:
         )
 
     @provider.handler(args.service)
-    def detect_object(payload: bytes) -> bytes:
+    def detect_object(payload: bytes) -> bytes | ServiceResponse:
         request = DetectionRequest.from_bytes(payload)
+
+        # Detection now consumes the actual published frame object instead
+        # of trusting the name reference.
+        try:
+            frame_payload = fetch_segmented(
+                request.frame.data_name,
+                timeout_ms=args.frame_fetch_timeout_ms,
+            )
+            header = parse_frame(frame_payload)
+        except Exception as exc:
+            print_json(
+                "gcs.frame.fetch_failed",
+                frame=request.frame.data_name,
+                error=str(exc),
+            )
+            return ServiceResponse(
+                status=False,
+                error=f"frame fetch failed: {exc}",
+            )
+        print_json(
+            "gcs.frame.fetched",
+            frame=request.frame.data_name,
+            bytes=len(frame_payload),
+            sha256=header["sha256"],
+            width=header.get("width"),
+            height=header.get("height"),
+        )
+
         timestamp_ns = gps_time_ns()
         response = DetectionResponse(
             mission_id=request.mission_id,
@@ -80,6 +110,7 @@ def main() -> int:
         print_json(
             "gcs.detection.completed",
             frame=request.frame.data_name,
+            frame_bytes=len(frame_payload),
             evidence=response.evidence_ref,
             confidence=response.confidence,
         )

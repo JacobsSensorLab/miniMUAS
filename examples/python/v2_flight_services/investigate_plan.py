@@ -41,6 +41,7 @@ from contracts import (
     gps_time_ns,
     mission_sensor_name,
 )
+from dataplane import synthetic_frame_bytes
 
 
 DEFAULT_UAS_IPBRC_ROOT = Path(
@@ -175,6 +176,7 @@ class InvestigationOutcome:
     mode: str
     event_names: tuple[str, ...] = ()
     command_log: tuple[tuple[str, dict[str, object]], ...] = ()
+    artifact_payloads: tuple[bytes, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -377,11 +379,26 @@ def execute_investigation(
     link = SimFlightLink(vehicle, position_type=Position)
 
     artifacts: list[SensorArtifact] = []
+    artifact_payloads: list[bytes] = []
 
     def capture_handler(command, capture_link) -> FlightCommandResult:
         del capture_link
         artifact_time = gps_time_ns()
         position = vehicle.position
+        artifact_payloads.append(
+            synthetic_frame_bytes(
+                mission_id=request.mission_id,
+                vehicle_id=vehicle_id,
+                sensor_id=sensor_id,
+                gps_time_ns=artifact_time,
+                metadata={
+                    "target_id": request.source_detection_id,
+                    "lat_deg": f"{position.lat:.8f}",
+                    "lon_deg": f"{position.lon:.8f}",
+                    "alt_m": f"{position.alt:.2f}",
+                },
+            )
+        )
         artifacts.append(
             SensorArtifact(
                 data_name=mission_sensor_name(
@@ -484,6 +501,7 @@ def execute_investigation(
         mode=compiled.mode,
         event_names=tuple(event_names),
         command_log=tuple(link.command_log),
+        artifact_payloads=tuple(artifact_payloads),
     )
 
 

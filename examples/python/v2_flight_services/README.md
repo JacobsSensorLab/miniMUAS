@@ -110,7 +110,10 @@ cd examples/python/v2_flight_services/docker
 
 See `docker/README.md` for build details and troubleshooting.
 
-The first real-NDNSF slice keeps imagery as a named reference. Actual segmented
-image publication/fetch is the next data-plane task.
+The data plane is implemented: WUAS publishes the camera frame as signed
+segmented Data under its mission name, GCS fetches and verifies it before
+detecting, the IUAS publishes its sensor artifacts the same way, and WUAS
+fetches them back after the mission. Payloads are deterministic synthetic
+frames until a real camera is integrated; see `dataplane.py`.
 
 The service contract is documented in `docs/v2_flight_services.md`.

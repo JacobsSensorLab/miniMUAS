@@ -26,6 +26,7 @@ from contracts import (
     mission_sensor_name,
     vehicle_flight_service,
 )
+from dataplane import publish_segmented, synthetic_frame_bytes
 from ndnsf_runtime import (
     add_common_arguments,
     add_ndnsf_path,
@@ -76,7 +77,7 @@ def _fabricated_result(
     *,
     vehicle_id: str,
     execution_mode: str,
-) -> FlightTaskResult:
+) -> tuple[FlightTaskResult, list[bytes]]:
     """v0 behavior: report success without flying anything."""
 
     started = gps_time_ns()
@@ -102,13 +103,23 @@ def _fabricated_result(
         ),
         metadata={"target_id": request.source_detection_id},
     )
-    return FlightTaskResult(
-        task_id=f"{vehicle_id}-investigate-{request.source_detection_id}",
-        status="completed",
-        started_at_gps_ns=started,
-        completed_at_gps_ns=gps_time_ns(),
-        artifacts=[artifact],
-        notes=execution_mode,
+    payload = synthetic_frame_bytes(
+        mission_id=request.mission_id,
+        vehicle_id=vehicle_id,
+        sensor_id="front",
+        gps_time_ns=artifact_time,
+        metadata={"target_id": request.source_detection_id},
+    )
+    return (
+        FlightTaskResult(
+            task_id=f"{vehicle_id}-investigate-{request.source_detection_id}",
+            status="completed",
+            started_at_gps_ns=started,
+            completed_at_gps_ns=gps_time_ns(),
+            artifacts=[artifact],
+            notes=execution_mode,
+        ),
+        [payload],
     )
 
 
@@ -153,6 +164,33 @@ def main() -> int:
         **provider_kwargs(args, args.provider_prefix, args.provider_id)
     )
 
+    # Live segmented-object producers for published sensor artifacts. They
+    # must stay referenced (and running) so WUAS/GCS can fetch the objects
+    # after the service response returns.
+    artifact_producers: list[object] = []
+
+    def publish_artifacts(
+        artifacts: list[SensorArtifact],
+        payloads: list[bytes],
+    ) -> None:
+        for artifact, payload in zip(artifacts, payloads):
+            try:
+                producer = publish_segmented(artifact.data_name, payload)
+            except Exception as exc:
+                print_json(
+                    "iuas.artifact.publish_failed",
+                    artifact=artifact.data_name,
+                    error=str(exc),
+                )
+                continue
+            artifact_producers.append(producer)
+            print_json(
+                "iuas.artifact.published",
+                artifact=artifact.data_name,
+                bytes=len(payload),
+                segments=producer.segment_count,
+            )
+
     @provider.ack_handler(service)
     def acknowledge(payload: bytes) -> AckDecision:
         request = InvestigatePointRequest.from_bytes(payload)
@@ -178,11 +216,12 @@ def main() -> int:
     def investigate_point(payload: bytes) -> bytes:
         request = InvestigatePointRequest.from_bytes(payload)
         if investigate_mod is None:
-            result = _fabricated_result(
+            result, payloads = _fabricated_result(
                 request,
                 vehicle_id=args.vehicle_id,
                 execution_mode=args.execution_mode,
             )
+            publish_artifacts(result.artifacts, payloads)
             print_json(
                 "iuas.investigation.completed",
                 task_id=result.task_id,
@@ -197,6 +236,10 @@ def main() -> int:
             vehicle_id=args.vehicle_id,
             native_orbit=args.native_orbit,
             uas_ipbrc_root=uas_root,
+        )
+        publish_artifacts(
+            outcome.result.artifacts,
+            list(outcome.artifact_payloads),
         )
         print_json(
             "iuas.investigation.completed",

@@ -262,6 +262,31 @@ object. The following slice should add segmented image publication and fetch so
 the detection provider consumes actual sensor data instead of deterministic test
 inputs.
 
+## Segmented Data-Plane Slice
+
+This slice is implemented in `examples/python/v2_flight_services/dataplane.py`
+and wired into all three roles. Sensor objects now travel as signed segmented
+NDN Data under their mission-scoped names instead of remaining name-only
+references:
+
+- WUAS publishes the camera frame payload with NDNSF's
+  `SegmentedObjectProducer` under the `FrameRef` data name before requesting
+  detection.
+- The GCS detection handler fetches the frame by name with
+  `fetch_segmented_object`, validates and hashes the payload, and fails the
+  service response if the fetch fails. Detection consumes transferred bytes,
+  not a trusted reference.
+- The IUAS capture step produces real artifact payloads stamped with the
+  vehicle pose at capture time; the provider publishes each one under its
+  `SensorArtifact` data name before returning the task result.
+- WUAS fetches the published sensor artifacts after the mission completes
+  and verifies their integrity, closing the loop in both directions.
+
+Until a real camera is integrated, payloads are deterministic synthetic
+frames (magic header, JSON metadata, multi-segment pseudo-pixel body) so
+segmentation, reassembly, and integrity checking are genuinely exercised.
+Swapping in real JPEG bytes changes only the payload source.
+
 The real runtime path requires the NDNSF Python extension module
 `ndnsf._ndnsf`. If the source tree has not built that extension yet, the mock
 mission and dry-run commands still validate the contract, but the real
