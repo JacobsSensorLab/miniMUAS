@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+"""Run the IUAS investigate-point provider over the real NDNSF Python API.
+
+With a UAS-IPBRC checkout available (`UAS_IPBRC_ROOT` or `--uas-ipbrc-root`),
+each request is compiled into `relay.flight` primitives via the orbit
+capability ladder and executed to a terminal status before the response is
+returned; the reported execution mode (`circle-mode`, `guided-yaw-path`,
+`guided-position-only`) reflects what actually ran, and requests the vehicle
+cannot satisfy are rejected at the ack stage with the reason. Without a
+checkout (or with `--no-execute-plan`) the provider falls back to the
+fabricated v0 response so the NDNSF wiring alone can still be demonstrated.
+"""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+from contracts import (
+    FlightTaskResult,
+    GeoPoint,
+    InvestigatePointRequest,
+    Pose,
+    SensorArtifact,
+    gps_time_ns,
+    mission_sensor_name,
+    vehicle_flight_service,
+)
+from ndnsf_runtime import (
+    add_common_arguments,
+    add_ndnsf_path,
+    optional_local_nfd,
+    print_json,
+    provider_kwargs,
+)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run the miniMUAS v2 IUAS provider")
+    add_common_arguments(parser)
+    parser.add_argument("--vehicle-id", default="iuas-01")
+    parser.add_argument("--provider-prefix", default="/muas/v2/iuas-01")
+    parser.add_argument("--provider-id", default="")
+    parser.add_argument(
+        "--uas-ipbrc-root",
+        default=None,
+        help=(
+            "Path to a UAS-IPBRC checkout providing relay.flight "
+            "(default: $UAS_IPBRC_ROOT or ~/Documents/Dev/UAS-IPBRC)"
+        ),
+    )
+    parser.add_argument(
+        "--no-execute-plan",
+        action="store_true",
+        help="Skip primitive execution and return the fabricated v0 response",
+    )
+    parser.add_argument(
+        "--native-orbit",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Advertise native circle-mode capability for the simulated "
+            "vehicle (--no-native-orbit exercises the guided fallback path)"
+        ),
+    )
+    parser.add_argument(
+        "--execution-mode",
+        default="simulated-circle-mode",
+        help="Notes value reported by the fabricated fallback response",
+    )
+    return parser
+
+
+def _fabricated_result(
+    request: InvestigatePointRequest,
+    *,
+    vehicle_id: str,
+    execution_mode: str,
+) -> FlightTaskResult:
+    """v0 behavior: report success without flying anything."""
+
+    started = gps_time_ns()
+    artifact_time = gps_time_ns()
+    artifact = SensorArtifact(
+        data_name=mission_sensor_name(
+            request.mission_id,
+            vehicle_id,
+            "front",
+            "frame",
+            artifact_time,
+            1,
+        ),
+        kind="image/jpeg",
+        gps_time_ns=artifact_time,
+        pose=Pose(
+            position=GeoPoint(
+                lat_deg=request.target.lat_deg,
+                lon_deg=request.target.lon_deg,
+                alt_m=request.approach_alt_m,
+            ),
+            yaw_deg=180.0,
+        ),
+        metadata={"target_id": request.source_detection_id},
+    )
+    return FlightTaskResult(
+        task_id=f"{vehicle_id}-investigate-{request.source_detection_id}",
+        status="completed",
+        started_at_gps_ns=started,
+        completed_at_gps_ns=gps_time_ns(),
+        artifacts=[artifact],
+        notes=execution_mode,
+    )
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    service = vehicle_flight_service(args.vehicle_id, "investigate")
+    uas_root = (
+        Path(args.uas_ipbrc_root).expanduser() if args.uas_ipbrc_root else None
+    )
+
+    investigate_mod = None
+    if not args.no_execute_plan:
+        try:
+            import investigate_plan as _investigate_plan
+
+            _investigate_plan.add_flight_path(uas_root)
+            investigate_mod = _investigate_plan
+        except Exception as exc:
+            print_json(
+                "iuas.flight_lib.unavailable",
+                error=str(exc),
+                fallback="fabricated response",
+                hint="set UAS_IPBRC_ROOT or pass --uas-ipbrc-root",
+            )
+
+    if args.dry_run:
+        print_json(
+            "iuas.provider.dry_run",
+            service=service,
+            provider_prefix=args.provider_prefix,
+            plan_execution=(
+                "relay.flight" if investigate_mod is not None else "fabricated"
+            ),
+            native_orbit=args.native_orbit,
+        )
+        return 0
+
+    add_ndnsf_path(args.ndnsf_root)
+    from ndnsf import AckDecision, ServiceProvider
+
+    provider = ServiceProvider(
+        **provider_kwargs(args, args.provider_prefix, args.provider_id)
+    )
+
+    @provider.ack_handler(service)
+    def acknowledge(payload: bytes) -> AckDecision:
+        request = InvestigatePointRequest.from_bytes(payload)
+        if request.circle_radius_m <= 0 or request.approach_alt_m <= 0:
+            return AckDecision(status=False, message="invalid request geometry")
+        if investigate_mod is None:
+            return AckDecision(status=True, message=args.execution_mode)
+        compiled = investigate_mod.compile_investigation(
+            request,
+            vehicle_id=args.vehicle_id,
+            profile=investigate_mod.default_capability_profile(
+                native_orbit=args.native_orbit
+            ),
+        )
+        if compiled.rejected:
+            return AckDecision(
+                status=False,
+                message=compiled.reason or compiled.mode,
+            )
+        return AckDecision(status=True, message=compiled.mode)
+
+    @provider.handler(service)
+    def investigate_point(payload: bytes) -> bytes:
+        request = InvestigatePointRequest.from_bytes(payload)
+        if investigate_mod is None:
+            result = _fabricated_result(
+                request,
+                vehicle_id=args.vehicle_id,
+                execution_mode=args.execution_mode,
+            )
+            print_json(
+                "iuas.investigation.completed",
+                task_id=result.task_id,
+                status=result.status,
+                execution=result.notes,
+                plan="fabricated",
+            )
+            return result.to_bytes()
+
+        outcome = investigate_mod.execute_investigation(
+            request,
+            vehicle_id=args.vehicle_id,
+            native_orbit=args.native_orbit,
+            uas_ipbrc_root=uas_root,
+        )
+        print_json(
+            "iuas.investigation.completed",
+            task_id=outcome.result.task_id,
+            status=outcome.result.status,
+            execution=outcome.mode,
+            artifacts=len(outcome.result.artifacts),
+            link_commands=len(outcome.command_log),
+            notes=outcome.result.notes,
+        )
+        return outcome.result.to_bytes()
+
+    with optional_local_nfd(args.start_local_nfd):
+        print_json("iuas.provider.starting", service=service)
+        return provider.run(service)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

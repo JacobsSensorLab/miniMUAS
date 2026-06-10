@@ -1,0 +1,15 @@
+# BuildKit reads this file because it sits next to the Dockerfile
+# (<dockerfile>.dockerignore). It trims the NDN_Service_Framework build
+# context: host build artifacts, cloned dependency trees, and release
+# tarballs are rebuilt or unneeded inside the image.
+#
+# If you use the legacy builder (DOCKER_BUILDKIT=0), copy this file to
+# .dockerignore at the root of the NDN_Service_Framework checkout instead.
+.git
+build
+dependencies
+RELEASE
+results
+**/__pycache__
+**/*.pyc
+.lock-waf*
