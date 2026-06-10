@@ -17,6 +17,7 @@ import argparse
 from pathlib import Path
 
 from contracts import (
+    CapabilityProfile,
     FlightTaskResult,
     GeoPoint,
     InvestigatePointRequest,
@@ -25,6 +26,7 @@ from contracts import (
     gps_time_ns,
     mission_sensor_name,
     vehicle_flight_service,
+    vehicle_telemetry_state_name,
 )
 from dataplane import publish_segmented, synthetic_frame_bytes
 from ndnsf_runtime import (
@@ -191,6 +193,33 @@ def main() -> int:
                 segments=producer.segment_count,
             )
 
+    def build_capability_profile() -> CapabilityProfile:
+        if investigate_mod is not None:
+            native = investigate_mod.default_capability_profile(
+                native_orbit=args.native_orbit,
+            )
+            return CapabilityProfile(
+                vehicle_id=args.vehicle_id,
+                gps_time_ns=gps_time_ns(),
+                position=native.position,
+                velocity=native.velocity,
+                yaw_control=native.yaw_control,
+                mode_control=native.mode_control,
+                gimbal=native.gimbal,
+                obstacle_map=native.obstacle_map,
+                signal_sensor=native.signal_sensor,
+                extras=sorted(native.extras),
+            )
+        # Fabricated fallback mirrors the simulated vehicle's profile.
+        return CapabilityProfile(
+            vehicle_id=args.vehicle_id,
+            gps_time_ns=gps_time_ns(),
+            position=True,
+            yaw_control=True,
+            mode_control=True,
+            extras=["orbit"] if args.native_orbit else [],
+        )
+
     @provider.ack_handler(service)
     def acknowledge(payload: bytes) -> AckDecision:
         request = InvestigatePointRequest.from_bytes(payload)
@@ -253,6 +282,26 @@ def main() -> int:
         return outcome.result.to_bytes()
 
     with optional_local_nfd(args.start_local_nfd):
+        capability_profile = build_capability_profile()
+        telemetry_name = vehicle_telemetry_state_name(args.vehicle_id)
+        try:
+            capability_producer = publish_segmented(
+                telemetry_name,
+                capability_profile.to_bytes(),
+            )
+            artifact_producers.append(capability_producer)
+            print_json(
+                "iuas.capability.published",
+                name=telemetry_name,
+                extras=capability_profile.extras,
+                yaw_control=capability_profile.yaw_control,
+            )
+        except Exception as exc:
+            print_json(
+                "iuas.capability.publish_failed",
+                name=telemetry_name,
+                error=str(exc),
+            )
         print_json("iuas.provider.starting", service=service)
         return provider.run(service)
 

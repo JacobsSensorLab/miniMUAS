@@ -25,6 +25,11 @@ def vehicle_flight_service(vehicle_id: str, service: str) -> str:
     return f"/muas/v2/{vehicle_id}/flight/{service}"
 
 
+def vehicle_telemetry_state_name(vehicle_id: str) -> str:
+    """Data name where a vehicle publishes its current capability/state."""
+    return f"/muas/v2/{vehicle_id}/telemetry/state"
+
+
 def gcs_detection_service() -> str:
     return "/muas/v2/gcs/perception/detect-object"
 
@@ -58,6 +63,64 @@ def mission_sensor_name(
 
 def mission_evidence_name(mission_id: str, object_id: str, timestamp_ns: int) -> str:
     return f"/muas/v2/mission/{mission_id}/evidence/{object_id}/{timestamp_ns}"
+
+
+@dataclass(frozen=True)
+class CapabilityProfile:
+    """Flight capabilities one vehicle advertises to the mission layer.
+
+    Field names mirror relay.flight's FlightCapabilityProfile so the mission
+    layer and the vehicle's primitive compiler reason over the same
+    vocabulary. `extras` carries open-ended capability strings such as
+    "orbit" for native circle mode.
+    """
+
+    vehicle_id: str
+    gps_time_ns: int
+    position: bool = False
+    velocity: bool = False
+    yaw_control: bool = False
+    mode_control: bool = False
+    gimbal: bool = False
+    obstacle_map: bool = False
+    signal_sensor: bool = False
+    extras: list[str] = field(default_factory=list)
+
+    def to_bytes(self) -> bytes:
+        return encode_dataclass(self)
+
+    @classmethod
+    def from_bytes(cls, payload: bytes) -> "CapabilityProfile":
+        value = decode_json(payload)
+        return cls(
+            vehicle_id=str(value["vehicle_id"]),
+            gps_time_ns=int(value["gps_time_ns"]),
+            position=bool(value.get("position", False)),
+            velocity=bool(value.get("velocity", False)),
+            yaw_control=bool(value.get("yaw_control", False)),
+            mode_control=bool(value.get("mode_control", False)),
+            gimbal=bool(value.get("gimbal", False)),
+            obstacle_map=bool(value.get("obstacle_map", False)),
+            signal_sensor=bool(value.get("signal_sensor", False)),
+            extras=[str(item) for item in value.get("extras", [])],
+        )
+
+
+def expected_orbit_mode(profile: CapabilityProfile) -> str:
+    """Mission-side mirror of relay.flight's plan_orbit capability ladder.
+
+    Lets a dispatcher predict how a vehicle will execute an orbit request
+    before sending it: circle-mode, guided-yaw-path, guided-position-only,
+    or reject.
+    """
+
+    if not (profile.position and profile.mode_control):
+        return "reject"
+    if "orbit" in profile.extras:
+        return "circle-mode"
+    if profile.yaw_control:
+        return "guided-yaw-path"
+    return "guided-position-only"
 
 
 @dataclass(frozen=True)

@@ -287,6 +287,37 @@ frames (magic header, JSON metadata, multi-segment pseudo-pixel body) so
 segmentation, reassembly, and integrity checking are genuinely exercised.
 Swapping in real JPEG bytes changes only the payload source.
 
+## Capability Telemetry Slice
+
+The IUAS provider publishes a `CapabilityProfile` (contracts.py) as a
+segmented object under `/muas/v2/<vehicle>/telemetry/state` at startup. The
+profile mirrors relay.flight's `FlightCapabilityProfile` vocabulary. Before
+dispatching the investigation, the WUAS fetches the profile and predicts the
+execution mode with `expected_orbit_mode` — a mission-side mirror of the
+plan_orbit capability ladder — and `mission.completed` reports whether the
+vehicle executed in the predicted mode (`mode_as_predicted`). Dispatch is
+no longer blind: the mission layer reasons over the same capability
+vocabulary the vehicle compiles against.
+
+## Design Note: Targeted Fast Path Evaluated and Rejected
+
+NDNSF's C++ API includes `RequestServiceTargeted` (one named provider, no
+ACK/selection round, ProviderToken-authorized). We prototyped it for the
+WUAS→IUAS investigate call and measured no latency benefit on this
+deployment (~60 ms targeted vs ~47-59 ms standard): the ACK/selection round
+that targeted requests skip costs almost nothing here, while in NDNSF's
+multi-node benchmarks it is a meaningful share of latency.
+
+More importantly, targeting a named provider works against the
+data-centric design this system is built on: requests name a *service*,
+any capable provider may answer, and selection strategies
+(first-responding, random, custom) decide whose response is used. The
+capability-telemetry slice already gives the mission layer what it needs
+— informed dispatch over published capability data — without re-binding
+requests to hosts. miniMUAS therefore uses only the standard
+ACK/selection request path, and no changes are carried in the NDNSF
+library.
+
 The real runtime path requires the NDNSF Python extension module
 `ndnsf._ndnsf`. If the source tree has not built that extension yet, the mock
 mission and dry-run commands still validate the contract, but the real

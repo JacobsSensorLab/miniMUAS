@@ -7,6 +7,7 @@ import argparse
 import time
 
 from contracts import (
+    CapabilityProfile,
     ConstraintSet,
     DetectionRequest,
     DetectionResponse,
@@ -15,10 +16,12 @@ from contracts import (
     GeoPoint,
     InvestigatePointRequest,
     Pose,
+    expected_orbit_mode,
     gcs_detection_service,
     gps_time_ns,
     mission_frame_name,
     vehicle_flight_service,
+    vehicle_telemetry_state_name,
 )
 from dataplane import (
     FRAME_CONTENT_TYPE,
@@ -49,6 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout-ms", type=int, default=5000)
     parser.add_argument("--investigate-timeout-ms", type=int, default=15000)
     parser.add_argument("--artifact-fetch-timeout-ms", type=int, default=5000)
+    parser.add_argument("--capability-fetch-timeout-ms", type=int, default=3000)
     parser.add_argument("--list-services", action="store_true")
     return parser
 
@@ -148,6 +152,32 @@ def main() -> int:
             evidence=detection.evidence_ref,
         )
 
+        # Capability-aware dispatch: consult the IUAS's advertised flight
+        # capabilities and predict the execution mode before sending the
+        # investigation, instead of dispatching blind.
+        expected_mode = None
+        try:
+            profile = CapabilityProfile.from_bytes(
+                fetch_segmented(
+                    vehicle_telemetry_state_name(args.iuas_id),
+                    timeout_ms=args.capability_fetch_timeout_ms,
+                )
+            )
+            expected_mode = expected_orbit_mode(profile)
+            print_json(
+                "wuas.capability.fetched",
+                vehicle=profile.vehicle_id,
+                extras=profile.extras,
+                yaw_control=profile.yaw_control,
+                expected_mode=expected_mode,
+            )
+        except Exception as exc:
+            print_json(
+                "wuas.capability.unavailable",
+                vehicle=args.iuas_id,
+                error=str(exc),
+            )
+
         investigation = InvestigatePointRequest(
             mission_id=args.mission_id,
             source_detection_id=detection.object_id,
@@ -176,6 +206,13 @@ def main() -> int:
             "mission.completed",
             task_id=result.task_id,
             status=result.status,
+            execution=result.notes,
+            expected_mode=expected_mode,
+            mode_as_predicted=(
+                result.notes.startswith(expected_mode)
+                if expected_mode
+                else None
+            ),
             artifacts=[artifact.data_name for artifact in result.artifacts],
         )
 
