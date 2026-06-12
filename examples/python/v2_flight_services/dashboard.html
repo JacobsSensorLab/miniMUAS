@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>miniMUAS v2 — Mission Dashboard</title>
+<style>
+  :root {
+    --bg: #10151c; --panel: #1a212b; --panel2: #222b37; --line: #2e3947;
+    --text: #d8e1ec; --dim: #8294a8; --accent: #4fb3ff; --ok: #38c172;
+    --warn: #f4b740; --bad: #ef5753; --wuas: #4fb3ff; --iuas: #b08cff;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 13px/1.45 -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: grid; grid-template-columns: 330px 1fr 268px;
+    grid-template-rows: 100vh; overflow: hidden;
+  }
+  h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+       color: var(--dim); margin: 14px 0 6px; }
+  #sidebar, #right { background: var(--panel); overflow-y: auto;
+                     padding: 12px 14px; border-right: 1px solid var(--line); }
+  #right { border-right: 0; border-left: 1px solid var(--line); }
+  #mapwrap { position: relative; }
+  #map { width: 100%; height: 100%; display: block; cursor: grab; }
+  .row { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
+  .row label { flex: 1; color: var(--dim); }
+  input[type=number], input[type=text], select {
+    width: 86px; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px;
+  }
+  input.wide { width: 140px; }
+  button {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 5px; padding: 6px 10px; cursor: pointer; font-size: 12px;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: #14527e; border-color: var(--accent); }
+  button.danger { background: #5e2120; border-color: var(--bad); }
+  button.armed { background: #7e5a14; border-color: var(--warn); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  .btnrow { display: flex; gap: 6px; margin: 6px 0; flex-wrap: wrap; }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 5px;
+         overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; flex: 1; }
+  .seg button.on { background: #14527e; }
+  .card { background: var(--panel2); border: 1px solid var(--line);
+          border-radius: 8px; padding: 9px 11px; margin: 8px 0; }
+  .card .head { display: flex; justify-content: space-between;
+                align-items: center; margin-bottom: 4px; }
+  .vid-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block;
+             margin-right: 6px; }
+  .stat { display: inline-block; margin-right: 10px; color: var(--dim); }
+  .stat b { color: var(--text); font-weight: 600; }
+  .badge { padding: 1px 7px; border-radius: 9px; font-size: 11px;
+           border: 1px solid var(--line); }
+  .badge.ok { color: var(--ok); border-color: var(--ok); }
+  .badge.warn { color: var(--warn); border-color: var(--warn); }
+  .badge.bad { color: var(--bad); border-color: var(--bad); }
+  #log { font: 11px/1.5 ui-monospace, Menlo, monospace; background: var(--panel2);
+         border: 1px solid var(--line); border-radius: 6px; padding: 8px;
+         height: 200px; overflow-y: auto; white-space: pre-wrap; }
+  #log .t { color: var(--dim); }
+  #log .hit { color: var(--ok); } #log .err { color: var(--bad); }
+  #mission-banner { position: absolute; top: 10px; left: 50%;
+    transform: translateX(-50%); background: rgba(20,30,42,.92);
+    border: 1px solid var(--line); border-radius: 8px; padding: 7px 16px;
+    font-size: 13px; display: flex; gap: 14px; align-items: center; z-index: 5; }
+  video, .vidpanel img { width: 100%; border-radius: 6px; background: #000;
+    aspect-ratio: 4/3; object-fit: contain; display: block; }
+  .vidstats { color: var(--dim); font-size: 11px; margin-top: 3px; }
+  .pickhint { position: absolute; bottom: 12px; left: 50%;
+    transform: translateX(-50%); background: rgba(244,183,64,.95); color: #221a05;
+    padding: 5px 14px; border-radius: 6px; font-weight: 600; display: none; z-index: 5; }
+  #thumb { width: 100%; border-radius: 6px; margin-top: 6px; display: none; }
+  .conn { position: absolute; top: 10px; right: 12px; z-index: 5; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <h3>Search area</h3>
+  <div class="seg" id="modeSeg">
+    <button data-mode="center" class="on">Center + size</button>
+    <button data-mode="corners">Two corners</button>
+  </div>
+  <div id="centerMode">
+    <div class="row"><label>Center lat</label><input id="clat" type="number" step="0.000001" value="35.120800"></div>
+    <div class="row"><label>Center lon</label><input id="clon" type="number" step="0.000001" value="-89.934700"></div>
+    <div class="row"><label>Width m (E-W)</label><input id="wm" type="number" value="40"></div>
+    <div class="row"><label>Height m (N-S)</label><input id="hm" type="number" value="24"></div>
+    <div class="btnrow"><button id="pickCenter">Pick center on map</button></div>
+  </div>
+  <div id="cornersMode" style="display:none">
+    <div class="row"><label>Corner A</label><input class="wide" id="ca" type="text" placeholder="lat, lon"></div>
+    <div class="row"><label>Corner B</label><input class="wide" id="cb" type="text" placeholder="lat, lon"></div>
+    <div class="btnrow"><button id="pickA">Pick A</button><button id="pickB">Pick B</button></div>
+  </div>
+
+  <h3>Raster</h3>
+  <div class="row"><label>Search AGL m</label><input id="agl" type="number" step="0.5" value="6"></div>
+  <div class="row"><label>Leg spacing m</label><input id="spacing" type="number" step="0.5" value="5"></div>
+  <div class="row"><label>Capture every m</label><input id="capm" type="number" step="0.5" value="4"></div>
+  <div class="row"><label>Speed m/s</label><input id="speed" type="number" step="0.5" value="2"></div>
+  <div class="row"><label>Object</label><input class="wide" id="objq" type="text" value="tennis racket"></div>
+  <div class="row"><label>Min confidence</label><input id="minconf" type="number" step="0.05" value="0.3"></div>
+  <div class="btnrow">
+    <button id="previewBtn">Preview legs</button>
+    <span class="stat" id="estimate"></span>
+  </div>
+
+  <h3>IUAS orbit</h3>
+  <div class="row"><label>Orbit AGL m</label><input id="oagl" type="number" step="0.5" value="8"></div>
+  <div class="row"><label>Orbit radius m</label><input id="oradius" type="number" step="0.5" value="6"></div>
+  <div class="row"><label>Orbits</label><input id="ocount" type="number" step="0.5" value="1"></div>
+
+  <h3>Mission</h3>
+  <div class="btnrow">
+    <button class="primary" id="startBtn">▶ Start mission</button>
+  </div>
+  <div class="btnrow">
+    <button class="danger" id="rtlAll">RTL ALL</button>
+    <button class="danger" id="landAll">LAND ALL</button>
+    <button class="armed" id="holdAll">HOLD ALL</button>
+  </div>
+
+  <h3>Detection</h3>
+  <div class="card" id="detCard">none yet</div>
+  <img id="thumb" alt="trigger frame">
+
+  <h3>Event log</h3>
+  <div id="log"></div>
+</div>
+
+<div id="mapwrap">
+  <canvas id="map"></canvas>
+  <div id="mission-banner">
+    <span id="mstate" class="badge">idle</span>
+    <span class="stat">frames <b id="mframes">0</b></span>
+    <span class="stat">leg <b id="mleg">–</b></span>
+    <span class="stat">detects <b id="mdet">0/0</b></span>
+  </div>
+  <div class="pickhint" id="pickhint">click the map…</div>
+  <span class="conn badge bad" id="conn">offline</span>
+</div>
+
+<div id="right">
+  <h3>Vehicles</h3>
+  <div id="cards"></div>
+  <h3>Video</h3>
+  <div id="videos"></div>
+</div>
+
+<script>
+"use strict";
+const M_PER_DEG_LAT = 111111;
+const mPerDegLon = lat => M_PER_DEG_LAT * Math.max(Math.cos(lat*Math.PI/180), 1e-6);
+const COLORS = {};
+let VEHICLES = ["wuas-01","iuas-01"];
+
+// ---------- websocket ----------
+let ws, wsOK = false;
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => { wsOK = true; setConn(true); };
+  ws.onclose = () => { wsOK = false; setConn(false); setTimeout(connect, 1500); };
+  ws.onmessage = ev => {
+    if (ev.data instanceof ArrayBuffer) { onVideoFrame(ev.data); return; }
+    const m = JSON.parse(ev.data);
+    if (m.type === "hello") onHello(m);
+    else if (m.type === "telemetry") onTelemetry(m);
+    else if (m.type === "telemetry_stale") onStale(m);
+    else if (m.type === "search_status") onSearch(m);
+    else if (m.type === "raster_preview") onPreview(m);
+    else if (m.type === "event") onEvent(m);
+    else if (m.type === "video_stats") onVideoStats(m);
+  };
+}
+const send = obj => { if (wsOK) ws.send(JSON.stringify(obj)); };
+function setConn(ok){ const c=document.getElementById("conn");
+  c.textContent = ok?"connected":"offline";
+  c.className = "conn badge " + (ok?"ok":"bad"); }
+
+// ---------- map (canvas, local ENU around view center) ----------
+const cv = document.getElementById("map"), ctx = cv.getContext("2d");
+let view = { lat: 35.1208, lon: -89.9347, mppx: 0.18 }; // meters per pixel
+let plan = null;          // raster preview {corners, legs, captures}
+let drones = {};          // vid -> {lat, lon, agl, heading, mode, armed, age, stale, trail: []}
+let detection = null;     // {lat, lon, confidence, object_id}
+let picking = null;       // "center" | "A" | "B"
+
+function resize(){ const r = cv.parentElement.getBoundingClientRect();
+  cv.width = r.width; cv.height = r.height; }
+window.addEventListener("resize", () => { resize(); });
+function toPx(lat, lon){
+  return [ cv.width/2 + (lon - view.lon) * mPerDegLon(view.lat) / view.mppx,
+           cv.height/2 - (lat - view.lat) * M_PER_DEG_LAT / view.mppx ]; }
+function toLL(x, y){
+  return [ view.lat - (y - cv.height/2) * view.mppx / M_PER_DEG_LAT,
+           view.lon + (x - cv.width/2) * view.mppx / mPerDegLon(view.lat) ]; }
+
+function draw(){
+  ctx.fillStyle = "#0d1218"; ctx.fillRect(0,0,cv.width,cv.height);
+  // 10 m grid
+  const grid = 10 / view.mppx;
+  if (grid > 14) {
+    ctx.strokeStyle = "#1b2430"; ctx.lineWidth = 1; ctx.beginPath();
+    const ox = (cv.width/2) % grid, oy = (cv.height/2) % grid;
+    for (let x = ox; x < cv.width; x += grid){ ctx.moveTo(x,0); ctx.lineTo(x,cv.height); }
+    for (let y = oy; y < cv.height; y += grid){ ctx.moveTo(0,y); ctx.lineTo(cv.width,y); }
+    ctx.stroke();
+    ctx.fillStyle = "#3a4756"; ctx.font = "10px monospace";
+    ctx.fillText("grid 10 m", 10, cv.height - 10);
+  }
+  // raster plan
+  if (plan){
+    ctx.strokeStyle = "#f4b74088"; ctx.lineWidth = 1.5; ctx.beginPath();
+    plan.corners.forEach((c,i) => { const p = toPx(c.lat, c.lon);
+      i ? ctx.lineTo(p[0],p[1]) : ctx.moveTo(p[0],p[1]); });
+    ctx.closePath(); ctx.stroke();
+    ctx.strokeStyle = "#4fb3ff66"; ctx.beginPath();
+    let prev = null;
+    plan.legs.forEach(leg => {
+      const a = toPx(leg[0].lat, leg[0].lon), b = toPx(leg[1].lat, leg[1].lon);
+      if (prev) ctx.lineTo(a[0],a[1]); else ctx.moveTo(a[0],a[1]);
+      ctx.lineTo(b[0],b[1]); prev = b; });
+    ctx.stroke();
+    ctx.fillStyle = "#4fb3ff";
+    plan.captures.forEach(c => { const p = toPx(c.lat, c.lon);
+      ctx.fillRect(p[0]-1.5, p[1]-1.5, 3, 3); });
+  }
+  // detection
+  if (detection){
+    const p = toPx(detection.lat, detection.lon);
+    const pulse = 8 + 4*Math.sin(Date.now()/300);
+    ctx.strokeStyle = "#38c172"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(p[0],p[1],pulse,0,7); ctx.stroke();
+    ctx.fillStyle = "#38c172";
+    ctx.beginPath(); ctx.arc(p[0],p[1],4,0,7); ctx.fill();
+    ctx.font = "11px sans-serif";
+    ctx.fillText(`${detection.object_id} ${(detection.confidence*100).toFixed(0)}%`,
+                 p[0]+12, p[1]-8);
+  }
+  // drones
+  for (const [vid, d] of Object.entries(drones)){
+    const col = COLORS[vid] || "#fff";
+    if (d.trail.length > 1){
+      ctx.strokeStyle = col + "55"; ctx.lineWidth = 1.5; ctx.beginPath();
+      d.trail.forEach((t,i) => { const p = toPx(t[0],t[1]);
+        i ? ctx.lineTo(p[0],p[1]) : ctx.moveTo(p[0],p[1]); });
+      ctx.stroke();
+    }
+    const p = toPx(d.lat, d.lon), hd = (d.heading||0) * Math.PI/180;
+    ctx.save(); ctx.translate(p[0],p[1]); ctx.rotate(hd);
+    ctx.fillStyle = d.stale ? "#556270" : col;
+    ctx.beginPath(); ctx.moveTo(0,-9); ctx.lineTo(6,7); ctx.lineTo(-6,7);
+    ctx.closePath(); ctx.fill(); ctx.restore();
+    ctx.fillStyle = d.stale ? "#556270" : col; ctx.font = "11px sans-serif";
+    ctx.fillText(`${vid} ${d.agl?.toFixed(1)??"–"}m${d.stale?" (stale)":""}`,
+                 p[0]+10, p[1]+4);
+  }
+  requestAnimationFrame(draw);
+}
+
+// pan/zoom/pick
+let drag = null;
+cv.addEventListener("mousedown", e => drag = {x:e.offsetX, y:e.offsetY});
+cv.addEventListener("mousemove", e => {
+  if (!drag) return;
+  view.lon -= (e.offsetX - drag.x) * view.mppx / mPerDegLon(view.lat);
+  view.lat += (e.offsetY - drag.y) * view.mppx / M_PER_DEG_LAT;
+  drag = {x:e.offsetX, y:e.offsetY};
+});
+window.addEventListener("mouseup", () => drag = null);
+cv.addEventListener("wheel", e => {
+  e.preventDefault();
+  view.mppx = Math.min(4, Math.max(0.02, view.mppx * (e.deltaY>0 ? 1.15 : 0.87)));
+}, {passive:false});
+cv.addEventListener("click", e => {
+  if (!picking) return;
+  const [lat, lon] = toLL(e.offsetX, e.offsetY);
+  if (picking === "center"){ clat.value = lat.toFixed(6); clon.value = lon.toFixed(6); }
+  if (picking === "A") ca.value = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+  if (picking === "B") cb.value = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+  picking = null; pickhint.style.display = "none"; preview();
+});
+function pick(which, label){ picking = which;
+  pickhint.textContent = `click the map to set ${label}`;
+  pickhint.style.display = "block"; }
+pickCenter.onclick = () => pick("center","the area center");
+pickA.onclick = () => pick("A","corner A");
+pickB.onclick = () => pick("B","corner B");
+
+// ---------- area + mission params ----------
+let areaMode = "center";
+modeSeg.querySelectorAll("button").forEach(b => b.onclick = () => {
+  areaMode = b.dataset.mode;
+  modeSeg.querySelectorAll("button").forEach(x => x.classList.toggle("on", x===b));
+  centerMode.style.display = areaMode==="center" ? "" : "none";
+  cornersMode.style.display = areaMode==="corners" ? "" : "none";
+  preview();
+});
+const parseLL = s => s.split(",").map(parseFloat);
+function areaSpec(){
+  if (areaMode === "center")
+    return { mode:"center", center_lat:+clat.value, center_lon:+clon.value,
+             width_m:+wm.value, height_m:+hm.value };
+  const a = parseLL(ca.value||""), b = parseLL(cb.value||"");
+  return { mode:"corners", corner_a:a, corner_b:b };
+}
+function missionParams(){
+  return { area: areaSpec(), agl_m:+agl.value, leg_spacing_m:+spacing.value,
+    capture_every_m:+capm.value, speed_m_s:+speed.value,
+    object_query: objq.value, min_confidence:+minconf.value,
+    orbit_agl_m:+oagl.value, orbit_radius_m:+oradius.value,
+    orbit_count:+ocount.value, max_duration_s: 600 };
+}
+function preview(){
+  const a = areaSpec();
+  if (a.mode==="corners" && (!a.corner_a || a.corner_a.length<2 ||
+      !a.corner_b || a.corner_b.length<2 ||
+      a.corner_a.some(isNaN) || a.corner_b.some(isNaN))) return;
+  send({ cmd:"preview_raster", area:a, leg_spacing_m:+spacing.value,
+         capture_every_m:+capm.value, speed_m_s:+speed.value });
+}
+["clat","clon","wm","hm","ca","cb","spacing","capm","speed"].forEach(id =>
+  document.getElementById(id).addEventListener("change", preview));
+previewBtn.onclick = preview;
+function onPreview(m){
+  plan = m.plan;
+  estimate.innerHTML = `legs <b>${m.plan.legs.length}</b> · captures <b>${m.plan.captures.length}</b> · ~<b>${Math.round(m.estimate_s)}s</b>`;
+  view.lat = m.plan.center.lat; view.lon = m.plan.center.lon;
+}
+
+// only confirmation in the whole UI, per spec
+startBtn.onclick = () => {
+  if (!plan) { preview(); }
+  const est = estimate.textContent || "";
+  if (confirm(`Start mission?\n${est}\nWUAS searches at ${agl.value} m AGL.`))
+    send({ cmd:"start_mission", params: missionParams() });
+};
+rtlAll.onclick = () => send({cmd:"all", command:"rtl"});
+landAll.onclick = () => send({cmd:"all", command:"land"});
+holdAll.onclick = () => send({cmd:"all", command:"hold"});
+
+// ---------- vehicle cards + video panels ----------
+function onHello(m){
+  VEHICLES = m.vehicles;
+  COLORS[VEHICLES[0]] = "#4fb3ff"; COLORS[VEHICLES[1]] = "#b08cff";
+  cards.innerHTML = ""; videos.innerHTML = "";
+  VEHICLES.forEach(vid => {
+    drones[vid] = drones[vid] || {lat:view.lat, lon:view.lon, trail:[], stale:true};
+    const card = document.createElement("div");
+    card.className = "card"; card.id = `card-${vid}`;
+    card.innerHTML = `
+      <div class="head"><b><span class="vid-dot" style="background:${COLORS[vid]}"></span>${vid}</b>
+        <span class="badge" id="link-${vid}">no link</span></div>
+      <div><span class="stat">mode <b id="mode-${vid}">–</b></span>
+           <span class="stat">AGL <b id="agl-${vid}">–</b></span>
+           <span class="stat">batt <b id="batt-${vid}">–</b></span></div>
+      <div><span class="stat">armed <b id="armed-${vid}">–</b></span>
+           <span class="stat">task <b id="busy-${vid}">–</b></span>
+           <span class="stat">src <b id="src-${vid}">–</b></span></div>
+      <div class="btnrow">
+        <button class="danger" onclick="send({cmd:'flight',vehicle:'${vid}',command:'rtl'})">RTL</button>
+        <button class="danger" onclick="send({cmd:'flight',vehicle:'${vid}',command:'land'})">Land</button>
+        <button class="armed" onclick="send({cmd:'flight',vehicle:'${vid}',command:'hold'})">Hold</button>
+      </div>`;
+    cards.appendChild(card);
+    const vp = document.createElement("div");
+    vp.className = "card vidpanel";
+    vp.innerHTML = `
+      <div class="head"><b style="color:${COLORS[vid]}">${vid}</b>
+        <button id="vbtn-${vid}">video on</button></div>
+      <img id="vimg-${vid}" style="display:none">
+      <div class="vidstats" id="vstats-${vid}"></div>`;
+    videos.appendChild(vp);
+    let on = false;
+    document.getElementById(`vbtn-${vid}`).onclick = e => {
+      on = !on;
+      e.target.textContent = on ? "video off" : "video on";
+      document.getElementById(`vimg-${vid}`).style.display = on ? "" : "none";
+      send({cmd:"video", vehicle:vid, params:{enable:on, width:320, height:240, fps:5, quality:40}});
+    };
+  });
+}
+const battColor = pct => pct<0 ? "" : pct<20 ? "var(--bad)" : pct<40 ? "var(--warn)" : "var(--ok)";
+function onTelemetry(m){
+  const s = m.sample, vid = m.vehicle;
+  const d = drones[vid] = drones[vid] || {trail:[]};
+  Object.assign(d, { lat:s.lat_deg, lon:s.lon_deg, agl:s.agl_m,
+    heading:s.heading_deg, stale:false });
+  d.trail.push([s.lat_deg, s.lon_deg]); if (d.trail.length > 240) d.trail.shift();
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  set(`mode-${vid}`, s.mode || "–");
+  set(`agl-${vid}`, `${(s.agl_m??0).toFixed(1)} m`);
+  set(`armed-${vid}`, s.armed ? "YES" : "no");
+  set(`busy-${vid}`, s.busy || "idle");
+  set(`src-${vid}`, s.source);
+  const batt = document.getElementById(`batt-${vid}`);
+  if (batt){ batt.textContent = s.battery_pct >= 0 ? `${s.battery_pct.toFixed(0)}%`
+      : (s.battery_v > 0 ? `${s.battery_v.toFixed(1)}V` : "–");
+    batt.style.color = battColor(s.battery_pct); }
+  const link = document.getElementById(`link-${vid}`);
+  if (link){ const age = m.age_s;
+    link.textContent = `link ${age.toFixed(0)}s`;
+    link.className = "badge " + (age < 4 ? "ok" : age < 10 ? "warn" : "bad"); }
+}
+function onStale(m){
+  const d = drones[m.vehicle]; if (d) d.stale = true;
+  const link = document.getElementById(`link-${m.vehicle}`);
+  if (link){ link.textContent = m.silent_s == null ? "no link"
+      : `lost ${m.silent_s.toFixed(0)}s`; link.className = "badge bad"; }
+}
+function onSearch(m){
+  const s = m.status;
+  mframes.textContent = s.frames_captured;
+  mleg.textContent = `${s.leg+1}/${s.legs_total}`;
+  mdet.textContent = `${m.detects_done}/${m.detects_done + m.detects_pending}`;
+}
+
+// ---------- video frames (binary: [vehicleIndex][jpeg]) ----------
+const blobURLs = {};
+function onVideoFrame(buf){
+  const u8 = new Uint8Array(buf);
+  const vid = VEHICLES[u8[0]]; if (!vid) return;
+  const img = document.getElementById(`vimg-${vid}`); if (!img) return;
+  const blob = new Blob([u8.slice(1)], {type:"image/jpeg"});
+  if (blobURLs[vid]) URL.revokeObjectURL(blobURLs[vid]);
+  blobURLs[vid] = URL.createObjectURL(blob);
+  img.src = blobURLs[vid];
+}
+function onVideoStats(m){
+  const el = document.getElementById(`vstats-${m.vehicle}`);
+  if (el) el.textContent = `${m.fps} fps · ${m.kbps} kbps · #${m.seq}`;
+}
+
+// ---------- events / mission state ----------
+const STATE_CLASS = { idle:"", searching:"warn", dispatching:"warn",
+  investigating:"warn", done:"ok", aborted:"bad" };
+function setState(state){
+  mstate.textContent = state;
+  mstate.className = "badge " + (STATE_CLASS[state] ?? "");
+}
+function onEvent(m){
+  const line = document.createElement("div");
+  const t = new Date(m.t*1000).toLocaleTimeString();
+  const extra = Object.entries(m).filter(([k]) =>
+    !["type","kind","t"].includes(k)).map(([k,v]) =>
+    `${k}=${typeof v==="number" ? +v.toFixed(5) : JSON.stringify(v)}`).join(" ");
+  line.innerHTML = `<span class="t">${t}</span> ${m.kind} ${extra}`;
+  if (m.kind.includes("hit") || m.kind.includes("target_found") ||
+      m.kind.includes("completed")) line.classList.add("hit");
+  if (m.kind.includes("fail") || m.kind.includes("timeout")) line.classList.add("err");
+  log.prepend(line);
+  while (log.children.length > 250) log.lastChild.remove();
+
+  if (m.kind === "mission.started"){ setState("searching"); detection = null;
+    thumb.style.display = "none"; detCard.textContent = "searching…"; }
+  if (m.kind === "mission.target_found"){
+    setState("dispatching");
+    detection = { lat:m.lat, lon:m.lon, confidence:m.confidence, object_id:m.object_id };
+    detCard.innerHTML = `<b>${m.object_id}</b> @ ${(m.confidence*100).toFixed(1)}%<br>
+      ${m.lat.toFixed(6)}, ${m.lon.toFixed(6)}`;
+    thumb.src = `/artifact?name=${encodeURIComponent(m.frame)}`;
+    thumb.style.display = "block";
+  }
+  if (m.kind === "mission.dispatch") setState("investigating");
+  if (m.kind === "mission.completed"){
+    setState("done");
+    if (m.artifacts && m.artifacts.length)
+      detCard.innerHTML += `<br><a style="color:var(--accent)" target="_blank"
+        href="/artifact?name=${encodeURIComponent(m.artifacts[0])}">IUAS capture ↗</a>`;
+  }
+  if (["mission.search_finished","mission.search_failed","mission.search_timeout",
+       "mission.investigate_failed","mission.investigate_timeout"].includes(m.kind))
+    setState("done");
+}
+
+resize(); connect(); draw();
+setTimeout(preview, 800);
+</script>
+</body>
+</html>

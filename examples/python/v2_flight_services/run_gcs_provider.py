@@ -84,7 +84,14 @@ def main() -> int:
 
     @provider.handler(args.service)
     def detect_object(payload: bytes) -> bytes | ServiceResponse:
+        import time as _time
+        handler_t0 = _time.monotonic()
         request = DetectionRequest.from_bytes(payload)
+        print_json(
+            "gcs.request.received",
+            mission=request.mission_id,
+            frame=request.frame.data_name,
+        )
 
         # Detection now consumes the actual published frame object instead
         # of trusting the name reference.
@@ -111,6 +118,7 @@ def main() -> int:
             sha256=header["sha256"],
             width=header.get("width"),
             height=header.get("height"),
+            fetch_ms=round((_time.monotonic() - handler_t0) * 1000.0, 1),
         )
 
         timestamp_ns = gps_time_ns()
@@ -121,12 +129,29 @@ def main() -> int:
                 return ServiceResponse(
                     status=False, error="frame body is not a decodable image"
                 )
+            # The capture pose travels IN the frame metadata when the
+            # publisher knows it (the drone agent tags every search frame
+            # with lat/lon/agl/heading at capture). Prefer it over the
+            # request's pose: the requester (dashboard) may only know an
+            # approximate position for the vehicle.
+            meta = header.get("metadata", {}) or {}
+            pose = request.frame.pose
+            cap_lat = float(meta.get("lat_deg", pose.position.lat_deg))
+            cap_lon = float(meta.get("lon_deg", pose.position.lon_deg))
+            cap_agl = float(meta.get("agl_m", pose.position.alt_m))
+            cap_heading = meta.get("heading_deg")
+            heading = (
+                float(cap_heading)
+                if cap_heading is not None
+                else getattr(pose, "yaw_deg", None)
+            )
             detections = detector.detect(image)
             print_json(
                 "gcs.detection.inference",
                 frame=request.frame.data_name,
                 detections=[d.as_dict() for d in detections],
                 all_classes=[d.as_dict() for d in detector.last_all_detections],
+                handler_ms=round((_time.monotonic() - handler_t0) * 1000.0, 1),
             )
             # debugging/dashboard breadcrumb: the exact frame as analyzed,
             # with every above-threshold box drawn (target class in green)
@@ -153,18 +178,15 @@ def main() -> int:
             if not detections:
                 return ServiceResponse(status=False, error="no-detection")
             best = detections[0]
-            pose = request.frame.pose
             height_px, width_px = image.shape[:2]
             north_m, east_m = project_nadir(
                 best.center_px,
                 (width_px, height_px),
-                agl_m=max(float(pose.position.alt_m), 0.0),
+                agl_m=max(cap_agl, 0.0),
                 hfov_deg=args.hfov_deg,
-                heading_deg=getattr(pose, "yaw_deg", None),
+                heading_deg=heading,
             )
-            lat_deg, lon_deg = offset_latlon(
-                pose.position.lat_deg, pose.position.lon_deg, north_m, east_m
-            )
+            lat_deg, lon_deg = offset_latlon(cap_lat, cap_lon, north_m, east_m)
             response = DetectionResponse(
                 mission_id=request.mission_id,
                 object_id=best.label.replace(" ", "-"),

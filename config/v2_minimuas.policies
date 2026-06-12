@@ -18,6 +18,9 @@ provider-policies
         {
             /muas/v2/iuas-01/flight/investigate
             /muas/v2/iuas-01/flight/rtl
+            /muas/v2/iuas-01/flight/land
+            /muas/v2/iuas-01/flight/hold
+            /muas/v2/iuas-01/video/control
         }
     }
 
@@ -26,6 +29,11 @@ provider-policies
         for /muas/v2/wuas-01
         allow
         {
+            /muas/v2/wuas-01/flight/raster-search
+            /muas/v2/wuas-01/flight/rtl
+            /muas/v2/wuas-01/flight/land
+            /muas/v2/wuas-01/flight/hold
+            /muas/v2/wuas-01/video/control
             /muas/v2/wuas-01/flight/execute
             /muas/v2/wuas-01/telemetry/state
             /muas/v2/wuas-01/sensor/capture
@@ -40,6 +48,17 @@ user-policies
         for /muas/v2/gcs
         allow
         {
+            /muas/v2/gcs/perception/detect-object
+            /muas/v2/wuas-01/flight/raster-search
+            /muas/v2/wuas-01/flight/rtl
+            /muas/v2/wuas-01/flight/land
+            /muas/v2/wuas-01/flight/hold
+            /muas/v2/wuas-01/video/control
+            /muas/v2/iuas-01/flight/investigate
+            /muas/v2/iuas-01/flight/rtl
+            /muas/v2/iuas-01/flight/land
+            /muas/v2/iuas-01/flight/hold
+            /muas/v2/iuas-01/video/control
             /muas/v2/wuas-01/flight/execute
             /muas/v2/wuas-01/telemetry/state
             /muas/v2/wuas-01/sensor/capture

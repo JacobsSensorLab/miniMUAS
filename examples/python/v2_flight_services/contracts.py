@@ -321,3 +321,304 @@ class FlightTaskResult:
             ],
             notes=str(value.get("notes", "")),
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: drone agent (live telemetry, raster search, flight commands,
+# video control) and the GCS dashboard orchestrator.
+# ---------------------------------------------------------------------------
+
+
+def vehicle_telemetry_live_name(vehicle_id: str) -> str:
+    """Data name where a vehicle publishes its 1 Hz live telemetry sample."""
+    return f"/muas/v2/{vehicle_id}/telemetry/live"
+
+
+def vehicle_search_status_name(vehicle_id: str) -> str:
+    """Data name where a searching vehicle publishes raster progress."""
+    return f"/muas/v2/{vehicle_id}/search/status"
+
+
+def vehicle_video_frame_name(vehicle_id: str, seq: int) -> str:
+    """Data name of one live MJPEG video frame (latest-wins by seq)."""
+    return f"/muas/v2/{vehicle_id}/video/{seq}"
+
+
+def vehicle_video_status_name(vehicle_id: str) -> str:
+    """Data name where a vehicle publishes its video stream status."""
+    return f"/muas/v2/{vehicle_id}/video/status"
+
+
+def vehicle_video_service(vehicle_id: str) -> str:
+    return f"/muas/v2/{vehicle_id}/video/control"
+
+
+@dataclass(frozen=True)
+class TelemetrySample:
+    """One 1 Hz vehicle state sample for the dashboard.
+
+    `source` records where the numbers came from ("mavlink" for a live FC,
+    "sim" for the bench simulated vehicle, "static" when neither is
+    available) so the UI can label trust accordingly. `gps_time_ns` is the
+    publisher's clock at sample time; the dashboard derives link health
+    from its age.
+    """
+
+    vehicle_id: str
+    gps_time_ns: int
+    source: str = "static"
+    lat_deg: float = 0.0
+    lon_deg: float = 0.0
+    alt_m: float = 0.0
+    agl_m: float = 0.0
+    heading_deg: float = 0.0
+    groundspeed_m_s: float = 0.0
+    armed: bool = False
+    mode: str = ""
+    battery_v: float = 0.0
+    battery_pct: float = -1.0
+    busy: str = ""  # "", "raster-search", "investigate", ...
+
+    def to_bytes(self) -> bytes:
+        return encode_dataclass(self)
+
+    @classmethod
+    def from_bytes(cls, payload: bytes) -> "TelemetrySample":
+        value = decode_json(payload)
+        return cls(
+            vehicle_id=str(value["vehicle_id"]),
+            gps_time_ns=int(value["gps_time_ns"]),
+            source=str(value.get("source", "static")),
+            lat_deg=float(value.get("lat_deg", 0.0)),
+            lon_deg=float(value.get("lon_deg", 0.0)),
+            alt_m=float(value.get("alt_m", 0.0)),
+            agl_m=float(value.get("agl_m", 0.0)),
+            heading_deg=float(value.get("heading_deg", 0.0)),
+            groundspeed_m_s=float(value.get("groundspeed_m_s", 0.0)),
+            armed=bool(value.get("armed", False)),
+            mode=str(value.get("mode", "")),
+            battery_v=float(value.get("battery_v", 0.0)),
+            battery_pct=float(value.get("battery_pct", -1.0)),
+            busy=str(value.get("busy", "")),
+        )
+
+
+@dataclass(frozen=True)
+class SearchArea:
+    """Rectangular raster area, definable two ways (matching the UI modes).
+
+    mode "center": center_lat/center_lon + width_m/height_m, axis-aligned
+    (width = east-west, height = north-south).
+    mode "corners": corner_a/corner_b as opposite (lat, lon) corners of an
+    axis-aligned rectangle.
+    """
+
+    mode: str = "center"
+    center_lat: float = 0.0
+    center_lon: float = 0.0
+    width_m: float = 40.0
+    height_m: float = 30.0
+    corner_a: list[float] = field(default_factory=list)  # [lat, lon]
+    corner_b: list[float] = field(default_factory=list)  # [lat, lon]
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "SearchArea":
+        return cls(
+            mode=str(value.get("mode", "center")),
+            center_lat=float(value.get("center_lat", 0.0)),
+            center_lon=float(value.get("center_lon", 0.0)),
+            width_m=float(value.get("width_m", 40.0)),
+            height_m=float(value.get("height_m", 30.0)),
+            corner_a=[float(v) for v in value.get("corner_a", [])],
+            corner_b=[float(v) for v in value.get("corner_b", [])],
+        )
+
+
+@dataclass(frozen=True)
+class RasterSearchRequest:
+    """Fly a lawnmower over `area`, capture frames, detect via the GCS.
+
+    Detection requests are issued asynchronously by the searching vehicle
+    (the NDNSF transport adds a roughly constant per-request latency, so
+    the raster never stops to wait); the first hit at or above
+    `min_confidence` ends the search with status "target-found". AGL
+    defaults low because detection ground-sampling distance demands it
+    (70deg HFOV / 1280 px: a racquet is ~100 px at 6 m, ~40 px at 15 m).
+    """
+
+    mission_id: str
+    area: SearchArea
+    agl_m: float = 6.0
+    leg_spacing_m: float = 5.0
+    speed_m_s: float = 2.0
+    capture_every_m: float = 4.0
+    object_query: str = "tennis racket"
+    min_confidence: float = 0.3
+    max_duration_s: float = 600.0
+
+    def to_bytes(self) -> bytes:
+        return encode_dataclass(self)
+
+    @classmethod
+    def from_bytes(cls, payload: bytes) -> "RasterSearchRequest":
+        value = decode_json(payload)
+        return cls(
+            mission_id=str(value["mission_id"]),
+            area=SearchArea.from_dict(value.get("area", {})),
+            agl_m=float(value.get("agl_m", 6.0)),
+            leg_spacing_m=float(value.get("leg_spacing_m", 5.0)),
+            speed_m_s=float(value.get("speed_m_s", 2.0)),
+            capture_every_m=float(value.get("capture_every_m", 4.0)),
+            object_query=str(value.get("object_query", "tennis racket")),
+            min_confidence=float(value.get("min_confidence", 0.3)),
+            max_duration_s=float(value.get("max_duration_s", 600.0)),
+        )
+
+
+@dataclass(frozen=True)
+class SearchStatus:
+    """Raster progress, published at vehicle_search_status_name (1 Hz)."""
+
+    vehicle_id: str
+    mission_id: str
+    gps_time_ns: int
+    state: str = "idle"  # idle|transit|searching|found|aborted|failed|done
+    leg: int = 0
+    legs_total: int = 0
+    frames_captured: int = 0
+    detects_pending: int = 0
+    detects_completed: int = 0
+    last_frames: list[str] = field(default_factory=list)  # newest first, capped
+    last_note: str = ""
+
+    def to_bytes(self) -> bytes:
+        return encode_dataclass(self)
+
+    @classmethod
+    def from_bytes(cls, payload: bytes) -> "SearchStatus":
+        value = decode_json(payload)
+        return cls(
+            vehicle_id=str(value["vehicle_id"]),
+            mission_id=str(value["mission_id"]),
+            gps_time_ns=int(value["gps_time_ns"]),
+            state=str(value.get("state", "idle")),
+            leg=int(value.get("leg", 0)),
+            legs_total=int(value.get("legs_total", 0)),
+            frames_captured=int(value.get("frames_captured", 0)),
+            detects_pending=int(value.get("detects_pending", 0)),
+            detects_completed=int(value.get("detects_completed", 0)),
+            last_frames=[str(v) for v in value.get("last_frames", [])],
+            last_note=str(value.get("last_note", "")),
+        )
+
+
+@dataclass(frozen=True)
+class RasterSearchResult:
+    """Terminal response of a raster-search service request."""
+
+    task_id: str
+    status: str  # target-found|completed|aborted|failed
+    frames_captured: int = 0
+    object_id: str = ""
+    confidence: float = 0.0
+    target: GeoPoint = field(default_factory=lambda: GeoPoint(0.0, 0.0, 0.0))
+    evidence_frame: str = ""
+    notes: str = ""
+
+    def to_bytes(self) -> bytes:
+        return encode_dataclass(self)
+
+    @classmethod
+    def from_bytes(cls, payload: bytes) -> "RasterSearchResult":
+        value = decode_json(payload)
+        return cls(
+            task_id=str(value["task_id"]),
+            status=str(value["status"]),
+            frames_captured=int(value.get("frames_captured", 0)),
+            object_id=str(value.get("object_id", "")),
+            confidence=float(value.get("confidence", 0.0)),
+            target=GeoPoint.from_dict(
+                value.get("target", {"lat_deg": 0, "lon_deg": 0, "alt_m": 0})
+            ),
+            evidence_frame=str(value.get("evidence_frame", "")),
+            notes=str(value.get("notes", "")),
+        )
+
+
+@dataclass(frozen=True)
+class FlightCommandResult:
+    """Response shape for rtl / land / hold service requests."""
+
+    vehicle_id: str
+    command: str
+    status: str  # accepted|rejected|failed
+    message: str = ""
+
+    def to_bytes(self) -> bytes:
+        return encode_dataclass(self)
+
+    @classmethod
+    def from_bytes(cls, payload: bytes) -> "FlightCommandResult":
+        value = decode_json(payload)
+        return cls(
+            vehicle_id=str(value["vehicle_id"]),
+            command=str(value["command"]),
+            status=str(value["status"]),
+            message=str(value.get("message", "")),
+        )
+
+
+@dataclass(frozen=True)
+class VideoControlRequest:
+    """Start/stop the vehicle's MJPEG-over-NDN stream and set its knobs."""
+
+    enable: bool
+    width: int = 320
+    height: int = 240
+    fps: float = 5.0
+    quality: int = 40
+
+    def to_bytes(self) -> bytes:
+        return encode_dataclass(self)
+
+    @classmethod
+    def from_bytes(cls, payload: bytes) -> "VideoControlRequest":
+        value = decode_json(payload)
+        return cls(
+            enable=bool(value.get("enable", False)),
+            width=int(value.get("width", 320)),
+            height=int(value.get("height", 240)),
+            fps=float(value.get("fps", 5.0)),
+            quality=int(value.get("quality", 40)),
+        )
+
+
+@dataclass(frozen=True)
+class VideoStatus:
+    """Published at vehicle_video_status_name whenever the stream changes."""
+
+    vehicle_id: str
+    gps_time_ns: int
+    enabled: bool = False
+    seq: int = 0
+    width: int = 320
+    height: int = 240
+    fps: float = 5.0
+    quality: int = 40
+
+    def to_bytes(self) -> bytes:
+        return encode_dataclass(self)
+
+    @classmethod
+    def from_bytes(cls, payload: bytes) -> "VideoStatus":
+        value = decode_json(payload)
+        return cls(
+            vehicle_id=str(value["vehicle_id"]),
+            gps_time_ns=int(value["gps_time_ns"]),
+            enabled=bool(value.get("enabled", False)),
+            seq=int(value.get("seq", 0)),
+            width=int(value.get("width", 320)),
+            height=int(value.get("height", 240)),
+            fps=float(value.get("fps", 5.0)),
+            quality=int(value.get("quality", 40)),
+        )
