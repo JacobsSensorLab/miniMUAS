@@ -184,8 +184,12 @@ class OpenCVFrameSource:
         else:
             self._capture = cv2.VideoCapture(device, cv2.CAP_V4L2)
             if not self._capture.isOpened() and isinstance(device, str):
-                # some OpenCV builds only take indexes for V4L2
-                digits = "".join(ch for ch in device if ch.isdigit())
+                # Many OpenCV builds' V4L2 backend only accepts indexes.
+                # Resolve symlinks first so stable /dev/v4l/by-id/ paths
+                # work, then extract the index from the real node name.
+                import os
+                real = os.path.realpath(device)
+                digits = "".join(ch for ch in Path(real).name if ch.isdigit())
                 if digits:
                     self._capture = cv2.VideoCapture(int(digits), cv2.CAP_V4L2)
         if not self._capture.isOpened():
