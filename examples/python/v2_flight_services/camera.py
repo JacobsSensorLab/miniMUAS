@@ -9,10 +9,17 @@ IUAS's close-range capture artifacts. The role scripts select one with a
     file:<path>          real bytes from disk — a single image, a directory,
                          or a glob; cycles through matches per capture.
                          Works everywhere, including the container.
-    opencv:<index|url>   live capture via OpenCV (`pip install opencv-python`):
-                         a V4L2/AVFoundation device index ("opencv:0") or a
-                         stream URL ("opencv:rtsp://..."). For the dev host's
-                         webcam and the companion computers' cameras.
+    opencv:<dev|index|url>[?k=v&...]
+                         live capture via OpenCV: a V4L2 device path
+                         ("opencv:/dev/video0"), a device index
+                         ("opencv:0"), or a stream URL ("opencv:rtsp://...").
+                         Device captures force the V4L2 backend (string
+                         paths otherwise fall into OpenCV's GStreamer URI
+                         backend and fail) and default to MJPG fourcc —
+                         UVC cameras like the Arducam OV9782 only reach
+                         full frame rate in MJPG. Optional params:
+                         w, h, fps, q (JPEG quality), fourcc.
+                         e.g. opencv:/dev/video0?w=1280&h=800&fps=30
 
 All sources share one method:
 
@@ -138,7 +145,16 @@ class FileFrameSource:
 
 
 class OpenCVFrameSource:
-    """Live JPEG frames from an OpenCV capture device or stream URL."""
+    """Live JPEG frames from an OpenCV capture device or stream URL.
+
+    Device captures (paths and indexes) open with the V4L2 backend
+    explicitly: OpenCV routes bare string paths to its GStreamer URI
+    backend, which asserts on `uridecodebin` (observed on the IUAS node).
+    MJPG fourcc is requested by default — UVC sensors like the OV9782
+    cap YUY2 at ~10 fps but run MJPG to 100 fps — and the capture buffer
+    is kept shallow + drained per capture so a frame taken at a waypoint
+    is from *now*, not from the driver queue.
+    """
 
     def __init__(self, spec: str, *, jpeg_quality: int = 85) -> None:
         self.spec = f"opencv:{spec}"
@@ -150,11 +166,44 @@ class OpenCVFrameSource:
                 "(`pip install opencv-python`)"
             ) from exc
         self._cv2 = cv2
-        self._jpeg_quality = int(jpeg_quality)
-        device: int | str = int(spec) if spec.isdigit() else spec
-        self._capture = cv2.VideoCapture(device)
+
+        target, params = spec, {}
+        if "?" in spec:
+            target, query = spec.split("?", 1)
+            for pair in query.split("&"):
+                if "=" in pair:
+                    key, value = pair.split("=", 1)
+                    params[key.strip()] = value.strip()
+
+        self._jpeg_quality = int(params.get("q", jpeg_quality))
+        is_url = "://" in target
+        device: int | str = int(target) if target.isdigit() else target
+
+        if is_url:
+            self._capture = cv2.VideoCapture(device)
+        else:
+            self._capture = cv2.VideoCapture(device, cv2.CAP_V4L2)
+            if not self._capture.isOpened() and isinstance(device, str):
+                # some OpenCV builds only take indexes for V4L2
+                digits = "".join(ch for ch in device if ch.isdigit())
+                if digits:
+                    self._capture = cv2.VideoCapture(int(digits), cv2.CAP_V4L2)
         if not self._capture.isOpened():
-            raise FrameSourceError(f"could not open capture device {spec!r}")
+            raise FrameSourceError(f"could not open capture device {target!r}")
+
+        if not is_url:
+            fourcc = params.get("fourcc", "MJPG")
+            self._capture.set(
+                cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc)
+            )
+            if "w" in params:
+                self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, int(params["w"]))
+            if "h" in params:
+                self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, int(params["h"]))
+            if "fps" in params:
+                self._capture.set(cv2.CAP_PROP_FPS, int(params["fps"]))
+            # shallow buffer so per-capture drain is cheap and effective
+            self._capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     def capture(
         self,
@@ -165,6 +214,9 @@ class OpenCVFrameSource:
         gps_time_ns: int,
         metadata: dict[str, Any] | None = None,
     ) -> bytes:
+        # drain the driver queue so the frame is current, then read
+        for _ in range(3):
+            self._capture.grab()
         frame = None
         for _ in range(5):  # first reads after open can fail while exposure settles
             ok, candidate = self._capture.read()
@@ -215,7 +267,7 @@ def frame_source_from_spec(spec: str | None):
         return OpenCVFrameSource(spec[len("opencv:"):])
     raise FrameSourceError(
         f"unknown camera spec {spec!r} "
-        f"(expected synthetic, file:<path>, or opencv:<index|url>)"
+        f"(expected synthetic, file:<path>, or opencv:<dev|index|url>)"
     )
 
 
