@@ -13,7 +13,13 @@ from contracts import (
     gps_time_ns,
     mission_evidence_name,
 )
-from dataplane import fetch_segmented, parse_frame
+from dataplane import fetch_segmented, frame_body, parse_frame
+from detector import (
+    decode_image,
+    detector_from_spec,
+    offset_latlon,
+    project_nadir,
+)
 from ndnsf_runtime import (
     add_common_arguments,
     add_ndnsf_path,
@@ -29,6 +35,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--provider-prefix", default="/muas/v2/gcs")
     parser.add_argument("--provider-id", default="")
     parser.add_argument("--service", default=gcs_detection_service())
+    parser.add_argument(
+        "--detector",
+        default="stub",
+        help="stub (offset-based fake) or "
+        "yolo:<model.onnx>[?conf=0.35&classes=tennis racket]",
+    )
+    parser.add_argument(
+        "--hfov-deg",
+        type=float,
+        default=70.0,
+        help="capture camera horizontal FOV for nadir geo-projection",
+    )
     parser.add_argument("--lat-offset-deg", type=float, default=0.00008)
     parser.add_argument("--lon-offset-deg", type=float, default=0.00006)
     parser.add_argument("--frame-fetch-timeout-ms", type=int, default=5000)
@@ -47,6 +65,10 @@ def main() -> int:
 
     add_ndnsf_path(args.ndnsf_root)
     from ndnsf import AckDecision, ServiceProvider, ServiceResponse
+
+    detector = detector_from_spec(args.detector)
+    if detector is not None:
+        print_json("gcs.detector.ready", **detector.describe())
 
     provider = ServiceProvider(
         **provider_kwargs(args, args.provider_prefix, args.provider_id)
@@ -92,6 +114,58 @@ def main() -> int:
         )
 
         timestamp_ns = gps_time_ns()
+
+        if detector is not None:
+            image = decode_image(frame_body(frame_payload))
+            if image is None:
+                return ServiceResponse(
+                    status=False, error="frame body is not a decodable image"
+                )
+            detections = detector.detect(image)
+            print_json(
+                "gcs.detection.inference",
+                frame=request.frame.data_name,
+                detections=[d.as_dict() for d in detections],
+            )
+            if not detections:
+                return ServiceResponse(status=False, error="no-detection")
+            best = detections[0]
+            pose = request.frame.pose
+            height_px, width_px = image.shape[:2]
+            north_m, east_m = project_nadir(
+                best.center_px,
+                (width_px, height_px),
+                agl_m=max(float(pose.position.alt_m), 0.0),
+                hfov_deg=args.hfov_deg,
+                heading_deg=getattr(pose, "yaw_deg", None),
+            )
+            lat_deg, lon_deg = offset_latlon(
+                pose.position.lat_deg, pose.position.lon_deg, north_m, east_m
+            )
+            response = DetectionResponse(
+                mission_id=request.mission_id,
+                object_id=best.label.replace(" ", "-"),
+                confidence=best.confidence,
+                estimate=GeoPoint(lat_deg=lat_deg, lon_deg=lon_deg, alt_m=0.0),
+                evidence_ref=mission_evidence_name(
+                    request.mission_id,
+                    best.label.replace(" ", "-"),
+                    timestamp_ns,
+                ),
+            )
+            print_json(
+                "gcs.detection.completed",
+                frame=request.frame.data_name,
+                detector="yolo",
+                label=best.label,
+                confidence=round(best.confidence, 4),
+                box_xywh=list(best.box_xywh),
+                offset_m={"north": round(north_m, 2), "east": round(east_m, 2)},
+                estimate={"lat": lat_deg, "lon": lon_deg},
+                evidence=response.evidence_ref,
+            )
+            return response.to_bytes()
+
         response = DetectionResponse(
             mission_id=request.mission_id,
             object_id="target-001",
@@ -110,6 +184,7 @@ def main() -> int:
         print_json(
             "gcs.detection.completed",
             frame=request.frame.data_name,
+            detector="stub",
             frame_bytes=len(frame_payload),
             evidence=response.evidence_ref,
             confidence=response.confidence,

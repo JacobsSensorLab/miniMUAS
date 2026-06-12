@@ -64,6 +64,20 @@ def build_frame_bytes(
     return FRAME_MAGIC + len(header).to_bytes(4, "big") + header + body
 
 
+def frame_body(payload: bytes) -> bytes:
+    """Extract the opaque body from a frame container payload.
+
+    Counterpart of `build_frame_bytes` for consumers that need the actual
+    pixels (e.g. the GCS detector decoding the JPEG), not just the header.
+    """
+
+    if not payload.startswith(FRAME_MAGIC):
+        raise ValueError("not a MUAS frame payload (bad magic)")
+    offset = len(FRAME_MAGIC)
+    header_len = int.from_bytes(payload[offset:offset + 4], "big")
+    return payload[offset + 4 + header_len:]
+
+
 def synthetic_frame_bytes(
     *,
     mission_id: str,
