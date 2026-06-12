@@ -3,130 +3,325 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>miniMUAS v2 — Mission Dashboard</title>
+<title>miniMUAS v2 — Mission Console</title>
 <style>
-  :root {
-    --bg: #10151c; --panel: #1a212b; --panel2: #222b37; --line: #2e3947;
-    --text: #d8e1ec; --dim: #8294a8; --accent: #4fb3ff; --ok: #38c172;
-    --warn: #f4b740; --bad: #ef5753; --wuas: #4fb3ff; --iuas: #b08cff;
-  }
-  * { box-sizing: border-box; margin: 0; }
-  body {
-    background: var(--bg); color: var(--text);
-    font: 13px/1.45 -apple-system, "Segoe UI", Roboto, sans-serif;
-    display: grid; grid-template-columns: 330px 1fr 268px;
-    grid-template-rows: 100vh; overflow: hidden;
-  }
-  h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
-       color: var(--dim); margin: 14px 0 6px; }
-  #sidebar, #right { background: var(--panel); overflow-y: auto;
-                     padding: 12px 14px; border-right: 1px solid var(--line); }
-  #right { border-right: 0; border-left: 1px solid var(--line); }
-  #mapwrap { position: relative; }
-  #map { width: 100%; height: 100%; display: block; cursor: grab; }
-  .row { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
-  .row label { flex: 1; color: var(--dim); }
-  input[type=number], input[type=text], select {
-    width: 86px; background: var(--panel2); color: var(--text);
-    border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px;
-  }
-  input.wide { width: 140px; }
-  button {
-    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
-    border-radius: 5px; padding: 6px 10px; cursor: pointer; font-size: 12px;
-  }
-  button:hover { border-color: var(--accent); }
-  button.primary { background: #14527e; border-color: var(--accent); }
-  button.danger { background: #5e2120; border-color: var(--bad); }
-  button.armed { background: #7e5a14; border-color: var(--warn); }
-  button:disabled { opacity: .4; cursor: not-allowed; }
-  .btnrow { display: flex; gap: 6px; margin: 6px 0; flex-wrap: wrap; }
-  .seg { display: flex; border: 1px solid var(--line); border-radius: 5px;
-         overflow: hidden; }
-  .seg button { border: 0; border-radius: 0; flex: 1; }
-  .seg button.on { background: #14527e; }
-  .card { background: var(--panel2); border: 1px solid var(--line);
-          border-radius: 8px; padding: 9px 11px; margin: 8px 0; }
-  .card .head { display: flex; justify-content: space-between;
-                align-items: center; margin-bottom: 4px; }
-  .vid-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block;
-             margin-right: 6px; }
-  .stat { display: inline-block; margin-right: 10px; color: var(--dim); }
-  .stat b { color: var(--text); font-weight: 600; }
-  .badge { padding: 1px 7px; border-radius: 9px; font-size: 11px;
-           border: 1px solid var(--line); }
-  .badge.ok { color: var(--ok); border-color: var(--ok); }
-  .badge.warn { color: var(--warn); border-color: var(--warn); }
-  .badge.bad { color: var(--bad); border-color: var(--bad); }
-  #log { font: 11px/1.5 ui-monospace, Menlo, monospace; background: var(--panel2);
-         border: 1px solid var(--line); border-radius: 6px; padding: 8px;
-         height: 200px; overflow-y: auto; white-space: pre-wrap; }
-  #log .t { color: var(--dim); }
-  #log .hit { color: var(--ok); } #log .err { color: var(--bad); }
-  #mission-banner { position: absolute; top: 10px; left: 50%;
-    transform: translateX(-50%); background: rgba(20,30,42,.92);
-    border: 1px solid var(--line); border-radius: 8px; padding: 7px 16px;
-    font-size: 13px; display: flex; gap: 14px; align-items: center; z-index: 5; }
-  video, .vidpanel img { width: 100%; border-radius: 6px; background: #000;
-    aspect-ratio: 4/3; object-fit: contain; display: block; }
-  .vidstats { color: var(--dim); font-size: 11px; margin-top: 3px; }
-  .pickhint { position: absolute; bottom: 12px; left: 50%;
-    transform: translateX(-50%); background: rgba(244,183,64,.95); color: #221a05;
-    padding: 5px 14px; border-radius: 6px; font-weight: 600; display: none; z-index: 5; }
-  #thumb { width: 100%; border-radius: 6px; margin-top: 6px; display: none; }
-  .conn { position: absolute; top: 10px; right: 12px; z-index: 5; }
+/* =======================================================================
+   Carbon Design System (Gray 100 theme), hand-rolled for offline use:
+   the field AP has no internet, so tokens/components are embedded rather
+   than loaded from @carbon/styles. Token names follow Carbon v11.
+   ======================================================================= */
+:root {
+  /* g100 core tokens */
+  --cds-background: #161616;
+  --cds-layer-01: #262626;
+  --cds-layer-02: #393939;
+  --cds-layer-accent: #393939;
+  --cds-field-01: #262626;
+  --cds-border-subtle: #393939;
+  --cds-border-strong: #6f6f6f;
+  --cds-text-primary: #f4f4f4;
+  --cds-text-secondary: #c6c6c6;
+  --cds-text-placeholder: #6f6f6f;
+  --cds-text-helper: #8d8d8d;
+  --cds-text-inverse: #161616;
+  --cds-link-primary: #78a9ff;
+  --cds-interactive: #4589ff;
+  --cds-button-primary: #0f62fe;
+  --cds-button-primary-hover: #0353e9;
+  --cds-button-secondary: #6f6f6f;
+  --cds-button-secondary-hover: #606060;
+  --cds-button-danger: #da1e28;
+  --cds-button-danger-hover: #ba1b23;
+  --cds-support-error: #fa4d56;
+  --cds-support-success: #42be65;
+  --cds-support-warning: #f1c21b;
+  --cds-support-info: #4589ff;
+  --cds-focus: #ffffff;
+  --cds-layer-selected-inverse: #f4f4f4;
+  /* spacing scale */
+  --sp-02: 4px; --sp-03: 8px; --sp-04: 12px; --sp-05: 16px; --sp-06: 24px;
+  /* type */
+  --font-sans: 'IBM Plex Sans', system-ui, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+}
+* { box-sizing: border-box; margin: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--cds-background); color: var(--cds-text-primary);
+  font: 400 14px/1.29 var(--font-sans); letter-spacing: .16px;
+  display: grid; grid-template-rows: 48px 1fr;
+  grid-template-columns: 336px 1fr 288px;
+  grid-template-areas: "header header header" "side map right";
+  overflow: hidden;
+}
+
+/* ---- UI shell header -------------------------------------------------- */
+.cds-header {
+  grid-area: header; display: flex; align-items: center;
+  background: #161616; border-bottom: 1px solid var(--cds-border-subtle);
+  padding: 0 var(--sp-05); gap: var(--sp-05);
+}
+.cds-header .name { font-size: 14px; letter-spacing: .1px; }
+.cds-header .name b { font-weight: 600; margin-right: 6px; }
+.cds-header .spacer { flex: 1; }
+
+/* ---- panels ------------------------------------------------------------ */
+#sidebar, #right {
+  background: var(--cds-background); overflow-y: auto;
+  padding: var(--sp-05);
+}
+#sidebar { grid-area: side; border-right: 1px solid var(--cds-border-subtle); }
+#right { grid-area: right; border-left: 1px solid var(--cds-border-subtle); }
+#mapwrap { grid-area: map; position: relative; }
+#map { width: 100%; height: 100%; display: block; cursor: grab; }
+
+/* heading-compact-01 over label-01 section pattern */
+h3 {
+  font-size: 12px; font-weight: 400; letter-spacing: .32px; line-height: 1.34;
+  color: var(--cds-text-secondary); text-transform: none;
+  margin: var(--sp-06) 0 var(--sp-03);
+  padding-bottom: var(--sp-02);
+  border-bottom: 1px solid var(--cds-border-subtle);
+}
+h3:first-child { margin-top: 0; }
+
+/* ---- form fields: label above, underlined field, square ---------------- */
+.field { margin-bottom: var(--sp-04); }
+.field label {
+  display: block; font-size: 12px; letter-spacing: .32px; line-height: 1.34;
+  color: var(--cds-text-secondary); margin-bottom: var(--sp-02);
+}
+.field input, .field select {
+  width: 100%; height: 32px; padding: 0 var(--sp-05);
+  background: var(--cds-field-01); color: var(--cds-text-primary);
+  border: none; border-bottom: 1px solid var(--cds-border-strong);
+  border-radius: 0; font: inherit;
+}
+.field input:focus, .field select:focus {
+  outline: 2px solid var(--cds-focus); outline-offset: -2px;
+}
+.field input::placeholder { color: var(--cds-text-placeholder); }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-03); }
+.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--sp-03); }
+
+/* ---- buttons: Carbon sharp corners, sized, left-aligned ----------------- */
+.cds-btn {
+  display: inline-flex; align-items: center; justify-content: flex-start;
+  height: 32px; padding: 0 var(--sp-05); border: 1px solid transparent;
+  border-radius: 0; font: 400 14px/1 var(--font-sans); letter-spacing: .16px;
+  cursor: pointer; transition: background 70ms cubic-bezier(0,0,.38,.9);
+  color: var(--cds-text-primary); background: transparent;
+}
+.cds-btn:focus-visible { outline: 2px solid var(--cds-focus); outline-offset: -2px; }
+.cds-btn:disabled { opacity: .4; cursor: not-allowed; }
+.cds-btn--primary { background: var(--cds-button-primary); padding-right: 48px; }
+.cds-btn--primary:hover { background: var(--cds-button-primary-hover); }
+.cds-btn--secondary { background: var(--cds-button-secondary); }
+.cds-btn--secondary:hover { background: var(--cds-button-secondary-hover); }
+.cds-btn--danger { background: var(--cds-button-danger); }
+.cds-btn--danger:hover { background: var(--cds-button-danger-hover); }
+.cds-btn--tertiary {
+  border-color: var(--cds-text-primary); color: var(--cds-text-primary);
+}
+.cds-btn--tertiary:hover { background: var(--cds-text-primary); color: var(--cds-text-inverse); }
+.cds-btn--danger-tertiary {
+  border-color: var(--cds-support-error); color: var(--cds-support-error);
+}
+.cds-btn--danger-tertiary:hover {
+  background: var(--cds-button-danger); border-color: var(--cds-button-danger);
+  color: var(--cds-text-primary);
+}
+.cds-btn--ghost { color: var(--cds-link-primary); }
+.cds-btn--ghost:hover { background: var(--cds-layer-01); }
+.btnrow { display: flex; gap: var(--sp-03); margin: var(--sp-03) 0; flex-wrap: wrap; }
+.btnrow .cds-btn { flex: 1; }
+
+/* ---- content switcher ---------------------------------------------------- */
+.cds-switcher { display: flex; margin-bottom: var(--sp-04); }
+.cds-switcher button {
+  flex: 1; height: 32px; border: none; border-radius: 0; cursor: pointer;
+  background: var(--cds-layer-01); color: var(--cds-text-secondary);
+  font: 400 14px/1 var(--font-sans); letter-spacing: .16px;
+  border-right: 1px solid var(--cds-border-subtle);
+  transition: background 70ms cubic-bezier(0,0,.38,.9);
+}
+.cds-switcher button:last-child { border-right: none; }
+.cds-switcher button:hover { background: var(--cds-layer-02); }
+.cds-switcher button.on {
+  background: var(--cds-layer-selected-inverse); color: var(--cds-text-inverse);
+}
+.cds-switcher button:focus-visible { outline: 2px solid var(--cds-focus); outline-offset: -2px; }
+
+/* ---- tags ------------------------------------------------------------------ */
+.cds-tag {
+  display: inline-flex; align-items: center; height: 18px;
+  padding: 0 var(--sp-03); border-radius: 9px;
+  font-size: 12px; letter-spacing: .32px; white-space: nowrap;
+  background: var(--cds-layer-02); color: var(--cds-text-secondary);
+}
+.cds-tag--green { background: #044317; color: #6fdc8c; }
+.cds-tag--red { background: #520408; color: #ff8389; }
+.cds-tag--blue { background: #00254d; color: #a6c8ff; }
+.cds-tag--yellow { background: #302400; color: #f1c21b; }
+.cds-tag--gray { background: var(--cds-layer-02); color: var(--cds-text-secondary); }
+
+/* ---- tiles (cards) ----------------------------------------------------------- */
+.cds-tile {
+  background: var(--cds-layer-01); border-radius: 0;
+  padding: var(--sp-05); margin-bottom: var(--sp-03);
+}
+.cds-tile .head {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: var(--sp-03);
+}
+.cds-tile .head b { font-size: 14px; font-weight: 600; }
+.vid-dot { width: 8px; height: 8px; display: inline-block; margin-right: var(--sp-03); }
+.kv { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--sp-02) var(--sp-03);
+      font-size: 12px; letter-spacing: .32px; }
+.kv .k { color: var(--cds-text-helper); }
+.kv .v { font-family: var(--font-mono); font-size: 12px; color: var(--cds-text-primary); }
+.cds-tile .btnrow { margin-bottom: 0; }
+.cds-tile .btnrow .cds-btn { height: 24px; padding: 0 var(--sp-03); font-size: 12px; }
+
+/* ---- toggle ------------------------------------------------------------------- */
+.cds-toggle { display: flex; align-items: center; gap: var(--sp-03);
+  cursor: pointer; user-select: none; }
+.cds-toggle .track {
+  width: 32px; height: 16px; border-radius: 8px; background: var(--cds-border-strong);
+  position: relative; transition: background 110ms cubic-bezier(0,0,.38,.9);
+  flex: none;
+}
+.cds-toggle .track::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 10px; height: 10px;
+  border-radius: 50%; background: var(--cds-text-primary);
+  transition: transform 110ms cubic-bezier(0,0,.38,.9);
+}
+.cds-toggle.on .track { background: var(--cds-support-success); }
+.cds-toggle.on .track::after { transform: translateX(16px); background: var(--cds-text-inverse); }
+.cds-toggle .lbl { font-size: 12px; letter-spacing: .32px; color: var(--cds-text-secondary); }
+
+/* ---- video panels --------------------------------------------------------------- */
+.vidpanel img { width: 100%; background: #000; aspect-ratio: 4/3;
+  object-fit: contain; display: block; margin-top: var(--sp-03); }
+.vidstats { font: 400 12px var(--font-mono); color: var(--cds-text-helper);
+  margin-top: var(--sp-02); }
+
+/* ---- event log: inline-notification style --------------------------------------- */
+#log { height: 220px; overflow-y: auto; }
+#log .n {
+  background: var(--cds-layer-01); border-left: 3px solid var(--cds-support-info);
+  padding: var(--sp-02) var(--sp-03); margin-bottom: 2px;
+  font: 400 11px/1.5 var(--font-mono);
+}
+#log .n .t { color: var(--cds-text-helper); margin-right: var(--sp-03); }
+#log .n.hit { border-left-color: var(--cds-support-success); }
+#log .n.err { border-left-color: var(--cds-support-error); }
+
+/* ---- map overlays ------------------------------------------------------------------ */
+#mission-banner {
+  position: absolute; top: var(--sp-03); left: var(--sp-03); z-index: 5;
+  background: var(--cds-layer-01); border: 1px solid var(--cds-border-subtle);
+  padding: var(--sp-03) var(--sp-05); display: flex; gap: var(--sp-05);
+  align-items: center; font: 400 12px var(--font-mono);
+}
+#mission-banner .k { color: var(--cds-text-helper); margin-right: var(--sp-02); }
+.pickhint {
+  position: absolute; bottom: var(--sp-05); left: 50%; transform: translateX(-50%);
+  background: var(--cds-support-warning); color: var(--cds-text-inverse);
+  padding: var(--sp-02) var(--sp-05); font-size: 12px; font-weight: 600;
+  display: none; z-index: 5;
+}
+#estimate { font: 400 12px var(--font-mono); color: var(--cds-text-secondary);
+  display: block; margin: var(--sp-02) 0 0; }
+#thumb { width: 100%; margin-top: var(--sp-03); display: none; }
+#detCard a { color: var(--cds-link-primary); text-decoration: none; }
+#detCard a:hover { text-decoration: underline; }
+#detCard .mono { font-family: var(--font-mono); font-size: 12px; }
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-thumb { background: var(--cds-layer-02); }
 </style>
 </head>
 <body>
 
+<header class="cds-header">
+  <span class="name"><b>miniMUAS</b>v2 Mission Console</span>
+  <span class="cds-tag cds-tag--gray" id="mstate">idle</span>
+  <span class="spacer"></span>
+  <span class="cds-tag cds-tag--red" id="conn">offline</span>
+</header>
+
 <div id="sidebar">
   <h3>Search area</h3>
-  <div class="seg" id="modeSeg">
+  <div class="cds-switcher" id="modeSeg">
     <button data-mode="center" class="on">Center + size</button>
     <button data-mode="corners">Two corners</button>
   </div>
   <div id="centerMode">
-    <div class="row"><label>Center lat</label><input id="clat" type="number" step="0.000001" value="35.120800"></div>
-    <div class="row"><label>Center lon</label><input id="clon" type="number" step="0.000001" value="-89.934700"></div>
-    <div class="row"><label>Width m (E-W)</label><input id="wm" type="number" value="40"></div>
-    <div class="row"><label>Height m (N-S)</label><input id="hm" type="number" value="24"></div>
-    <div class="btnrow"><button id="pickCenter">Pick center on map</button></div>
+    <div class="grid-2">
+      <div class="field"><label for="clat">Center latitude</label>
+        <input id="clat" type="number" step="0.000001" value="35.120800"></div>
+      <div class="field"><label for="clon">Center longitude</label>
+        <input id="clon" type="number" step="0.000001" value="-89.934700"></div>
+      <div class="field"><label for="wm">Width (m, E–W)</label>
+        <input id="wm" type="number" value="40"></div>
+      <div class="field"><label for="hm">Height (m, N–S)</label>
+        <input id="hm" type="number" value="24"></div>
+    </div>
+    <div class="btnrow"><button class="cds-btn cds-btn--ghost" id="pickCenter">Pick center on map</button></div>
   </div>
   <div id="cornersMode" style="display:none">
-    <div class="row"><label>Corner A</label><input class="wide" id="ca" type="text" placeholder="lat, lon"></div>
-    <div class="row"><label>Corner B</label><input class="wide" id="cb" type="text" placeholder="lat, lon"></div>
-    <div class="btnrow"><button id="pickA">Pick A</button><button id="pickB">Pick B</button></div>
+    <div class="field"><label for="ca">Corner A (lat, lon)</label>
+      <input id="ca" type="text" placeholder="35.1209, -89.9349"></div>
+    <div class="field"><label for="cb">Corner B (lat, lon)</label>
+      <input id="cb" type="text" placeholder="35.1207, -89.9345"></div>
+    <div class="btnrow">
+      <button class="cds-btn cds-btn--ghost" id="pickA">Pick A</button>
+      <button class="cds-btn cds-btn--ghost" id="pickB">Pick B</button>
+    </div>
   </div>
 
   <h3>Raster</h3>
-  <div class="row"><label>Search AGL m</label><input id="agl" type="number" step="0.5" value="6"></div>
-  <div class="row"><label>Leg spacing m</label><input id="spacing" type="number" step="0.5" value="5"></div>
-  <div class="row"><label>Capture every m</label><input id="capm" type="number" step="0.5" value="4"></div>
-  <div class="row"><label>Speed m/s</label><input id="speed" type="number" step="0.5" value="2"></div>
-  <div class="row"><label>Object</label><input class="wide" id="objq" type="text" value="tennis racket"></div>
-  <div class="row"><label>Min confidence</label><input id="minconf" type="number" step="0.05" value="0.3"></div>
-  <div class="btnrow">
-    <button id="previewBtn">Preview legs</button>
-    <span class="stat" id="estimate"></span>
+  <div class="grid-2">
+    <div class="field"><label for="agl">Search AGL (m)</label>
+      <input id="agl" type="number" step="0.5" value="6"></div>
+    <div class="field"><label for="spacing">Leg spacing (m)</label>
+      <input id="spacing" type="number" step="0.5" value="5"></div>
+    <div class="field"><label for="capm">Capture every (m)</label>
+      <input id="capm" type="number" step="0.5" value="4"></div>
+    <div class="field"><label for="speed">Speed (m/s)</label>
+      <input id="speed" type="number" step="0.5" value="2"></div>
   </div>
+  <div class="field"><label for="objq">Target object</label>
+    <input id="objq" type="text" value="tennis racket"></div>
+  <div class="field"><label for="minconf">Minimum confidence</label>
+    <input id="minconf" type="number" step="0.05" value="0.3"></div>
+  <div class="btnrow">
+    <button class="cds-btn cds-btn--tertiary" id="previewBtn">Preview legs</button>
+  </div>
+  <span id="estimate"></span>
 
   <h3>IUAS orbit</h3>
-  <div class="row"><label>Orbit AGL m</label><input id="oagl" type="number" step="0.5" value="8"></div>
-  <div class="row"><label>Orbit radius m</label><input id="oradius" type="number" step="0.5" value="6"></div>
-  <div class="row"><label>Orbits</label><input id="ocount" type="number" step="0.5" value="1"></div>
+  <div class="grid-3">
+    <div class="field"><label for="oagl">AGL (m)</label>
+      <input id="oagl" type="number" step="0.5" value="8"></div>
+    <div class="field"><label for="oradius">Radius (m)</label>
+      <input id="oradius" type="number" step="0.5" value="6"></div>
+    <div class="field"><label for="ocount">Orbits</label>
+      <input id="ocount" type="number" step="0.5" value="1"></div>
+  </div>
 
   <h3>Mission</h3>
   <div class="btnrow">
-    <button class="primary" id="startBtn">▶ Start mission</button>
+    <button class="cds-btn cds-btn--primary" id="startBtn">Start mission</button>
   </div>
   <div class="btnrow">
-    <button class="danger" id="rtlAll">RTL ALL</button>
-    <button class="danger" id="landAll">LAND ALL</button>
-    <button class="armed" id="holdAll">HOLD ALL</button>
+    <button class="cds-btn cds-btn--danger" id="rtlAll">RTL all</button>
+    <button class="cds-btn cds-btn--danger" id="landAll">Land all</button>
+    <button class="cds-btn cds-btn--secondary" id="holdAll">Hold all</button>
   </div>
 
   <h3>Detection</h3>
-  <div class="card" id="detCard">none yet</div>
+  <div class="cds-tile" id="detCard">none yet</div>
   <img id="thumb" alt="trigger frame">
 
   <h3>Event log</h3>
@@ -136,13 +331,11 @@
 <div id="mapwrap">
   <canvas id="map"></canvas>
   <div id="mission-banner">
-    <span id="mstate" class="badge">idle</span>
-    <span class="stat">frames <b id="mframes">0</b></span>
-    <span class="stat">leg <b id="mleg">–</b></span>
-    <span class="stat">detects <b id="mdet">0/0</b></span>
+    <span><span class="k">frames</span><b id="mframes">0</b></span>
+    <span><span class="k">leg</span><b id="mleg">–</b></span>
+    <span><span class="k">detects</span><b id="mdet">0/0</b></span>
   </div>
   <div class="pickhint" id="pickhint">click the map…</div>
-  <span class="conn badge bad" id="conn">offline</span>
 </div>
 
 <div id="right">
@@ -156,6 +349,8 @@
 "use strict";
 const M_PER_DEG_LAT = 111111;
 const mPerDegLon = lat => M_PER_DEG_LAT * Math.max(Math.cos(lat*Math.PI/180), 1e-6);
+// Carbon categorical palette (blue 40, purple 40)
+const PALETTE = ["#78a9ff", "#be95ff"];
 const COLORS = {};
 let VEHICLES = ["wuas-01","iuas-01"];
 
@@ -167,6 +362,9 @@ function connect() {
   ws.onopen = () => { wsOK = true; setConn(true); };
   ws.onclose = () => { wsOK = false; setConn(false); setTimeout(connect, 1500); };
   ws.onmessage = ev => {
+    // any traffic proves the link — the tag must never read "offline"
+    // while data is visibly streaming
+    if (!wsOK) { wsOK = true; setConn(true); }
     if (ev.data instanceof ArrayBuffer) { onVideoFrame(ev.data); return; }
     const m = JSON.parse(ev.data);
     if (m.type === "hello") onHello(m);
@@ -179,21 +377,21 @@ function connect() {
   };
 }
 const send = obj => { if (wsOK) ws.send(JSON.stringify(obj)); };
-function setConn(ok){ const c=document.getElementById("conn");
-  c.textContent = ok?"connected":"offline";
-  c.className = "conn badge " + (ok?"ok":"bad"); }
+function setConn(ok){ const c = document.getElementById("conn");
+  c.textContent = ok ? "connected" : "offline";
+  c.className = "cds-tag " + (ok ? "cds-tag--green" : "cds-tag--red"); }
 
-// ---------- map (canvas, local ENU around view center) ----------
+// ---------- map (canvas, local ENU around view center, g100 palette) ----------
 const cv = document.getElementById("map"), ctx = cv.getContext("2d");
-let view = { lat: 35.1208, lon: -89.9347, mppx: 0.18 }; // meters per pixel
-let plan = null;          // raster preview {corners, legs, captures}
-let drones = {};          // vid -> {lat, lon, agl, heading, mode, armed, age, stale, trail: []}
-let detection = null;     // {lat, lon, confidence, object_id}
-let picking = null;       // "center" | "A" | "B"
+let view = { lat: 35.1208, lon: -89.9347, mppx: 0.18 };
+let plan = null;
+let drones = {};
+let detection = null;
+let picking = null;
 
 function resize(){ const r = cv.parentElement.getBoundingClientRect();
   cv.width = r.width; cv.height = r.height; }
-window.addEventListener("resize", () => { resize(); });
+window.addEventListener("resize", resize);
 function toPx(lat, lon){
   return [ cv.width/2 + (lon - view.lon) * mPerDegLon(view.lat) / view.mppx,
            cv.height/2 - (lat - view.lat) * M_PER_DEG_LAT / view.mppx ]; }
@@ -202,51 +400,47 @@ function toLL(x, y){
            view.lon + (x - cv.width/2) * view.mppx / mPerDegLon(view.lat) ]; }
 
 function draw(){
-  ctx.fillStyle = "#0d1218"; ctx.fillRect(0,0,cv.width,cv.height);
-  // 10 m grid
+  ctx.fillStyle = "#161616"; ctx.fillRect(0,0,cv.width,cv.height);
   const grid = 10 / view.mppx;
   if (grid > 14) {
-    ctx.strokeStyle = "#1b2430"; ctx.lineWidth = 1; ctx.beginPath();
+    ctx.strokeStyle = "#262626"; ctx.lineWidth = 1; ctx.beginPath();
     const ox = (cv.width/2) % grid, oy = (cv.height/2) % grid;
     for (let x = ox; x < cv.width; x += grid){ ctx.moveTo(x,0); ctx.lineTo(x,cv.height); }
     for (let y = oy; y < cv.height; y += grid){ ctx.moveTo(0,y); ctx.lineTo(cv.width,y); }
     ctx.stroke();
-    ctx.fillStyle = "#3a4756"; ctx.font = "10px monospace";
-    ctx.fillText("grid 10 m", 10, cv.height - 10);
+    ctx.fillStyle = "#6f6f6f"; ctx.font = "11px 'IBM Plex Mono', monospace";
+    ctx.fillText("grid 10 m", 12, cv.height - 12);
   }
-  // raster plan
   if (plan){
-    ctx.strokeStyle = "#f4b74088"; ctx.lineWidth = 1.5; ctx.beginPath();
+    ctx.strokeStyle = "#f1c21b99"; ctx.lineWidth = 1.5; ctx.beginPath();
     plan.corners.forEach((c,i) => { const p = toPx(c.lat, c.lon);
       i ? ctx.lineTo(p[0],p[1]) : ctx.moveTo(p[0],p[1]); });
     ctx.closePath(); ctx.stroke();
-    ctx.strokeStyle = "#4fb3ff66"; ctx.beginPath();
+    ctx.strokeStyle = "#4589ff66"; ctx.beginPath();
     let prev = null;
     plan.legs.forEach(leg => {
       const a = toPx(leg[0].lat, leg[0].lon), b = toPx(leg[1].lat, leg[1].lon);
       if (prev) ctx.lineTo(a[0],a[1]); else ctx.moveTo(a[0],a[1]);
       ctx.lineTo(b[0],b[1]); prev = b; });
     ctx.stroke();
-    ctx.fillStyle = "#4fb3ff";
+    ctx.fillStyle = "#78a9ff";
     plan.captures.forEach(c => { const p = toPx(c.lat, c.lon);
       ctx.fillRect(p[0]-1.5, p[1]-1.5, 3, 3); });
   }
-  // detection
   if (detection){
     const p = toPx(detection.lat, detection.lon);
     const pulse = 8 + 4*Math.sin(Date.now()/300);
-    ctx.strokeStyle = "#38c172"; ctx.lineWidth = 2;
+    ctx.strokeStyle = "#42be65"; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(p[0],p[1],pulse,0,7); ctx.stroke();
-    ctx.fillStyle = "#38c172";
+    ctx.fillStyle = "#42be65";
     ctx.beginPath(); ctx.arc(p[0],p[1],4,0,7); ctx.fill();
-    ctx.font = "11px sans-serif";
+    ctx.font = "12px 'IBM Plex Sans', sans-serif";
     ctx.fillText(`${detection.object_id} ${(detection.confidence*100).toFixed(0)}%`,
                  p[0]+12, p[1]-8);
   }
-  // drones
   for (const [vid, d] of Object.entries(drones)){
-    const col = COLORS[vid] || "#fff";
-    if (d.trail.length > 1){
+    const col = COLORS[vid] || "#f4f4f4";
+    if (d.trail && d.trail.length > 1){
       ctx.strokeStyle = col + "55"; ctx.lineWidth = 1.5; ctx.beginPath();
       d.trail.forEach((t,i) => { const p = toPx(t[0],t[1]);
         i ? ctx.lineTo(p[0],p[1]) : ctx.moveTo(p[0],p[1]); });
@@ -254,17 +448,17 @@ function draw(){
     }
     const p = toPx(d.lat, d.lon), hd = (d.heading||0) * Math.PI/180;
     ctx.save(); ctx.translate(p[0],p[1]); ctx.rotate(hd);
-    ctx.fillStyle = d.stale ? "#556270" : col;
+    ctx.fillStyle = d.stale ? "#525252" : col;
     ctx.beginPath(); ctx.moveTo(0,-9); ctx.lineTo(6,7); ctx.lineTo(-6,7);
     ctx.closePath(); ctx.fill(); ctx.restore();
-    ctx.fillStyle = d.stale ? "#556270" : col; ctx.font = "11px sans-serif";
+    ctx.fillStyle = d.stale ? "#525252" : col;
+    ctx.font = "12px 'IBM Plex Mono', monospace";
     ctx.fillText(`${vid} ${d.agl?.toFixed(1)??"–"}m${d.stale?" (stale)":""}`,
                  p[0]+10, p[1]+4);
   }
   requestAnimationFrame(draw);
 }
 
-// pan/zoom/pick
 let drag = null;
 cv.addEventListener("mousedown", e => drag = {x:e.offsetX, y:e.offsetY});
 cv.addEventListener("mousemove", e => {
@@ -330,11 +524,12 @@ function preview(){
 previewBtn.onclick = preview;
 function onPreview(m){
   plan = m.plan;
-  estimate.innerHTML = `legs <b>${m.plan.legs.length}</b> · captures <b>${m.plan.captures.length}</b> · ~<b>${Math.round(m.estimate_s)}s</b>`;
+  estimate.textContent =
+    `${m.plan.legs.length} legs · ${m.plan.captures.length} captures · ~${Math.round(m.estimate_s)} s`;
   view.lat = m.plan.center.lat; view.lon = m.plan.center.lon;
 }
 
-// only confirmation in the whole UI, per spec
+// the only confirmation in the UI, per spec
 startBtn.onclick = () => {
   if (!plan) { preview(); }
   const est = estimate.textContent || "";
@@ -345,48 +540,62 @@ rtlAll.onclick = () => send({cmd:"all", command:"rtl"});
 landAll.onclick = () => send({cmd:"all", command:"land"});
 holdAll.onclick = () => send({cmd:"all", command:"hold"});
 
-// ---------- vehicle cards + video panels ----------
+// ---------- vehicle tiles + video panels ----------
 function onHello(m){
   VEHICLES = m.vehicles;
-  COLORS[VEHICLES[0]] = "#4fb3ff"; COLORS[VEHICLES[1]] = "#b08cff";
+  VEHICLES.forEach((v,i) => COLORS[v] = PALETTE[i % PALETTE.length]);
   cards.innerHTML = ""; videos.innerHTML = "";
   VEHICLES.forEach(vid => {
     drones[vid] = drones[vid] || {lat:view.lat, lon:view.lon, trail:[], stale:true};
-    const card = document.createElement("div");
-    card.className = "card"; card.id = `card-${vid}`;
-    card.innerHTML = `
+    const tile = document.createElement("div");
+    tile.className = "cds-tile";
+    tile.innerHTML = `
       <div class="head"><b><span class="vid-dot" style="background:${COLORS[vid]}"></span>${vid}</b>
-        <span class="badge" id="link-${vid}">no link</span></div>
-      <div><span class="stat">mode <b id="mode-${vid}">–</b></span>
-           <span class="stat">AGL <b id="agl-${vid}">–</b></span>
-           <span class="stat">batt <b id="batt-${vid}">–</b></span></div>
-      <div><span class="stat">armed <b id="armed-${vid}">–</b></span>
-           <span class="stat">task <b id="busy-${vid}">–</b></span>
-           <span class="stat">src <b id="src-${vid}">–</b></span></div>
-      <div class="btnrow">
-        <button class="danger" onclick="send({cmd:'flight',vehicle:'${vid}',command:'rtl'})">RTL</button>
-        <button class="danger" onclick="send({cmd:'flight',vehicle:'${vid}',command:'land'})">Land</button>
-        <button class="armed" onclick="send({cmd:'flight',vehicle:'${vid}',command:'hold'})">Hold</button>
+        <span class="cds-tag cds-tag--gray" id="link-${vid}">no link</span></div>
+      <div class="kv">
+        <span class="k">mode</span><span class="k">AGL</span><span class="k">battery</span>
+        <span class="v" id="mode-${vid}">–</span>
+        <span class="v" id="agl-${vid}">–</span>
+        <span class="v" id="batt-${vid}">–</span>
+        <span class="k">armed</span><span class="k">task</span><span class="k">source</span>
+        <span class="v" id="armed-${vid}">–</span>
+        <span class="v" id="busy-${vid}">–</span>
+        <span class="v" id="src-${vid}">–</span>
+      </div>
+      <div class="btnrow" style="margin-top:12px">
+        <button class="cds-btn cds-btn--danger-tertiary"
+          onclick="send({cmd:'flight',vehicle:'${vid}',command:'rtl'})">RTL</button>
+        <button class="cds-btn cds-btn--danger-tertiary"
+          onclick="send({cmd:'flight',vehicle:'${vid}',command:'land'})">Land</button>
+        <button class="cds-btn cds-btn--tertiary"
+          onclick="send({cmd:'flight',vehicle:'${vid}',command:'hold'})">Hold</button>
       </div>`;
-    cards.appendChild(card);
+    cards.appendChild(tile);
+
     const vp = document.createElement("div");
-    vp.className = "card vidpanel";
+    vp.className = "cds-tile vidpanel";
     vp.innerHTML = `
       <div class="head"><b style="color:${COLORS[vid]}">${vid}</b>
-        <button id="vbtn-${vid}">video on</button></div>
-      <img id="vimg-${vid}" style="display:none">
+        <span class="cds-toggle" id="vtog-${vid}" role="switch" aria-checked="false"
+              tabindex="0"><span class="lbl">camera</span><span class="track"></span></span>
+      </div>
+      <img id="vimg-${vid}" style="display:none" alt="${vid} video">
       <div class="vidstats" id="vstats-${vid}"></div>`;
     videos.appendChild(vp);
     let on = false;
-    document.getElementById(`vbtn-${vid}`).onclick = e => {
+    const tog = document.getElementById(`vtog-${vid}`);
+    const flip = () => {
       on = !on;
-      e.target.textContent = on ? "video off" : "video on";
+      tog.classList.toggle("on", on);
+      tog.setAttribute("aria-checked", on);
       document.getElementById(`vimg-${vid}`).style.display = on ? "" : "none";
-      send({cmd:"video", vehicle:vid, params:{enable:on, width:320, height:240, fps:5, quality:40}});
+      send({cmd:"video", vehicle:vid,
+            params:{enable:on, width:320, height:240, fps:5, quality:40}});
     };
+    tog.onclick = flip;
+    tog.onkeydown = e => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); flip(); } };
   });
 }
-const battColor = pct => pct<0 ? "" : pct<20 ? "var(--bad)" : pct<40 ? "var(--warn)" : "var(--ok)";
 function onTelemetry(m){
   const s = m.sample, vid = m.vehicle;
   const d = drones[vid] = drones[vid] || {trail:[]};
@@ -396,23 +605,29 @@ function onTelemetry(m){
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
   set(`mode-${vid}`, s.mode || "–");
   set(`agl-${vid}`, `${(s.agl_m??0).toFixed(1)} m`);
-  set(`armed-${vid}`, s.armed ? "YES" : "no");
+  set(`armed-${vid}`, s.armed ? "yes" : "no");
   set(`busy-${vid}`, s.busy || "idle");
   set(`src-${vid}`, s.source);
   const batt = document.getElementById(`batt-${vid}`);
-  if (batt){ batt.textContent = s.battery_pct >= 0 ? `${s.battery_pct.toFixed(0)}%`
-      : (s.battery_v > 0 ? `${s.battery_v.toFixed(1)}V` : "–");
-    batt.style.color = battColor(s.battery_pct); }
+  if (batt){
+    batt.textContent = s.battery_pct >= 0 ? `${s.battery_pct.toFixed(0)}%`
+      : (s.battery_v > 0 ? `${s.battery_v.toFixed(1)} V` : "–");
+    batt.style.color = s.battery_pct < 0 ? ""
+      : s.battery_pct < 20 ? "var(--cds-support-error)"
+      : s.battery_pct < 40 ? "var(--cds-support-warning)"
+      : "var(--cds-support-success)";
+  }
   const link = document.getElementById(`link-${vid}`);
   if (link){ const age = m.age_s;
-    link.textContent = `link ${age.toFixed(0)}s`;
-    link.className = "badge " + (age < 4 ? "ok" : age < 10 ? "warn" : "bad"); }
+    link.textContent = `link ${age.toFixed(0)} s`;
+    link.className = "cds-tag " + (age < 4 ? "cds-tag--green"
+      : age < 10 ? "cds-tag--yellow" : "cds-tag--red"); }
 }
 function onStale(m){
   const d = drones[m.vehicle]; if (d) d.stale = true;
   const link = document.getElementById(`link-${m.vehicle}`);
   if (link){ link.textContent = m.silent_s == null ? "no link"
-      : `lost ${m.silent_s.toFixed(0)}s`; link.className = "badge bad"; }
+      : `lost ${m.silent_s.toFixed(0)} s`; link.className = "cds-tag cds-tag--red"; }
 }
 function onSearch(m){
   const s = m.status;
@@ -438,19 +653,21 @@ function onVideoStats(m){
 }
 
 // ---------- events / mission state ----------
-const STATE_CLASS = { idle:"", searching:"warn", dispatching:"warn",
-  investigating:"warn", done:"ok", aborted:"bad" };
+const STATE_TAG = { idle:"cds-tag--gray", searching:"cds-tag--blue",
+  dispatching:"cds-tag--yellow", investigating:"cds-tag--yellow",
+  done:"cds-tag--green", aborted:"cds-tag--red" };
 function setState(state){
   mstate.textContent = state;
-  mstate.className = "badge " + (STATE_CLASS[state] ?? "");
+  mstate.className = "cds-tag " + (STATE_TAG[state] ?? "cds-tag--gray");
 }
 function onEvent(m){
   const line = document.createElement("div");
+  line.className = "n";
   const t = new Date(m.t*1000).toLocaleTimeString();
   const extra = Object.entries(m).filter(([k]) =>
     !["type","kind","t"].includes(k)).map(([k,v]) =>
     `${k}=${typeof v==="number" ? +v.toFixed(5) : JSON.stringify(v)}`).join(" ");
-  line.innerHTML = `<span class="t">${t}</span> ${m.kind} ${extra}`;
+  line.innerHTML = `<span class="t">${t}</span>${m.kind} ${extra}`;
   if (m.kind.includes("hit") || m.kind.includes("target_found") ||
       m.kind.includes("completed")) line.classList.add("hit");
   if (m.kind.includes("fail") || m.kind.includes("timeout")) line.classList.add("err");
@@ -462,8 +679,8 @@ function onEvent(m){
   if (m.kind === "mission.target_found"){
     setState("dispatching");
     detection = { lat:m.lat, lon:m.lon, confidence:m.confidence, object_id:m.object_id };
-    detCard.innerHTML = `<b>${m.object_id}</b> @ ${(m.confidence*100).toFixed(1)}%<br>
-      ${m.lat.toFixed(6)}, ${m.lon.toFixed(6)}`;
+    detCard.innerHTML = `<b>${m.object_id}</b> · ${(m.confidence*100).toFixed(1)}%
+      <div class="mono">${m.lat.toFixed(6)}, ${m.lon.toFixed(6)}</div>`;
     thumb.src = `/artifact?name=${encodeURIComponent(m.frame)}`;
     thumb.style.display = "block";
   }
@@ -471,8 +688,8 @@ function onEvent(m){
   if (m.kind === "mission.completed"){
     setState("done");
     if (m.artifacts && m.artifacts.length)
-      detCard.innerHTML += `<br><a style="color:var(--accent)" target="_blank"
-        href="/artifact?name=${encodeURIComponent(m.artifacts[0])}">IUAS capture ↗</a>`;
+      detCard.innerHTML += `<div><a target="_blank"
+        href="/artifact?name=${encodeURIComponent(m.artifacts[0])}">IUAS capture ↗</a></div>`;
   }
   if (["mission.search_finished","mission.search_failed","mission.search_timeout",
        "mission.investigate_failed","mission.investigate_timeout"].includes(m.kind))

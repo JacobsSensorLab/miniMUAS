@@ -391,8 +391,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mavlink-endpoint", default=None)
     parser.add_argument("--uas-ipbrc-root", default=None)
     parser.add_argument("--telemetry-hz", type=float, default=1.0)
-    parser.add_argument("--sim-lat", type=float, default=35.1208)
-    parser.add_argument("--sim-lon", type=float, default=-89.9347)
+    parser.add_argument(
+        "--sim-lat", type=float, default=None,
+        help="Sim start latitude (default: bench home)",
+    )
+    parser.add_argument(
+        "--sim-lon", type=float, default=None,
+        help="Sim start longitude (default: bench home, offset ~8 m east "
+        "for the iuas so co-located sim markers don't overprint)",
+    )
     parser.add_argument(
         "--search-frame-width", type=int, default=640,
         help="Search captures are published at model resolution: the GCS "
@@ -437,7 +444,11 @@ def main() -> int:
             )
             return 2
     else:
-        flight = SimFlightBackend(args.sim_lat, args.sim_lon)
+        sim_lat = args.sim_lat if args.sim_lat is not None else 35.1208
+        sim_lon = args.sim_lon if args.sim_lon is not None else (
+            -89.9347 + (0.00009 if args.role == "iuas" else 0.0)
+        )
+        flight = SimFlightBackend(sim_lat, sim_lon)
     print_json("agent.flight.ready", backend=flight.source)
 
     add_ndnsf_path(args.ndnsf_root)
