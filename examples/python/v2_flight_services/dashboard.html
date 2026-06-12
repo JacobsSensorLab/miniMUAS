@@ -247,6 +247,7 @@ h3:first-child { margin-top: 0; }
   <span class="name"><b>miniMUAS</b>v2 Mission Console</span>
   <span class="cds-tag cds-tag--gray" id="mstate">idle</span>
   <span class="spacer"></span>
+  <button class="cds-btn cds-btn--ghost" id="imageryBtn">Imagery on</button>
   <span class="cds-tag cds-tag--red" id="conn">offline</span>
 </header>
 
@@ -295,6 +296,9 @@ h3:first-child { margin-top: 0; }
     <input id="objq" type="text" value="tennis racket"></div>
   <div class="field"><label for="minconf">Minimum confidence</label>
     <input id="minconf" type="number" step="0.05" value="0.3"></div>
+  <div class="field"><label for="sep">Target separation (m)</label>
+    <input id="sep" type="number" step="0.5" value="5"
+      title="Hits closer together than this are the same object"></div>
   <div class="btnrow">
     <button class="cds-btn cds-btn--tertiary" id="previewBtn">Preview legs</button>
   </div>
@@ -334,6 +338,7 @@ h3:first-child { margin-top: 0; }
     <span><span class="k">frames</span><b id="mframes">0</b></span>
     <span><span class="k">leg</span><b id="mleg">–</b></span>
     <span><span class="k">detects</span><b id="mdet">0/0</b></span>
+    <span><span class="k">targets</span><b id="mtargets">0</b></span>
   </div>
   <div class="pickhint" id="pickhint">click the map…</div>
 </div>
@@ -386,7 +391,8 @@ const cv = document.getElementById("map"), ctx = cv.getContext("2d");
 let view = { lat: 35.1208, lon: -89.9347, mppx: 0.18 };
 let plan = null;
 let drones = {};
-let detection = null;
+let targets = [];   // mission targets: {index, object_id, confidence, lat,
+                    //  lon, frame, status, artifacts}
 let picking = null;
 
 function resize(){ const r = cv.parentElement.getBoundingClientRect();
@@ -399,10 +405,76 @@ function toLL(x, y){
   return [ view.lat - (y - cv.height/2) * view.mppx / M_PER_DEG_LAT,
            view.lon + (x - cv.width/2) * view.mppx / mPerDegLon(view.lat) ]; }
 
+// ---------- satellite tile layer (Web Mercator, served by the GCS) ----------
+// Tiles come from /tiles/{z}/{x}/{y}: local cache on node 03, proxied from
+// Esri and cached when the bench has internet. Missing tiles -> the meter
+// grid still shows underneath, so the map degrades gracefully offline.
+let imagery = true;
+const tileImgs = new Map();   // "z/x/y" -> Image (img.ok set on load)
+const lon2tx = (lon, z) => (lon + 180) / 360 * 2**z;
+const lat2ty = (lat, z) => {
+  const r = lat * Math.PI / 180;
+  return (1 - Math.log(Math.tan(r) + 1/Math.cos(r)) / Math.PI) / 2 * 2**z;
+};
+const tx2lon = (x, z) => x / 2**z * 360 - 180;
+const ty2lat = (y, z) => {
+  const n = Math.PI - 2 * Math.PI * y / 2**z;
+  return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+};
+function tileFor(z, x, y){
+  const key = `${z}/${x}/${y}`;
+  let img = tileImgs.get(key);
+  if (!img){
+    if (tileImgs.size > 400){            // bounded cache, evict oldest
+      const first = tileImgs.keys().next().value;
+      tileImgs.delete(first);
+    }
+    img = new Image();
+    img.ok = false;
+    img.onload = () => { img.ok = true; };
+    img.onerror = () => { img.bad = true; };
+    img.src = `/tiles/${z}/${x}/${y}`;
+    tileImgs.set(key, img);
+  }
+  return img;
+}
+function drawTiles(){
+  if (!imagery) return false;
+  // zoom whose tile resolution best matches the current meters-per-pixel
+  // (156543.03 m/px is the z=0 per-pixel ground resolution at the equator)
+  const groundMpp = 156543.03392 * Math.cos(view.lat * Math.PI / 180);
+  const z = Math.max(3, Math.min(19, Math.round(Math.log2(groundMpp / view.mppx))));
+  const [latN, lonW] = toLL(0, 0), [latS, lonE] = toLL(cv.width, cv.height);
+  const x0 = Math.floor(lon2tx(lonW, z)), x1 = Math.floor(lon2tx(lonE, z));
+  const y0 = Math.floor(lat2ty(latN, z)), y1 = Math.floor(lat2ty(latS, z));
+  if ((x1 - x0 + 1) * (y1 - y0 + 1) > 80) return false; // sanity bound
+  let drew = false;
+  for (let x = x0; x <= x1; x++){
+    for (let y = y0; y <= y1; y++){
+      const img = tileFor(z, x, y);
+      if (!img.ok) continue;
+      // project the tile's corner coordinates through the same transform
+      // as every vector; sub-pixel mercator/ENU divergence at these extents
+      const pNW = toPx(ty2lat(y, z), tx2lon(x, z));
+      const pSE = toPx(ty2lat(y + 1, z), tx2lon(x + 1, z));
+      ctx.drawImage(img, pNW[0], pNW[1],
+                    pSE[0] - pNW[0] + 0.5, pSE[1] - pNW[1] + 0.5);
+      drew = true;
+    }
+  }
+  if (drew){
+    // translucent veil keeps the Carbon vectors and labels readable
+    ctx.fillStyle = "rgba(13,17,23,0.35)";
+    ctx.fillRect(0, 0, cv.width, cv.height);
+  }
+  return drew;
+}
+
 function draw(){
   ctx.fillStyle = "#161616"; ctx.fillRect(0,0,cv.width,cv.height);
+  const tiled = drawTiles();
   const grid = 10 / view.mppx;
-  if (grid > 14) {
+  if (!tiled && grid > 14) {
     ctx.strokeStyle = "#262626"; ctx.lineWidth = 1; ctx.beginPath();
     const ox = (cv.width/2) % grid, oy = (cv.height/2) % grid;
     for (let x = ox; x < cv.width; x += grid){ ctx.moveTo(x,0); ctx.lineTo(x,cv.height); }
@@ -427,15 +499,21 @@ function draw(){
     plan.captures.forEach(c => { const p = toPx(c.lat, c.lon);
       ctx.fillRect(p[0]-1.5, p[1]-1.5, 3, 3); });
   }
-  if (detection){
-    const p = toPx(detection.lat, detection.lon);
-    const pulse = 8 + 4*Math.sin(Date.now()/300);
-    ctx.strokeStyle = "#42be65"; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(p[0],p[1],pulse,0,7); ctx.stroke();
-    ctx.fillStyle = "#42be65";
+  // targets: yellow=queued, pulsing blue=investigating, green=done, red=failed
+  const TGT = { queued:"#f1c21b", investigating:"#4589ff",
+                done:"#42be65", failed:"#fa4d56" };
+  for (const t of targets){
+    const p = toPx(t.lat, t.lon);
+    const col = TGT[t.status] || "#f4f4f4";
+    if (t.status === "investigating"){
+      const pulse = 8 + 4*Math.sin(Date.now()/300);
+      ctx.strokeStyle = col; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(p[0],p[1],pulse,0,7); ctx.stroke();
+    }
+    ctx.fillStyle = col;
     ctx.beginPath(); ctx.arc(p[0],p[1],4,0,7); ctx.fill();
     ctx.font = "12px 'IBM Plex Sans', sans-serif";
-    ctx.fillText(`${detection.object_id} ${(detection.confidence*100).toFixed(0)}%`,
+    ctx.fillText(`#${t.index} ${t.object_id} ${(t.confidence*100).toFixed(0)}%`,
                  p[0]+12, p[1]-8);
   }
   for (const [vid, d] of Object.entries(drones)){
@@ -486,6 +564,10 @@ function pick(which, label){ picking = which;
 pickCenter.onclick = () => pick("center","the area center");
 pickA.onclick = () => pick("A","corner A");
 pickB.onclick = () => pick("B","corner B");
+imageryBtn.onclick = () => {
+  imagery = !imagery;
+  imageryBtn.textContent = imagery ? "Imagery on" : "Imagery off";
+};
 
 // ---------- area + mission params ----------
 let areaMode = "center";
@@ -508,6 +590,7 @@ function missionParams(){
   return { area: areaSpec(), agl_m:+agl.value, leg_spacing_m:+spacing.value,
     capture_every_m:+capm.value, speed_m_s:+speed.value,
     object_query: objq.value, min_confidence:+minconf.value,
+    target_separation_m:+sep.value,
     orbit_agl_m:+oagl.value, orbit_radius_m:+oradius.value,
     orbit_count:+ocount.value, max_duration_s: 600 };
 }
@@ -543,6 +626,11 @@ holdAll.onclick = () => send({cmd:"all", command:"hold"});
 // ---------- vehicle tiles + video panels ----------
 function onHello(m){
   VEHICLES = m.vehicles;
+  if (m.mission){
+    targets = m.mission.targets || [];
+    setState(m.mission.state || "idle");
+    renderTargets();
+  }
   VEHICLES.forEach((v,i) => COLORS[v] = PALETTE[i % PALETTE.length]);
   cards.innerHTML = ""; videos.innerHTML = "";
   VEHICLES.forEach(vid => {
@@ -561,6 +649,10 @@ function onHello(m){
         <span class="v" id="armed-${vid}">–</span>
         <span class="v" id="busy-${vid}">–</span>
         <span class="v" id="src-${vid}">–</span>
+        <span class="k">clock Δ</span><span class="k"></span><span class="k"></span>
+        <span class="v" id="skew-${vid}" title="node clock minus GCS clock; large values mean the time subsystem needs attention, not the link">–</span>
+        <span class="v"></span>
+        <span class="v"></span>
       </div>
       <div class="btnrow" style="margin-top:12px">
         <button class="cds-btn cds-btn--danger-tertiary"
@@ -622,6 +714,13 @@ function onTelemetry(m){
     link.textContent = `link ${age.toFixed(0)} s`;
     link.className = "cds-tag " + (age < 4 ? "cds-tag--green"
       : age < 10 ? "cds-tag--yellow" : "cds-tag--red"); }
+  const skew = document.getElementById(`skew-${vid}`);
+  if (skew && m.skew_s != null){
+    const a = Math.abs(m.skew_s);
+    skew.textContent = a < 120 ? `${m.skew_s > 0 ? "−" : "+"}${a.toFixed(0)} s`
+      : `${m.skew_s > 0 ? "−" : "+"}${(a/60).toFixed(1)} min`;
+    skew.style.color = a < 5 ? "" : "var(--cds-support-warning)";
+  }
 }
 function onStale(m){
   const d = drones[m.vehicle]; if (d) d.stale = true;
@@ -654,12 +753,40 @@ function onVideoStats(m){
 
 // ---------- events / mission state ----------
 const STATE_TAG = { idle:"cds-tag--gray", searching:"cds-tag--blue",
-  dispatching:"cds-tag--yellow", investigating:"cds-tag--yellow",
+  investigating:"cds-tag--yellow",
   done:"cds-tag--green", aborted:"cds-tag--red" };
 function setState(state){
   mstate.textContent = state;
   mstate.className = "cds-tag " + (STATE_TAG[state] ?? "cds-tag--gray");
 }
+// ---------- targets panel ----------
+const TGT_TAG = { queued:"cds-tag--yellow", investigating:"cds-tag--blue",
+                  done:"cds-tag--green", failed:"cds-tag--red" };
+function renderTargets(){
+  mtargets.textContent = targets.length;
+  if (!targets.length){
+    detCard.textContent = mstate.textContent === "searching"
+      ? "searching…" : "none yet";
+    thumb.style.display = "none";
+    return;
+  }
+  detCard.innerHTML = targets.map(t => `
+    <div style="display:flex;justify-content:space-between;align-items:center;
+                margin-bottom:8px">
+      <span><b>#${t.index} ${t.object_id}</b> · ${(t.confidence*100).toFixed(1)}%
+        <div class="mono">${t.lat.toFixed(6)}, ${t.lon.toFixed(6)}</div>
+        ${t.artifacts && t.artifacts.length ? `<a target="_blank"
+          href="/artifact?name=${encodeURIComponent(t.artifacts[0])}">IUAS capture ↗</a>` : ""}
+      </span>
+      <span class="cds-tag ${TGT_TAG[t.status]||'cds-tag--gray'}">${t.status}</span>
+    </div>`).join("");
+  const latest = targets[targets.length-1];
+  if (latest && latest.frame){
+    thumb.src = `/artifact?name=${encodeURIComponent(latest.frame)}`;
+    thumb.style.display = "block";
+  }
+}
+
 function onEvent(m){
   const line = document.createElement("div");
   line.className = "n";
@@ -674,26 +801,48 @@ function onEvent(m){
   log.prepend(line);
   while (log.children.length > 250) log.lastChild.remove();
 
-  if (m.kind === "mission.started"){ setState("searching"); detection = null;
-    thumb.style.display = "none"; detCard.textContent = "searching…"; }
-  if (m.kind === "mission.target_found"){
-    setState("dispatching");
-    detection = { lat:m.lat, lon:m.lon, confidence:m.confidence, object_id:m.object_id };
-    detCard.innerHTML = `<b>${m.object_id}</b> · ${(m.confidence*100).toFixed(1)}%
-      <div class="mono">${m.lat.toFixed(6)}, ${m.lon.toFixed(6)}</div>`;
-    thumb.src = `/artifact?name=${encodeURIComponent(m.frame)}`;
-    thumb.style.display = "block";
+  const byIndex = i => targets.find(x => x.index === i);
+  switch (m.kind){
+    case "mission.started":
+      setState("searching"); targets = []; renderTargets(); break;
+    case "mission.target_found":
+      targets.push({ index:m.index, object_id:m.object_id,
+        confidence:m.confidence, lat:m.lat, lon:m.lon, frame:m.frame,
+        status:"queued", artifacts:[] });
+      renderTargets(); break;
+    case "target.updated": {
+      const tg = byIndex(m.index);
+      if (tg){ tg.confidence = m.confidence; tg.lat = m.lat; tg.lon = m.lon;
+               tg.frame = m.frame; renderTargets(); }
+      break; }
+    case "target.dispatch": {
+      const tg = byIndex(m.index);
+      if (tg){ tg.status = "investigating"; renderTargets(); }
+      break; }
+    case "target.completed":
+    case "target.failed": {
+      const tg = byIndex(m.index);
+      if (tg){ tg.status = m.kind === "target.completed" ? "done" : "failed";
+               tg.artifacts = m.artifacts || []; renderTargets(); }
+      break; }
+    case "mission.completed":
+      setState("done"); renderTargets(); break;
+    case "mission.search_finished":
+      // raster done; if targets remain, the IUAS queue is still draining
+      if (targets.some(t => t.status === "queued" || t.status === "investigating"))
+        setState("investigating");
+      break;
+    case "mission.search_failed":
+    case "mission.search_timeout":
+      // backend still drains/completes the queue; tag reflects the phase
+      if (!targets.length) setState("done");
+      break;
+    case "command.sent":
+      // operator stop of the searcher: reflect the abort immediately
+      if (m.vehicle === VEHICLES[0] && mstate.textContent === "searching")
+        setState("aborted");
+      break;
   }
-  if (m.kind === "mission.dispatch") setState("investigating");
-  if (m.kind === "mission.completed"){
-    setState("done");
-    if (m.artifacts && m.artifacts.length)
-      detCard.innerHTML += `<div><a target="_blank"
-        href="/artifact?name=${encodeURIComponent(m.artifacts[0])}">IUAS capture ↗</a></div>`;
-  }
-  if (["mission.search_finished","mission.search_failed","mission.search_timeout",
-       "mission.investigate_failed","mission.investigate_timeout"].includes(m.kind))
-    setState("done");
 }
 
 resize(); connect(); draw();

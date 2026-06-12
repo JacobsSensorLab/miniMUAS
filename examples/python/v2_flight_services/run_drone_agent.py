@@ -42,6 +42,7 @@ from contracts import (
     FlightCommandResult,
     GeoPoint,
     InvestigatePointRequest,
+    Pose,
     RasterSearchRequest,
     RasterSearchResult,
     SearchStatus,
@@ -50,11 +51,12 @@ from contracts import (
     VideoStatus,
     gps_time_ns,
     mission_frame_name,
+    mission_sensor_name,
     vehicle_flight_service,
     vehicle_search_status_name,
     vehicle_telemetry_live_name,
     vehicle_telemetry_state_name,
-    vehicle_video_frame_name,
+    vehicle_video_live_name,
     vehicle_video_service,
     vehicle_video_status_name,
 )
@@ -511,7 +513,13 @@ def main() -> int:
         video_status_pub.publish(status.to_bytes())
 
     def video_loop() -> None:
-        frame_producers: list[object] = []
+        # Live video is latest-wins: every frame republishes the SAME
+        # well-known name with a new version and short freshness. Keeping
+        # exactly one previous producer alive covers fetches in flight;
+        # anything older is stopped — no history tail, so a consumer can
+        # never accumulate a playback backlog.
+        prev = None
+        curr = None
         while True:
             if not video_cfg["enabled"]:
                 time.sleep(0.25)
@@ -524,20 +532,22 @@ def main() -> int:
             )
             if jpeg is not None:
                 video_cfg["seq"] += 1
-                name = vehicle_video_frame_name(vehicle_id, video_cfg["seq"])
+                payload = video_cfg["seq"].to_bytes(8, "big") + jpeg
                 try:
-                    producer = publish_segmented(name, jpeg, freshness_ms=2000)
-                    frame_producers.append(producer)
-                    # keep a short tail of live frames; stop older ones
-                    while len(frame_producers) > 10:
-                        old = frame_producers.pop(0)
+                    producer = publish_segmented(
+                        vehicle_video_live_name(vehicle_id),
+                        payload,
+                        freshness_ms=300,
+                    )
+                    if prev is not None:
                         try:
-                            old.stop()
+                            prev.stop()
                         except Exception:
                             pass
+                    prev, curr = curr, producer
                 except Exception as exc:
                     print_json("agent.video.publish_failed", error=str(exc))
-                if video_cfg["seq"] % 25 == 0:
+                if video_cfg["seq"] % 50 == 1:
                     publish_video_status()
             delay = (1.0 / max(video_cfg["fps"], 0.5)) - (time.monotonic() - t0)
             if delay > 0:
@@ -805,6 +815,89 @@ def main() -> int:
                 )
             return AckDecision(status=True, message=compiled.mode)
 
+        def _sim_investigate(request: InvestigatePointRequest):
+            """Fly the investigation on the agent's own sim vehicle.
+
+            investigate_plan's internal executor simulates a *separate*
+            vehicle, which completes in milliseconds and never moves the
+            telemetry the dashboard watches. Driving SimFlightBackend
+            instead makes the bench IUAS visibly take off, transit, and
+            orbit at real speed on the map.
+            """
+            import types
+            from contracts import FlightTaskResult, SensorArtifact
+
+            started = gps_time_ns()
+            tgt = request.target
+            agl = request.approach_alt_m
+            radius = max(request.circle_radius_m, 1.0)
+            flight.set_cruise_speed(3.0)
+            status = "completed"
+            if not flight.ensure_airborne(agl):
+                status = "failed"
+            else:
+                # orbit entry north of target, then waypoints around it
+                steps_per_orbit = 12
+                total = max(1, int(round(request.circle_count * steps_per_orbit)))
+                for k in range(total + 1):
+                    if abort.is_set():
+                        status = "aborted"
+                        break
+                    ang = 2.0 * math.pi * k / steps_per_orbit
+                    dn = radius * math.cos(ang)
+                    de = radius * math.sin(ang)
+                    lat = tgt.lat_deg + dn / EARTH_M_PER_DEG_LAT
+                    lon = tgt.lon_deg + de / _m_per_deg_lon(tgt.lat_deg)
+                    flight.goto(lat, lon, agl)
+                    settle = time.monotonic() + 30
+                    while not flight.at_target(lat, lon, agl, tol_m=0.8):
+                        if abort.is_set() or time.monotonic() > settle:
+                            break
+                        time.sleep(0.2)
+            # capture from the orbit (whatever the camera sees on the bench)
+            here = flight.position()
+            artifact_time = gps_time_ns()
+            artifact = SensorArtifact(
+                data_name=mission_sensor_name(
+                    request.mission_id, vehicle_id, "front", "frame",
+                    artifact_time, 1,
+                ),
+                kind="image/jpeg",
+                gps_time_ns=artifact_time,
+                pose=Pose(
+                    position=GeoPoint(
+                        lat_deg=here[0], lon_deg=here[1], alt_m=here[2]
+                    ),
+                    yaw_deg=0.0,
+                ),
+                metadata={"target_id": request.source_detection_id},
+            )
+            payload = camera.capture_frame_payload(
+                mission_id=request.mission_id,
+                vehicle_id=vehicle_id,
+                sensor_id="front",
+                gps_time_ns=artifact_time,
+                metadata={"target_id": request.source_detection_id},
+            )
+            result = FlightTaskResult(
+                task_id=(
+                    f"{vehicle_id}-investigate-{request.source_detection_id}"
+                ),
+                status=status,
+                started_at_gps_ns=started,
+                completed_at_gps_ns=gps_time_ns(),
+                artifacts=[artifact] if status != "failed" else [],
+                notes="sim-circle-mode",
+            )
+            return types.SimpleNamespace(
+                result=result,
+                artifact_payloads=(
+                    [payload] if status != "failed" else []
+                ),
+                mode="sim-circle-mode",
+                command_log=[],
+            )
+
         @provider.handler(investigate_service)
         def investigate(payload: bytes) -> bytes:
             request = InvestigatePointRequest.from_bytes(payload)
@@ -844,13 +937,7 @@ def main() -> int:
                         frame_source=camera,
                     )
                 else:
-                    outcome = investigate_plan.execute_investigation(
-                        request,
-                        vehicle_id=vehicle_id,
-                        native_orbit=True,
-                        uas_ipbrc_root=uas_root,
-                        frame_source=camera,
-                    )
+                    outcome = _sim_investigate(request)
                 for artifact, art_payload in zip(
                     outcome.result.artifacts, outcome.artifact_payloads
                 ):

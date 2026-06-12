@@ -344,6 +344,14 @@ def vehicle_video_frame_name(vehicle_id: str, seq: int) -> str:
     return f"/muas/v2/{vehicle_id}/video/{seq}"
 
 
+def vehicle_video_live_name(vehicle_id: str) -> str:
+    """Well-known live-video name: republished per frame, fetched by base
+    name so version discovery always returns the NEWEST frame (live video
+    must never queue — latest-wins, not sequence playback). Payload is an
+    8-byte big-endian seq header followed by the JPEG."""
+    return f"/muas/v2/{vehicle_id}/video/live"
+
+
 def vehicle_video_status_name(vehicle_id: str) -> str:
     """Data name where a vehicle publishes its video stream status."""
     return f"/muas/v2/{vehicle_id}/video/status"

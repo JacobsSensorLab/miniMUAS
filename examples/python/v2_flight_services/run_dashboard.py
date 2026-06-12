@@ -38,6 +38,7 @@ import argparse
 import asyncio
 import base64
 import json
+import math
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -61,9 +62,8 @@ from contracts import (
     vehicle_flight_service,
     vehicle_search_status_name,
     vehicle_telemetry_live_name,
-    vehicle_video_frame_name,
+    vehicle_video_live_name,
     vehicle_video_service,
-    vehicle_video_status_name,
 )
 from dataplane import FRAME_CONTENT_TYPE, fetch_segmented, frame_body
 from raster import build_raster, estimate_duration_s
@@ -86,7 +86,37 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to dashboard.html (default: alongside this script)",
     )
+    parser.add_argument(
+        "--tiles-dir",
+        default="/var/lib/minimuas/tiles",
+        help="Local satellite tile cache served at /tiles/{z}/{x}/{y}",
+    )
+    parser.add_argument(
+        "--tile-upstream",
+        default=(
+            "https://server.arcgisonline.com/ArcGIS/rest/services/"
+            "World_Imagery/MapServer/tile/{z}/{y}/{x}"
+        ),
+        help=(
+            "Upstream tile URL template ({z}/{x}/{y} placeholders). When a "
+            "tile is missing locally and the upstream is reachable (bench "
+            "with internet), it is fetched once and cached — bench panning "
+            "warms the cache the offline field deployment serves from. "
+            "Empty string disables proxying (pure offline)."
+        ),
+    )
     return parser
+
+
+_M_PER_DEG_LAT = 111_111.0
+
+
+def _dist_m(lat_a, lon_a, lat_b, lon_b) -> float:
+    dn = (lat_a - lat_b) * _M_PER_DEG_LAT
+    de = (lon_a - lon_b) * _M_PER_DEG_LAT * max(
+        math.cos(math.radians((lat_a + lat_b) / 2.0)), 1e-6
+    )
+    return math.hypot(dn, de)
 
 
 class Dashboard:
@@ -98,19 +128,32 @@ class Dashboard:
         self.executor = ThreadPoolExecutor(max_workers=8)
         self.clients: set = set()
 
-        # mission state machine
+        # mission state machine (multi-target):
+        #   searching: raster in progress; every deduped hit becomes a
+        #     target and the search CONTINUES — the IUAS works the target
+        #     queue in parallel, one investigation at a time
+        #   investigating: raster finished, queue still draining
+        #   done: raster finished and every target investigated
         self.mission = {
-            "state": "idle",          # idle|searching|dispatching|investigating|done|aborted
+            "state": "idle",   # idle|searching|investigating|done|aborted
             "mission_id": "",
-            "params": {},             # last committed mission params (UI dict)
-            "detection": None,        # {lat, lon, confidence, object_id, frame}
-            "investigation": None,    # result dict
+            "params": {},
+            "search_done": False,
+            "targets": [],      # {index, object_id, confidence, lat, lon,
+                                #  frame, status: queued|investigating|done|
+                                #  failed, artifacts: []}
         }
+        self.targets_lock = threading.Lock()
         self.seen_frames: set[str] = set()
         self.detects_pending = 0
         self.detects_done = 0
         self.video_relays: dict[str, dict] = {}  # vid -> {"enabled": bool, "seq": int}
         self.telemetry_age: dict[str, float] = {}
+        # link health is measured on OUR clock only: cross-node wall-clock
+        # differencing just reports clock skew on an RTC-less fleet (clocks
+        # are set from GPS/FC/HTTPS-Date and are never aligned to better
+        # than seconds-to-minutes). vid -> {last_ns, changed_mono}
+        self.sample_state: dict[str, dict] = {}
 
     # ---- WS plumbing ------------------------------------------------------
 
@@ -154,13 +197,25 @@ class Dashboard:
                 vehicle_telemetry_live_name(vid), timeout_ms=800
             )
             sample = TelemetrySample.from_bytes(payload)
-            age_s = max(0.0, (gps_time_ns() - sample.gps_time_ns) / 1e9)
-            self.telemetry_age[vid] = time.monotonic()
+            now = time.monotonic()
+            state = self.sample_state.setdefault(
+                vid, {"last_ns": None, "changed_mono": now}
+            )
+            if sample.gps_time_ns != state["last_ns"]:
+                state["last_ns"] = sample.gps_time_ns
+                state["changed_mono"] = now
+            # freshness on the dashboard's own clock: seconds since the
+            # last NEW sample was observed (skew-immune)
+            age_s = now - state["changed_mono"]
+            # clock skew, reported separately as a time-subsystem diagnostic
+            skew_s = (gps_time_ns() - sample.gps_time_ns) / 1e9
+            self.telemetry_age[vid] = now
             self._send_loop({
                 "type": "telemetry",
                 "vehicle": vid,
                 "sample": json.loads(payload.decode()),
                 "age_s": round(age_s, 1),
+                "skew_s": round(skew_s, 1),
             })
         except Exception:
             # stale-marker danger: tell the UI explicitly how old we are
@@ -231,9 +286,9 @@ class Dashboard:
             min_conf = float(params.get("min_confidence", 0.3))
             if (
                 detection.confidence >= min_conf
-                and self.mission["state"] == "searching"
+                and self.mission["state"] in ("searching", "investigating")
             ):
-                self._on_target_found(detection, frame_name)
+                self._on_detect_hit(detection, frame_name)
 
         def on_timeout(_request_id: str) -> None:
             self.detects_pending -= 1
@@ -248,34 +303,110 @@ class Dashboard:
             timeout_ms=self.args.detect_timeout_ms,
         )
 
-    # ---- state machine transitions --------------------------------------------
+    # ---- multi-target machinery -------------------------------------------
 
-    def _on_target_found(self, detection: DetectionResponse, frame: str) -> None:
-        self.mission["state"] = "dispatching"
-        self.mission["detection"] = {
-            "object_id": detection.object_id,
-            "confidence": detection.confidence,
-            "lat": detection.estimate.lat_deg,
-            "lon": detection.estimate.lon_deg,
-            "frame": frame,
-        }
+    def _on_detect_hit(self, detection: DetectionResponse, frame: str) -> None:
+        """Dedupe by ground distance, then queue; the search NEVER stops.
+
+        The same physical object is detected in many consecutive frames as
+        the raster sweeps over it — hits within `target_separation_m` of
+        an existing target update that target (keep the best-confidence
+        estimate) instead of spawning duplicate investigations.
+        """
+        sep = float(
+            self.mission["params"].get("target_separation_m", 5.0)
+        )
+        lat, lon = detection.estimate.lat_deg, detection.estimate.lon_deg
+        with self.targets_lock:
+            for target in self.mission["targets"]:
+                if _dist_m(target["lat"], target["lon"], lat, lon) <= sep:
+                    if detection.confidence > target["confidence"]:
+                        target["confidence"] = detection.confidence
+                        target["frame"] = frame
+                        if target["status"] == "queued":
+                            # not yet flown: refine the position too
+                            target["lat"], target["lon"] = lat, lon
+                        self.event(
+                            "target.updated",
+                            index=target["index"],
+                            confidence=round(target["confidence"], 4),
+                            lat=target["lat"], lon=target["lon"],
+                            frame=frame,
+                        )
+                    return
+            target = {
+                "index": len(self.mission["targets"]),
+                "object_id": detection.object_id,
+                "confidence": detection.confidence,
+                "lat": lat, "lon": lon,
+                "frame": frame,
+                "status": "queued",
+                "artifacts": [],
+            }
+            self.mission["targets"].append(target)
         self.event(
             "mission.target_found",
-            **self.mission["detection"],
+            index=target["index"],
+            object_id=target["object_id"],
+            confidence=round(target["confidence"], 4),
+            lat=lat, lon=lon, frame=frame,
         )
-        # stop the searcher where it is; operator decides RTL later
-        self._flight_command(self.args.wuas_id, "hold")
-        self._dispatch_iuas(detection)
+        self._pump_dispatch()
 
-    def _dispatch_iuas(self, detection: DetectionResponse) -> None:
+    def _pump_dispatch(self) -> None:
+        """Send the next queued target to the IUAS if it's idle."""
+        with self.targets_lock:
+            if self.mission["state"] not in ("searching", "investigating"):
+                return  # operator aborted: stop draining the queue
+            if any(
+                t["status"] == "investigating"
+                for t in self.mission["targets"]
+            ):
+                return
+            target = next(
+                (t for t in self.mission["targets"] if t["status"] == "queued"),
+                None,
+            )
+            if target is None:
+                self._maybe_complete_locked()
+                return
+            target["status"] = "investigating"
+        self._dispatch_iuas(target)
+
+    def _maybe_complete_locked(self) -> None:
+        """Caller holds targets_lock. Mission ends when the raster is done
+        and no target is queued or in flight."""
+        if not self.mission["search_done"]:
+            return
+        if self.mission["state"] not in ("searching", "investigating"):
+            return
+        if any(
+            t["status"] in ("queued", "investigating")
+            for t in self.mission["targets"]
+        ):
+            self.mission["state"] = "investigating"
+            return
+        self.mission["state"] = "done"
+        targets = self.mission["targets"]
+        self._send_loop({"type": "event", "kind": "mission.completed",
+                         "t": time.time(),
+                         "targets": len(targets),
+                         "investigated": sum(
+                             1 for t in targets if t["status"] == "done"
+                         )})
+        print_json(
+            "dash.mission.completed",
+            targets=len(targets),
+            investigated=sum(1 for t in targets if t["status"] == "done"),
+        )
+
+    def _dispatch_iuas(self, target: dict) -> None:
         params = self.mission["params"]
         request = InvestigatePointRequest(
             mission_id=self.mission["mission_id"],
-            source_detection_id=detection.object_id,
+            source_detection_id=f"{target['object_id']}-{target['index']}",
             target=GeoPoint(
-                lat_deg=detection.estimate.lat_deg,
-                lon_deg=detection.estimate.lon_deg,
-                alt_m=0.0,
+                lat_deg=target["lat"], lon_deg=target["lon"], alt_m=0.0
             ),
             approach_alt_m=float(params.get("orbit_agl_m", 8.0)),
             standoff_m=float(params.get("orbit_radius_m", 6.0)),
@@ -283,9 +414,9 @@ class Dashboard:
             circle_count=float(params.get("orbit_count", 1.0)),
             sensor_plan=["front"],
         )
-        self.mission["state"] = "investigating"
         self.event(
-            "mission.dispatch",
+            "target.dispatch",
+            index=target["index"],
             vehicle=self.args.iuas_id,
             lat=request.target.lat_deg,
             lon=request.target.lon_deg,
@@ -293,30 +424,33 @@ class Dashboard:
             agl_m=request.approach_alt_m,
         )
 
+        def finish(status: str, artifacts: list[str], note: str = "") -> None:
+            with self.targets_lock:
+                target["status"] = status
+                target["artifacts"] = artifacts
+            self.event(
+                "target.completed" if status == "done" else "target.failed",
+                index=target["index"],
+                artifacts=artifacts,
+                note=note,
+            )
+            self._pump_dispatch()
+
         def on_response(response) -> None:
             if not response.status:
-                self.mission["state"] = "done"
-                self.event("mission.investigate_failed", error=response.error)
+                finish("failed", [], note=response.error)
                 return
             from contracts import FlightTaskResult
 
             result = FlightTaskResult.from_bytes(response.payload)
-            artifacts = [a.data_name for a in result.artifacts]
-            self.mission["state"] = "done"
-            self.mission["investigation"] = {
-                "task_id": result.task_id,
-                "status": result.status,
-                "artifacts": artifacts,
-            }
-            self.event(
-                "mission.completed",
-                status=result.status,
-                artifacts=artifacts,
+            finish(
+                "done" if result.status == "completed" else "failed",
+                [a.data_name for a in result.artifacts],
+                note=result.notes,
             )
 
         def on_timeout(_request_id: str) -> None:
-            self.mission["state"] = "done"
-            self.event("mission.investigate_timeout")
+            finish("failed", [], note="timeout")
 
         self.user.request_service_async(
             vehicle_flight_service(self.args.iuas_id, "investigate"),
@@ -329,17 +463,18 @@ class Dashboard:
     # ---- operator commands (from the WS) ----------------------------------------
 
     def start_mission(self, params: dict) -> None:
-        if self.mission["state"] in ("searching", "dispatching", "investigating"):
+        if self.mission["state"] in ("searching", "investigating"):
             self.event("mission.rejected", reason=f"state={self.mission['state']}")
             return
         mission_id = f"mission-{int(time.time())}"
-        self.mission.update(
-            state="searching",
-            mission_id=mission_id,
-            params=params,
-            detection=None,
-            investigation=None,
-        )
+        with self.targets_lock:
+            self.mission.update(
+                state="searching",
+                mission_id=mission_id,
+                params=params,
+                search_done=False,
+                targets=[],
+            )
         self.seen_frames.clear()
         self.detects_pending = 0
         self.detects_done = 0
@@ -365,26 +500,37 @@ class Dashboard:
         )
 
         def on_response(response) -> None:
-            if self.mission["state"] == "searching":
-                # search ended without a dispatch: report its own outcome
-                if response.status:
-                    from contracts import RasterSearchResult
+            if response.status:
+                from contracts import RasterSearchResult
 
-                    result = RasterSearchResult.from_bytes(response.payload)
-                    self.mission["state"] = "done"
-                    self.event(
-                        "mission.search_finished",
-                        status=result.status,
-                        frames=result.frames_captured,
-                    )
-                else:
-                    self.mission["state"] = "done"
-                    self.event("mission.search_failed", error=response.error)
+                result = RasterSearchResult.from_bytes(response.payload)
+                self.event(
+                    "mission.search_finished",
+                    status=result.status,
+                    frames=result.frames_captured,
+                )
+            else:
+                self.event("mission.search_failed", error=response.error)
+            with self.targets_lock:
+                self.mission["search_done"] = True
+                if self.mission["state"] == "searching" and any(
+                    t["status"] in ("queued", "investigating")
+                    for t in self.mission["targets"]
+                ):
+                    self.mission["state"] = "investigating"
+            # drain (or immediately complete) the target queue
+            self._pump_dispatch()
 
         def on_timeout(_request_id: str) -> None:
-            if self.mission["state"] == "searching":
-                self.mission["state"] = "done"
-                self.event("mission.search_timeout")
+            self.event("mission.search_timeout")
+            with self.targets_lock:
+                self.mission["search_done"] = True
+                if self.mission["state"] == "searching" and any(
+                    t["status"] in ("queued", "investigating")
+                    for t in self.mission["targets"]
+                ):
+                    self.mission["state"] = "investigating"
+            self._pump_dispatch()
 
         self.user.request_service_async(
             vehicle_flight_service(self.args.wuas_id, "raster-search"),
@@ -453,26 +599,34 @@ class Dashboard:
         )
 
     def _video_relay(self, vid: str, relay: dict) -> None:
-        """Chase /video/<seq> and push JPEG frames over the WS as binary.
+        """Poll the vehicle's latest-wins live name and forward new frames.
 
-        Binary message layout: 1 byte vehicle index + JPEG bytes.
+        fetch_segmented on the base name runs version discovery, so every
+        poll returns the NEWEST published frame — latency is one fetch,
+        independent of how long the stream has run. The 8-byte seq header
+        drops duplicates (same version fetched twice, possibly from the
+        local NFD content store within the freshness window) and the rare
+        out-of-order race during producer handover. Binary WS message:
+        1 byte vehicle index + JPEG.
         """
-        misses = 0
+        name = vehicle_video_live_name(vid)
+        last_seq = 0
         window_t0 = time.monotonic()
         window_bytes = 0
         window_frames = 0
         while relay["enabled"]:
-            seq = relay["seq"] + 1
             try:
-                payload = fetch_segmented(
-                    vehicle_video_frame_name(vid, seq), timeout_ms=1500
-                )
-                relay["seq"] = seq
-                misses = 0
-                window_bytes += len(payload)
+                payload = fetch_segmented(name, timeout_ms=1000)
+                seq = int.from_bytes(payload[:8], "big")
+                if seq <= last_seq and seq != 0:
+                    time.sleep(0.08)  # nothing new yet; cheap local re-poll
+                    continue
+                last_seq = seq
+                jpeg = payload[8:]
+                window_bytes += len(jpeg)
                 window_frames += 1
                 index = self.vehicles.index(vid)
-                self._send_loop(bytes([index]) + payload)
+                self._send_loop(bytes([index]) + jpeg)
                 now = time.monotonic()
                 if now - window_t0 >= 2.0:
                     self._send_loop({
@@ -484,20 +638,10 @@ class Dashboard:
                     })
                     window_t0, window_bytes, window_frames = now, 0, 0
             except Exception:
-                misses += 1
-                if misses % 5 == 0:
-                    # resync from the published status (stream may have
-                    # restarted or jumped)
-                    try:
-                        status = VideoStatus.from_bytes(
-                            fetch_segmented(
-                                vehicle_video_status_name(vid), timeout_ms=800
-                            )
-                        )
-                        relay["seq"] = max(relay["seq"], status.seq)
-                    except Exception:
-                        pass
-                time.sleep(0.2)
+                # stream gap (producer restarting, radio loss): brief pause,
+                # then re-poll — the next success is the live frame, never
+                # a backlog
+                time.sleep(0.15)
         relay["thread_alive"] = False
 
     def fetch_artifact_jpeg(self, name: str) -> bytes | None:
@@ -533,13 +677,16 @@ class Dashboard:
             vid = message.get("vehicle", "")
             command = message.get("command", "")
             if command in ("rtl", "land", "hold") and vid in self.vehicles:
-                if self.mission["state"] == "searching" and vid == self.args.wuas_id:
+                if (
+                    self.mission["state"] == "searching"
+                    and vid == self.args.wuas_id
+                ):
                     self.mission["state"] = "aborted"
                 self._flight_command(vid, command)
         elif kind == "all":
             command = message.get("command", "")
             if command in ("rtl", "land", "hold"):
-                if self.mission["state"] == "searching":
+                if self.mission["state"] in ("searching", "investigating"):
                     self.mission["state"] = "aborted"
                 for vid in self.vehicles:
                     self._flight_command(vid, command)
@@ -571,6 +718,50 @@ async def run_web(dash: Dashboard, args) -> None:
             return web.Response(status=404, text="artifact unavailable")
         return web.Response(body=body, content_type="image/jpeg")
 
+    async def tile(request):
+        """Serve satellite tiles: local cache first, then (if configured
+        and reachable) the upstream — caching what it fetches so the field
+        deployment serves the same tiles with no internet."""
+        try:
+            z = int(request.match_info["z"])
+            x = int(request.match_info["x"])
+            y = int(request.match_info["y"])
+        except (KeyError, ValueError):
+            return web.Response(status=400)
+        if not (0 <= z <= 20):
+            return web.Response(status=400)
+        path = Path(args.tiles_dir) / str(z) / str(x) / f"{y}.jpg"
+        if path.exists():
+            return web.Response(
+                body=path.read_bytes(),
+                content_type="image/jpeg",
+                headers={"Cache-Control": "max-age=86400"},
+            )
+        if args.tile_upstream:
+            import aiohttp
+
+            url = args.tile_upstream.format(z=z, x=x, y=y)
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        url, timeout=aiohttp.ClientTimeout(total=4)
+                    ) as upstream:
+                        if upstream.status == 200:
+                            body = await upstream.read()
+                            try:
+                                path.parent.mkdir(parents=True, exist_ok=True)
+                                path.write_bytes(body)
+                            except Exception:
+                                pass  # cache write failure isn't fatal
+                            return web.Response(
+                                body=body,
+                                content_type="image/jpeg",
+                                headers={"Cache-Control": "max-age=86400"},
+                            )
+            except Exception:
+                pass  # offline / filtered: fall through to 404 -> grid
+        return web.Response(status=404)
+
     async def ws_handler(request):
         ws = web.WebSocketResponse(heartbeat=20)
         await ws.prepare(request)
@@ -579,7 +770,9 @@ async def run_web(dash: Dashboard, args) -> None:
             "type": "hello",
             "vehicles": dash.vehicles,
             "mission": {
-                k: v for k, v in dash.mission.items() if k != "params"
+                "state": dash.mission["state"],
+                "mission_id": dash.mission["mission_id"],
+                "targets": dash.mission["targets"],
             },
         }))
         try:
@@ -601,6 +794,7 @@ async def run_web(dash: Dashboard, args) -> None:
     app = web.Application()
     app.router.add_get("/", index)
     app.router.add_get("/artifact", artifact)
+    app.router.add_get("/tiles/{z}/{x}/{y}", tile)
     app.router.add_get("/ws", ws_handler)
     runner = web.AppRunner(app)
     await runner.setup()
