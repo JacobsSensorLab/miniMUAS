@@ -410,6 +410,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--search-frame-height", type=int, default=400)
     parser.add_argument("--search-frame-quality", type=int, default=80)
+    parser.add_argument(
+        "--max-range-m", type=float, default=300.0,
+        help="Field-safety guard: reject search areas / investigate "
+        "targets whose reference point is farther than this from the "
+        "vehicle's current position. A typo'd rectangle or a wild "
+        "geo-estimate must be rejected at the ack, never flown.",
+    )
+    parser.add_argument(
+        "--max-agl-m", type=float, default=20.0,
+        help="Field-safety guard: reject requested altitudes above this.",
+    )
     return parser
 
 
@@ -630,6 +641,21 @@ def main() -> int:
             request = RasterSearchRequest.from_bytes(payload)
             if busy["task"]:
                 return AckDecision(status=False, message=f"busy:{busy['task']}")
+            if not (0.5 <= request.agl_m <= args.max_agl_m):
+                return AckDecision(
+                    status=False,
+                    message=f"agl {request.agl_m} outside 0.5..{args.max_agl_m}",
+                )
+            from raster import resolve_area
+
+            center_lat, center_lon, _w, _h = resolve_area(request.area)
+            here = flight.position()
+            range_m = _dist_m(here[0], here[1], center_lat, center_lon)
+            if range_m > args.max_range_m:
+                return AckDecision(
+                    status=False,
+                    message=f"area {range_m:.0f}m away > {args.max_range_m:.0f}m guard",
+                )
             plan = build_raster(
                 request.area,
                 leg_spacing_m=request.leg_spacing_m,
@@ -806,6 +832,21 @@ def main() -> int:
                 return AckDecision(status=False, message=f"busy:{busy['task']}")
             if request.circle_radius_m <= 0 or request.approach_alt_m <= 0:
                 return AckDecision(status=False, message="invalid request geometry")
+            if request.approach_alt_m > args.max_agl_m:
+                return AckDecision(
+                    status=False,
+                    message=f"agl {request.approach_alt_m} > {args.max_agl_m} guard",
+                )
+            here = flight.position()
+            range_m = _dist_m(
+                here[0], here[1],
+                request.target.lat_deg, request.target.lon_deg,
+            )
+            if range_m > args.max_range_m:
+                return AckDecision(
+                    status=False,
+                    message=f"target {range_m:.0f}m away > {args.max_range_m:.0f}m guard",
+                )
             compiled = investigate_plan.compile_investigation(
                 request, vehicle_id=vehicle_id, profile=active_profile()
             )
