@@ -94,6 +94,7 @@ class YoloOnnxDetector:
         self.conf_threshold = float(conf_threshold)
         self.iou_threshold = float(iou_threshold)
         self.imgsz = int(imgsz)
+        self.last_all_detections: list[Detection] = []
         self.class_filter = (
             {name.strip().lower() for name in class_filter}
             if class_filter
@@ -159,6 +160,7 @@ class YoloOnnxDetector:
             self.iou_threshold,
         )
         detections: list[Detection] = []
+        all_detections: list[Detection] = []
         for index in np.array(indices).reshape(-1):
             class_id = int(class_ids[index])
             label = (
@@ -166,19 +168,24 @@ class YoloOnnxDetector:
                 if 0 <= class_id < len(COCO_NAMES)
                 else f"class-{class_id}"
             )
-            if self.class_filter and label.lower() not in self.class_filter:
-                continue
             x, y, w, h = boxes[index]
             x = max(0, min(x, width - 1))
             y = max(0, min(y, height - 1))
-            detections.append(
-                Detection(
-                    label=label,
-                    confidence=float(confidences[index]),
-                    box_xywh=(x, y, w, h),
-                )
+            detection = Detection(
+                label=label,
+                confidence=float(confidences[index]),
+                box_xywh=(x, y, w, h),
             )
+            all_detections.append(detection)
+            if self.class_filter and label.lower() not in self.class_filter:
+                continue
+            detections.append(detection)
+        all_detections.sort(key=lambda d: d.confidence, reverse=True)
         detections.sort(key=lambda d: d.confidence, reverse=True)
+        # everything the model saw above threshold, pre-class-filter —
+        # essential for diagnosing "empty" results (bad frame vs missed
+        # target class vs filter mismatch)
+        self.last_all_detections = all_detections
         return detections
 
     def describe(self) -> dict[str, Any]:

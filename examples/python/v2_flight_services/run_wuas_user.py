@@ -49,7 +49,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--iuas-id", default="iuas-01")
     parser.add_argument("--mission-id", default="mission-001")
     parser.add_argument("--ack-timeout-ms", type=int, default=300)
-    parser.add_argument("--timeout-ms", type=int, default=5000)
+    # Detect must cover: GCS fetching the frame over the radio (segmented,
+    # ~120KB) + YOLO inference on the C4 (first forward pass is slowest).
+    parser.add_argument("--timeout-ms", type=int, default=30000)
     parser.add_argument("--investigate-timeout-ms", type=int, default=15000)
     parser.add_argument("--artifact-fetch-timeout-ms", type=int, default=5000)
     parser.add_argument("--capability-fetch-timeout-ms", type=int, default=3000)

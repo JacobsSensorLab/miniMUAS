@@ -126,7 +126,30 @@ def main() -> int:
                 "gcs.detection.inference",
                 frame=request.frame.data_name,
                 detections=[d.as_dict() for d in detections],
+                all_classes=[d.as_dict() for d in detector.last_all_detections],
             )
+            # debugging/dashboard breadcrumb: the exact frame as analyzed,
+            # with every above-threshold box drawn (target class in green)
+            try:
+                import cv2
+                annotated = image.copy()
+                for det in detector.last_all_detections:
+                    x, y, w, h = det.box_xywh
+                    hit = det in detections
+                    color = (0, 255, 0) if hit else (0, 165, 255)
+                    cv2.rectangle(annotated, (x, y), (x + w, y + h), color, 2)
+                    cv2.putText(
+                        annotated,
+                        f"{det.label} {det.confidence:.2f}",
+                        (x, max(y - 6, 12)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        color,
+                        2,
+                    )
+                cv2.imwrite("/tmp/muas-last-detect.jpg", annotated)
+            except Exception:
+                pass
             if not detections:
                 return ServiceResponse(status=False, error="no-detection")
             best = detections[0]
