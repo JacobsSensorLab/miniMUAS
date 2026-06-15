@@ -85,6 +85,7 @@ def main() -> int:
     @provider.handler(args.service)
     def detect_object(payload: bytes) -> bytes | ServiceResponse:
         import time as _time
+        import math as _math
         handler_t0 = _time.monotonic()
         request = DetectionRequest.from_bytes(payload)
         print_json(
@@ -152,6 +153,10 @@ def main() -> int:
                 detections=[d.as_dict() for d in detections],
                 all_classes=[d.as_dict() for d in detector.last_all_detections],
                 handler_ms=round((_time.monotonic() - handler_t0) * 1000.0, 1),
+                capture_pose={
+                    "lat": cap_lat, "lon": cap_lon, "agl_m": cap_agl,
+                    "heading_deg": heading,
+                },
             )
             # debugging/dashboard breadcrumb: the exact frame as analyzed,
             # with every above-threshold box drawn (target class in green)
@@ -187,6 +192,30 @@ def main() -> int:
                 heading_deg=heading,
             )
             lat_deg, lon_deg = offset_latlon(cap_lat, cap_lon, north_m, east_m)
+            # In-frame offset magnitude: a nadir single-frame fix is most
+            # trustworthy when the object is near frame center (small
+            # offset) and degrades toward the edges (AGL/heading error is
+            # amplified by the lever arm). Report it so the dashboard can
+            # weight multi-frame detections of the same object — a racquet
+            # seen centered from directly overhead localizes far better
+            # than one glimpsed at the edge of a pass.
+            offset_mag_m = _math.hypot(north_m, east_m)
+            # Full provenance for the estimate: which pixel, at what pose,
+            # produced what ground offset and final fix. With a wide
+            # footprint (e.g. ~10 m at 7 m AGL) the same object is seen
+            # from several capture points; this lets us confirm the
+            # estimate tracks the in-frame pixel, not just the drone
+            # position, when correlating the map marker with ground truth.
+            print_json(
+                "gcs.detection.projection",
+                frame=request.frame.data_name,
+                center_px=[round(best.center_px[0], 1), round(best.center_px[1], 1)],
+                image_px=[width_px, height_px],
+                capture_lat=cap_lat, capture_lon=cap_lon, capture_agl=cap_agl,
+                heading_deg=heading,
+                offset_m={"north": round(north_m, 2), "east": round(east_m, 2)},
+                estimate={"lat": lat_deg, "lon": lon_deg},
+            )
             response = DetectionResponse(
                 mission_id=request.mission_id,
                 object_id=best.label.replace(" ", "-"),
@@ -197,6 +226,7 @@ def main() -> int:
                     best.label.replace(" ", "-"),
                     timestamp_ns,
                 ),
+                offset_m=round(offset_mag_m, 2),
             )
             print_json(
                 "gcs.detection.completed",

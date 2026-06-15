@@ -386,6 +386,26 @@ function setConn(ok){ const c = document.getElementById("conn");
   c.textContent = ok ? "connected" : "offline";
   c.className = "cds-tag " + (ok ? "cds-tag--green" : "cds-tag--red"); }
 
+// ---------- per-vehicle enable gate + manual takeoff ----------
+function setEnabledUI(vid, on){
+  const en = document.getElementById(`en-${vid}`);
+  if (en){ en.classList.toggle("on", on); en.setAttribute("aria-checked", on); }
+  const gate = document.getElementById(`gate-${vid}`);
+  if (gate) gate.style.display = on ? "none" : "";
+  const to = document.querySelector(`button[onclick="cmdTakeoff('${vid}')"]`);
+  if (to) to.disabled = !on;
+}
+// Takeoff is the one flight action that puts an aircraft in the air on a
+// single click, so it carries a confirmation — unlike the safety actions
+// (RTL/Land/Hold), which must stay instant.
+function cmdTakeoff(vid){
+  const input = document.getElementById(`toagl-${vid}`);
+  const agl = input ? +input.value : 5;
+  if (!(agl > 0)) { return; }
+  if (confirm(`Takeoff ${vid} to ${agl} m AGL?\nThe vehicle will arm and climb.`))
+    send({cmd:"flight", vehicle:vid, command:"takeoff", params:{target_agl_m:agl}});
+}
+
 // ---------- map (canvas, local ENU around view center, g100 palette) ----------
 const cv = document.getElementById("map"), ctx = cv.getContext("2d");
 let view = { lat: 35.1208, lon: -89.9347, mppx: 0.18 };
@@ -639,7 +659,11 @@ function onHello(m){
     tile.className = "cds-tile";
     tile.innerHTML = `
       <div class="head"><b><span class="vid-dot" style="background:${COLORS[vid]}"></span>${vid}</b>
-        <span class="cds-tag cds-tag--gray" id="link-${vid}">no link</span></div>
+        <span class="cds-toggle on" id="en-${vid}" role="switch" aria-checked="true"
+              tabindex="0" title="Enable/disable this vehicle. Disabled: no auto-dispatch and no takeoff, but RTL/Land/Hold still work."><span class="lbl">enabled</span><span class="track"></span></span></div>
+      <div class="head" style="margin-bottom:8px">
+        <span class="cds-tag cds-tag--gray" id="link-${vid}">no link</span>
+        <span class="cds-tag cds-tag--gray" id="gate-${vid}" style="display:none">disabled</span></div>
       <div class="kv">
         <span class="k">mode</span><span class="k">AGL</span><span class="k">battery</span>
         <span class="v" id="mode-${vid}">–</span>
@@ -654,7 +678,14 @@ function onHello(m){
         <span class="v"></span>
         <span class="v"></span>
       </div>
-      <div class="btnrow" style="margin-top:12px">
+      <div style="display:flex;gap:8px;align-items:flex-end;margin-top:12px">
+        <div class="field" style="margin:0;flex:0 0 64px">
+          <label for="toagl-${vid}">T/O AGL</label>
+          <input id="toagl-${vid}" type="number" step="0.5" value="5" style="height:24px;padding:0 6px"></div>
+        <button class="cds-btn cds-btn--secondary" style="height:24px;padding:0 8px;font-size:12px;flex:1"
+          onclick="cmdTakeoff('${vid}')">Takeoff</button>
+      </div>
+      <div class="btnrow" style="margin-top:8px">
         <button class="cds-btn cds-btn--danger-tertiary"
           onclick="send({cmd:'flight',vehicle:'${vid}',command:'rtl'})">RTL</button>
         <button class="cds-btn cds-btn--danger-tertiary"
@@ -663,6 +694,17 @@ function onHello(m){
           onclick="send({cmd:'flight',vehicle:'${vid}',command:'hold'})">Hold</button>
       </div>`;
     cards.appendChild(tile);
+    // enable toggle
+    const en = document.getElementById(`en-${vid}`);
+    const enabled0 = !m.enabled || m.enabled[vid] !== false;
+    setEnabledUI(vid, enabled0);
+    const flipEnabled = () => {
+      const now = !en.classList.contains("on");
+      send({cmd:"set_enabled", vehicle:vid, enabled:now});
+      setEnabledUI(vid, now);
+    };
+    en.onclick = flipEnabled;
+    en.onkeydown = e => { if (e.key===" "||e.key==="Enter"){ e.preventDefault(); flipEnabled(); } };
 
     const vp = document.createElement("div");
     vp.className = "cds-tile vidpanel";
@@ -842,6 +884,10 @@ function onEvent(m){
       if (m.vehicle === VEHICLES[0] && mstate.textContent === "searching")
         setState("aborted");
       break;
+    case "vehicle.enabled":
+      setEnabledUI(m.vehicle, true); break;
+    case "vehicle.disabled":
+      setEnabledUI(m.vehicle, false); break;
   }
 }
 

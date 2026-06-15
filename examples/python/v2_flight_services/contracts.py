@@ -227,6 +227,12 @@ class DetectionResponse:
     confidence: float
     estimate: GeoPoint
     evidence_ref: str | None = None
+    # In-frame ground offset (m) from the capture nadir to the detected
+    # object. Small => object was near frame center when captured => the
+    # nadir geo-projection is reliable (little AGL/heading lever-arm
+    # error). The dashboard prefers the SMALLEST-offset sighting of a
+    # confirmed target for its position, not the highest-confidence one.
+    offset_m: float = 0.0
 
     def to_bytes(self) -> bytes:
         return encode_dataclass(self)
@@ -240,6 +246,7 @@ class DetectionResponse:
             confidence=float(value["confidence"]),
             estimate=GeoPoint.from_dict(value["estimate"]),
             evidence_ref=value.get("evidence_ref"),
+            offset_m=float(value.get("offset_m", 0.0)),
         )
 
 
@@ -555,7 +562,7 @@ class RasterSearchResult:
 
 @dataclass(frozen=True)
 class FlightCommandResult:
-    """Response shape for rtl / land / hold service requests."""
+    """Response shape for rtl / land / hold / takeoff service requests."""
 
     vehicle_id: str
     command: str
@@ -574,6 +581,27 @@ class FlightCommandResult:
             status=str(value["status"]),
             message=str(value.get("message", "")),
         )
+
+
+@dataclass(frozen=True)
+class TakeoffRequest:
+    """Arm (if needed) and climb to a target AGL, then position-hold.
+
+    Standalone manual control — distinct from the takeoff embedded in a
+    raster or investigate. Its main use is the AGL-verification rung: send
+    a known altitude, then read it back on the telemetry tile to confirm
+    the vehicle's reported AGL matches reality before trusting autonomy.
+    """
+
+    target_agl_m: float = 5.0
+
+    def to_bytes(self) -> bytes:
+        return encode_dataclass(self)
+
+    @classmethod
+    def from_bytes(cls, payload: bytes) -> "TakeoffRequest":
+        value = decode_json(payload)
+        return cls(target_agl_m=float(value.get("target_agl_m", 5.0)))
 
 
 @dataclass(frozen=True)

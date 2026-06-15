@@ -46,6 +46,7 @@ from contracts import (
     RasterSearchRequest,
     RasterSearchResult,
     SearchStatus,
+    TakeoffRequest,
     TelemetrySample,
     VideoControlRequest,
     VideoStatus,
@@ -157,6 +158,11 @@ class SimFlightBackend:
             time.sleep(0.2)
         return False
 
+    def takeoff(self, agl: float) -> bool:
+        # standalone manual takeoff: same path as ensure_airborne for the
+        # kinematic sim (arm, climb to agl, hold).
+        return self.ensure_airborne(agl)
+
     def goto(self, lat: float, lon: float, agl: float) -> None:
         with self._lock:
             self.mode = "GUIDED"
@@ -201,7 +207,24 @@ class SimFlightBackend:
 
 
 class MavlinkFlightBackend:
-    """Real-autopilot backend over the validated LoggingFlightLink."""
+    """Real-autopilot backend over the validated LoggingFlightLink.
+
+    Altitude frame, stated once so it can't drift: this backend works
+    ENTIRELY in AGL (metres above the takeoff point). It pins the inner
+    MavlinkDroneLink to home_alt_m=0, which makes the link's reported
+    `pos.alt` the raw ArduCopter relative-to-home altitude == AGL, and
+    makes every `goto(.., alt)` send `alt` straight through as the
+    RELATIVE_ALT wire value. No home-altitude is captured at startup and
+    no ASL<->AGL arithmetic happens anywhere in the agent.
+
+    This is a deliberate departure from connect_flight_link's
+    auto-detect-home behaviour, which was the cause of the 2026-06-15
+    field crash: it captured home_alt from the FIRST position fix, but
+    on an agent that reconnects to an already-settled FC that fix can
+    carry a nonzero relative_alt, baking a spurious offset into every
+    subsequent AGL. With home_alt pinned to 0 there is nothing to
+    capture and nothing to get wrong.
+    """
 
     source = "mavlink"
 
@@ -209,15 +232,23 @@ class MavlinkFlightBackend:
         import mavlink_flight
 
         self._mod = mavlink_flight
+        # home_alt_m=0.0 -> link reports & accepts AGL directly.
         self._link, self._vehicle, self._home_alt = (
             mavlink_flight.connect_flight_link(
-                endpoint, vehicle_id=vehicle_id, uas_ipbrc_root=uas_root
+                endpoint,
+                vehicle_id=vehicle_id,
+                uas_ipbrc_root=uas_root,
+                home_alt_m=0.0,
             )
         )
+        # _home_alt is 0.0 by construction; kept as a field only so the
+        # rest of the class can read it without branching. Never re-derive.
+        self._home_alt = 0.0
 
     def position(self):
         p = self._vehicle.position
-        return (p.lat, p.lon, max(p.alt - self._home_alt, 0.0))
+        # pos.alt is already AGL (link pinned to home_alt_m=0).
+        return (p.lat, p.lon, max(p.alt, 0.0))
 
     def set_cruise_speed(self, speed: float) -> None:
         self._link.set_cruise_speed_m_s(speed)
@@ -230,8 +261,15 @@ class MavlinkFlightBackend:
             home_alt_m=self._home_alt,
         )
 
+    def takeoff(self, agl: float) -> bool:
+        # standalone manual takeoff == the same arm+climb path the
+        # raster/investigate use, exposed as its own command.
+        return self.ensure_airborne(agl)
+
     def goto(self, lat: float, lon: float, agl: float) -> None:
-        self._link.goto(lat, lon, self._home_alt + agl)
+        # agl passes straight through: link sends it as the RELATIVE_ALT
+        # wire value (home_alt_m=0).
+        self._link.goto(lat, lon, agl)
 
     def at_target(self, lat, lon, agl, tol_m=2.0) -> bool:
         p = self.position()
@@ -247,24 +285,32 @@ class MavlinkFlightBackend:
         return bool(self._link.land())
 
     def hold(self) -> bool:
-        # GUIDED + retarget current position = position hold
+        # GUIDED + retarget current position = position hold. Retarget at
+        # the CURRENT AGL so a hold never commands a climb or descent.
         p = self.position()
         if not self._link.set_mode_guided():
             return False
-        self._link.goto(p[0], p[1], self._home_alt + p[2])
+        self._link.goto(p[0], p[1], p[2])
         return True
 
     def telemetry(self) -> dict:
         lat, lon, agl = self.position()
         inner = self._link._inner
+        battery_pct = -1.0
+        try:
+            bp = inner.battery_pct()
+            if bp is not None:
+                battery_pct = float(bp)
+        except Exception:
+            pass
         return {
             "lat_deg": lat,
             "lon_deg": lon,
-            "alt_m": self._home_alt + agl,
+            "alt_m": agl,  # AGL frame throughout
             "agl_m": agl,
             "armed": bool(self._link.is_armed()),
             "mode": str(getattr(inner, "mode", "") or ""),
-            "battery_v": float(getattr(inner, "battery_voltage", 0.0) or 0.0),
+            "battery_pct": battery_pct,
         }
 
 
@@ -624,11 +670,60 @@ def main() -> int:
     def cmd_hold(payload: bytes) -> bytes:
         return flight_command("hold")
 
+    # ---- service: takeoff (standalone, guarded) ----------------------------
+    @provider.ack_handler(vehicle_flight_service(vehicle_id, "takeoff"))
+    def ack_takeoff(payload: bytes) -> AckDecision:
+        request = TakeoffRequest.from_bytes(payload)
+        if busy["task"]:
+            return AckDecision(status=False, message=f"busy:{busy['task']}")
+        if not (0.5 <= request.target_agl_m <= args.max_agl_m):
+            return AckDecision(
+                status=False,
+                message=f"agl {request.target_agl_m} outside 0.5..{args.max_agl_m}",
+            )
+        return AckDecision(status=True, message=f"agl={request.target_agl_m}")
+
+    @provider.handler(vehicle_flight_service(vehicle_id, "takeoff"))
+    def cmd_takeoff(payload: bytes) -> bytes:
+        request = TakeoffRequest.from_bytes(payload)
+        if not (0.5 <= request.target_agl_m <= args.max_agl_m):
+            return FlightCommandResult(
+                vehicle_id=vehicle_id, command="takeoff", status="rejected",
+                message=f"agl {request.target_agl_m} outside guard",
+            ).to_bytes()
+        # takeoff occupies the vehicle like a task: refuse if mid-mission,
+        # and clear any stale abort so the climb isn't instantly cancelled
+        if not set_busy("takeoff"):
+            return FlightCommandResult(
+                vehicle_id=vehicle_id, command="takeoff", status="rejected",
+                message=f"busy:{busy['task']}",
+            ).to_bytes()
+        abort.clear()
+        try:
+            ok = flight.takeoff(request.target_agl_m)
+        except Exception as exc:
+            ok, message = False, str(exc)
+        else:
+            message = "" if ok else "takeoff did not reach target AGL"
+        finally:
+            set_busy("")
+        print_json(
+            "agent.command", command="takeoff",
+            agl=request.target_agl_m, ok=bool(ok),
+        )
+        return FlightCommandResult(
+            vehicle_id=vehicle_id,
+            command="takeoff",
+            status="accepted" if ok else "failed",
+            message=message,
+        ).to_bytes()
+
     services = [
         vehicle_video_service(vehicle_id),
         vehicle_flight_service(vehicle_id, "rtl"),
         vehicle_flight_service(vehicle_id, "land"),
         vehicle_flight_service(vehicle_id, "hold"),
+        vehicle_flight_service(vehicle_id, "takeoff"),
     ]
 
     # ---- wuas: raster-search -------------------------------------------------
@@ -710,6 +805,63 @@ def main() -> int:
                 agl=request.agl_m, speed=request.speed_m_s,
             )
             push_status("starting")
+
+            def _publish_capture(cp, frame_index, here) -> None:
+                """Grab the latest frame and publish it, tagged with the
+                vehicle's pose AT CAPTURE (lat/lon/agl/heading). The GCS
+                geo-projects detections from this embedded pose, so the
+                ~10 s detection round-trip never corrupts the estimate —
+                the pose is frozen with the image, not read late."""
+                ts = gps_time_ns()
+                name = mission_frame_name(
+                    request.mission_id, vehicle_id, "bottom", ts, frame_index
+                )
+                jpeg, _ = camera.jpeg(
+                    width=args.search_frame_width,
+                    height=args.search_frame_height,
+                    quality=args.search_frame_quality,
+                )
+                if jpeg is None:
+                    payload_bytes = camera.capture_frame_payload(
+                        mission_id=request.mission_id,
+                        vehicle_id=vehicle_id,
+                        sensor_id="bottom",
+                        gps_time_ns=ts,
+                        metadata={"heading_deg": str(cp.heading_deg)},
+                    )
+                else:
+                    payload_bytes = build_frame_bytes(
+                        jpeg,
+                        mission_id=request.mission_id,
+                        vehicle_id=vehicle_id,
+                        sensor_id="bottom",
+                        gps_time_ns=ts,
+                        kind="image/jpeg",
+                        width=args.search_frame_width,
+                        height=args.search_frame_height,
+                        metadata={
+                            "lat_deg": f"{here[0]:.7f}",
+                            "lon_deg": f"{here[1]:.7f}",
+                            "agl_m": f"{here[2]:.2f}",
+                            "heading_deg": str(cp.heading_deg),
+                        },
+                    )
+                try:
+                    producer = publish_segmented(name, payload_bytes)
+                    producers_keepalive.append(producer)
+                    if len(producers_keepalive) > 60:
+                        old = producers_keepalive.pop(0)
+                        try:
+                            old.stop()
+                        except Exception:
+                            pass
+                    recent.insert(0, name)
+                    del recent[12:]
+                except Exception as exc:
+                    print_json(
+                        "agent.search.publish_failed",
+                        frame=name, error=str(exc),
+                    )
             try:
                 flight.set_cruise_speed(request.speed_m_s)
                 if not flight.ensure_airborne(request.agl_m):
@@ -720,78 +872,74 @@ def main() -> int:
                     ).to_bytes()
 
                 outcome = "completed"
-                for point in plan.captures:
+                # Fly each leg as ONE continuous motion to its far
+                # endpoint, capturing on the fly when passing near a
+                # pending capture point. The previous design issued a
+                # goto per capture point and waited for arrival at each
+                # — that produced the field stutter (accelerate, brake,
+                # pitch back, repeat) and the pitch oscillation ruined
+                # the nadir frames. A multirotor holds a far better
+                # constant-velocity attitude across a whole leg.
+                cap_radius = max(request.capture_every_m * 0.5, 1.5)
+                legs = plan.legs
+                # group capture points by leg, preserving order
+                caps_by_leg: dict[int, list] = {}
+                for cp in plan.captures:
+                    caps_by_leg.setdefault(cp.leg, []).append(cp)
+
+                aborted = False
+                for leg_index, (leg_start, leg_end) in enumerate(legs):
                     if abort.is_set():
                         outcome = "aborted"
                         break
                     if time.monotonic() > deadline:
                         outcome = "failed"
                         break
-                    status_state.update(state="searching", leg=point.leg)
-                    flight.goto(point.lat_deg, point.lon_deg, request.agl_m)
-                    while not flight.at_target(
-                        point.lat_deg, point.lon_deg, request.agl_m
+                    status_state.update(state="searching", leg=leg_index)
+                    # command the far end of the leg ONCE; the vehicle
+                    # cruises the whole leg without stopping
+                    flight.goto(leg_end[0], leg_end[1], request.agl_m)
+                    pending = list(caps_by_leg.get(leg_index, []))
+                    leg_deadline = time.monotonic() + max(
+                        60.0, _dist_m(*leg_start, *leg_end) / 0.3
+                    )
+                    while pending or not flight.at_target(
+                        leg_end[0], leg_end[1], request.agl_m, tol_m=2.0
                     ):
-                        if abort.is_set() or time.monotonic() > deadline:
+                        if abort.is_set():
+                            outcome = "aborted"
+                            aborted = True
                             break
-                        time.sleep(0.25)
-                    if abort.is_set():
-                        outcome = "aborted"
+                        if time.monotonic() > deadline or time.monotonic() > leg_deadline:
+                            break
+                        here = flight.position()
+                        # capture any pending point we're now near
+                        fired = [
+                            cp for cp in pending
+                            if _dist_m(here[0], here[1], cp.lat_deg, cp.lon_deg)
+                            <= cap_radius
+                        ]
+                        for cp in fired:
+                            pending.remove(cp)
+                            frames += 1
+                            _publish_capture(cp, frames, here)
+                            push_status()
+                        if not pending and flight.at_target(
+                            leg_end[0], leg_end[1], request.agl_m, tol_m=2.0
+                        ):
+                            break
+                        time.sleep(0.1)
+                    if aborted:
                         break
-                    # capture at the point: position-tagged, model-resolution
-                    ts = gps_time_ns()
-                    frames += 1
-                    name = mission_frame_name(
-                        request.mission_id, vehicle_id, "bottom", ts, frames
-                    )
-                    here = flight.position()
-                    jpeg, _ = camera.jpeg(
-                        width=args.search_frame_width,
-                        height=args.search_frame_height,
-                        quality=args.search_frame_quality,
-                    )
-                    if jpeg is None:
-                        payload_bytes = camera.capture_frame_payload(
-                            mission_id=request.mission_id,
-                            vehicle_id=vehicle_id,
-                            sensor_id="bottom",
-                            gps_time_ns=ts,
-                            metadata={"heading_deg": str(point.heading_deg)},
-                        )
-                    else:
-                        payload_bytes = build_frame_bytes(
-                            jpeg,
-                            mission_id=request.mission_id,
-                            vehicle_id=vehicle_id,
-                            sensor_id="bottom",
-                            gps_time_ns=ts,
-                            kind="image/jpeg",
-                            width=args.search_frame_width,
-                            height=args.search_frame_height,
-                            metadata={
-                                "lat_deg": f"{here[0]:.7f}",
-                                "lon_deg": f"{here[1]:.7f}",
-                                "agl_m": f"{here[2]:.2f}",
-                                "heading_deg": str(point.heading_deg),
-                            },
-                        )
-                    try:
-                        producer = publish_segmented(name, payload_bytes)
-                        producers_keepalive.append(producer)
-                        if len(producers_keepalive) > 60:
-                            old = producers_keepalive.pop(0)
-                            try:
-                                old.stop()
-                            except Exception:
-                                pass
-                        recent.insert(0, name)
-                        del recent[12:]
-                    except Exception as exc:
-                        print_json(
-                            "agent.search.publish_failed",
-                            frame=name, error=str(exc),
-                        )
-                    push_status()
+                    # any capture points not reached (overshoot / GPS
+                    # scatter): take them at the leg end so coverage is
+                    # never silently dropped
+                    for cp in pending:
+                        if abort.is_set():
+                            break
+                        frames += 1
+                        _publish_capture(cp, frames, flight.position())
+                        push_status()
                 status_state["state"] = (
                     "done" if outcome == "completed" else outcome
                 )
@@ -952,15 +1100,18 @@ def main() -> int:
                     backend: MavlinkFlightBackend = flight  # type: ignore
                     if not backend.ensure_airborne(request.approach_alt_m):
                         return FlightTaskResultFailed(request, vehicle_id)
+                    # Everything is AGL (link pinned to home_alt_m=0):
+                    # pass the request through unchanged, target on the
+                    # ground (alt 0 AGL), approach at the requested AGL.
                     flown = InvestigatePointRequest(
                         mission_id=request.mission_id,
                         source_detection_id=request.source_detection_id,
                         target=GeoPoint(
                             lat_deg=request.target.lat_deg,
                             lon_deg=request.target.lon_deg,
-                            alt_m=backend._home_alt + (request.target.alt_m or 0.0),
+                            alt_m=0.0,
                         ),
-                        approach_alt_m=backend._home_alt + request.approach_alt_m,
+                        approach_alt_m=request.approach_alt_m,
                         standoff_m=request.standoff_m,
                         circle_radius_m=request.circle_radius_m,
                         circle_count=request.circle_count,

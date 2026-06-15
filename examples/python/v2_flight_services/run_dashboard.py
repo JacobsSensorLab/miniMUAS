@@ -82,6 +82,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--search-margin-s", type=float, default=60.0)
     parser.add_argument("--investigate-timeout-ms", type=int, default=120000)
     parser.add_argument(
+        "--confirm-count", type=int, default=2,
+        help="Independent detections (within target_separation_m) required "
+        "before a candidate becomes a dispatched target. Guards against "
+        "single-frame false positives launching the IUAS — a real object "
+        "is seen on many consecutive frames; texture noise is not.",
+    )
+    parser.add_argument(
         "--html",
         default=None,
         help="Path to dashboard.html (default: alongside this script)",
@@ -144,6 +151,13 @@ class Dashboard:
                                 #  failed, artifacts: []}
         }
         self.targets_lock = threading.Lock()
+        self.candidates: list[dict] = []  # pre-confirmation hits
+        # per-vehicle enable gate (dashboard-side). A disabled vehicle
+        # stays fully alive (telemetry, video) but the orchestrator will
+        # not auto-dispatch to it and refuses manual flight commands to
+        # it — this is how you fly WUAS-only: disable the IUAS so a
+        # detection confirms and queues but never launches it.
+        self.enabled: dict[str, bool] = {v: True for v in self.vehicles}
         self.seen_frames: set[str] = set()
         self.detects_pending = 0
         self.detects_done = 0
@@ -282,6 +296,7 @@ class Dashboard:
                 confidence=round(detection.confidence, 4),
                 lat=detection.estimate.lat_deg,
                 lon=detection.estimate.lon_deg,
+                offset_m=round(detection.offset_m, 2),
             )
             min_conf = float(params.get("min_confidence", 0.3))
             if (
@@ -306,58 +321,113 @@ class Dashboard:
     # ---- multi-target machinery -------------------------------------------
 
     def _on_detect_hit(self, detection: DetectionResponse, frame: str) -> None:
-        """Dedupe by ground distance, then queue; the search NEVER stops.
+        """Confirm-then-queue. A hit first reinforces a CANDIDATE; only a
+        candidate seen on `confirm_count` separate frames is promoted to a
+        dispatched target. This is the guard against the field failure
+        where a single 99% texture false-positive launched the IUAS.
 
-        The same physical object is detected in many consecutive frames as
-        the raster sweeps over it — hits within `target_separation_m` of
-        an existing target update that target (keep the best-confidence
-        estimate) instead of spawning duplicate investigations.
+        Dedup is by ground distance: hits within `target_separation_m`
+        belong to the same candidate/target, best-confidence estimate
+        kept. Already-dispatched targets just absorb further hits.
         """
-        sep = float(
-            self.mission["params"].get("target_separation_m", 5.0)
-        )
+        sep = float(self.mission["params"].get("target_separation_m", 5.0))
+        need = max(1, int(self.args.confirm_count))
         lat, lon = detection.estimate.lat_deg, detection.estimate.lon_deg
         with self.targets_lock:
+            # already a confirmed target nearby? absorb + maybe refine.
             for target in self.mission["targets"]:
                 if _dist_m(target["lat"], target["lon"], lat, lon) <= sep:
-                    if detection.confidence > target["confidence"]:
-                        target["confidence"] = detection.confidence
-                        target["frame"] = frame
-                        if target["status"] == "queued":
-                            # not yet flown: refine the position too
-                            target["lat"], target["lon"] = lat, lon
+                    cand_conf = max(target["confidence"], detection.confidence)
+                    target["confidence"] = cand_conf
+                    # refine position only from a BETTER-localized sighting,
+                    # and only while not yet flown
+                    if (
+                        target["status"] == "queued"
+                        and detection.offset_m < target.get("best_offset", 1e9)
+                    ):
+                        target["best_offset"] = detection.offset_m
+                        target["lat"], target["lon"], target["frame"] = lat, lon, frame
                         self.event(
-                            "target.updated",
-                            index=target["index"],
+                            "target.updated", index=target["index"],
                             confidence=round(target["confidence"], 4),
-                            lat=target["lat"], lon=target["lon"],
-                            frame=frame,
+                            lat=target["lat"], lon=target["lon"], frame=frame,
+                            best_offset_m=round(target["best_offset"], 2),
                         )
                     return
+            # otherwise reinforce / create a candidate.
+            cand = None
+            for c in self.candidates:
+                if _dist_m(c["lat"], c["lon"], lat, lon) <= sep:
+                    cand = c
+                    break
+            if cand is None:
+                cand = {
+                    "hits": 0, "object_id": detection.object_id,
+                    "confidence": detection.confidence,
+                    "lat": lat, "lon": lon, "frame": frame,
+                    "best_offset": detection.offset_m,
+                    "frames": set(),
+                }
+                self.candidates.append(cand)
+            cand["frames"].add(frame)
+            cand["hits"] = len(cand["frames"])
+            cand["confidence"] = max(cand["confidence"], detection.confidence)
+            # POSITION comes from the best-localized sighting (object
+            # nearest frame center => smallest nadir offset => least
+            # AGL/heading lever-arm error), NOT the highest confidence.
+            # This is what fixes the field symptom: the racquet's fix
+            # snaps to the pass where it was directly underneath, instead
+            # of a corner glimpse where it sat at the frame edge.
+            if detection.offset_m < cand["best_offset"]:
+                cand["best_offset"] = detection.offset_m
+                cand["lat"], cand["lon"], cand["frame"] = lat, lon, frame
+            self.event(
+                "detect.candidate", object_id=cand["object_id"],
+                hits=cand["hits"], need=need,
+                confidence=round(cand["confidence"], 4),
+                lat=cand["lat"], lon=cand["lon"],
+                best_offset_m=round(cand["best_offset"], 2),
+            )
+            if cand["hits"] < need:
+                return
+            # promote candidate -> target
+            self.candidates.remove(cand)
             target = {
                 "index": len(self.mission["targets"]),
-                "object_id": detection.object_id,
-                "confidence": detection.confidence,
-                "lat": lat, "lon": lon,
-                "frame": frame,
+                "object_id": cand["object_id"],
+                "confidence": cand["confidence"],
+                "lat": cand["lat"], "lon": cand["lon"],
+                "frame": cand["frame"],
+                "best_offset": cand["best_offset"],
                 "status": "queued",
                 "artifacts": [],
             }
             self.mission["targets"].append(target)
         self.event(
             "mission.target_found",
-            index=target["index"],
-            object_id=target["object_id"],
+            index=target["index"], object_id=target["object_id"],
             confidence=round(target["confidence"], 4),
-            lat=lat, lon=lon, frame=frame,
+            lat=target["lat"], lon=target["lon"], frame=target["frame"],
+            hits=need,
         )
         self._pump_dispatch()
 
     def _pump_dispatch(self) -> None:
-        """Send the next queued target to the IUAS if it's idle."""
+        """Send the next queued target to the IUAS if it's idle and enabled."""
         with self.targets_lock:
             if self.mission["state"] not in ("searching", "investigating"):
                 return  # operator aborted: stop draining the queue
+            if not self.enabled.get(self.args.iuas_id, True):
+                # IUAS disabled (e.g. WUAS-only flight): targets confirm
+                # and queue but are never launched. Mission can still
+                # complete — a queued-but-undispatchable target isn't
+                # "in flight", so check completion explicitly.
+                if self.mission["search_done"] and not any(
+                    t["status"] == "investigating"
+                    for t in self.mission["targets"]
+                ):
+                    self._complete_locked(note="iuas-disabled")
+                return
             if any(
                 t["status"] == "investigating"
                 for t in self.mission["targets"]
@@ -386,6 +456,12 @@ class Dashboard:
         ):
             self.mission["state"] = "investigating"
             return
+        self._complete_locked()
+
+    def _complete_locked(self, note: str = "") -> None:
+        """Caller holds targets_lock. Mark mission done and announce."""
+        if self.mission["state"] not in ("searching", "investigating"):
+            return
         self.mission["state"] = "done"
         targets = self.mission["targets"]
         self._send_loop({"type": "event", "kind": "mission.completed",
@@ -393,11 +469,13 @@ class Dashboard:
                          "targets": len(targets),
                          "investigated": sum(
                              1 for t in targets if t["status"] == "done"
-                         )})
+                         ),
+                         "note": note})
         print_json(
             "dash.mission.completed",
             targets=len(targets),
             investigated=sum(1 for t in targets if t["status"] == "done"),
+            note=note,
         )
 
     def _dispatch_iuas(self, target: dict) -> None:
@@ -476,6 +554,7 @@ class Dashboard:
                 targets=[],
             )
         self.seen_frames.clear()
+        self.candidates.clear()
         self.detects_pending = 0
         self.detects_done = 0
 
@@ -540,8 +619,14 @@ class Dashboard:
             timeout_ms=timeout_ms,
         )
 
-    def _flight_command(self, vid: str, command: str) -> None:
+    def _flight_command(self, vid: str, command: str, params: dict | None = None) -> None:
         self.event("command.sent", vehicle=vid, command=command)
+        payload = b"{}"
+        if command == "takeoff":
+            from contracts import TakeoffRequest
+
+            agl = float((params or {}).get("target_agl_m", 5.0))
+            payload = TakeoffRequest(target_agl_m=agl).to_bytes()
 
         def on_response(response) -> None:
             self.event(
@@ -557,10 +642,10 @@ class Dashboard:
 
         self.user.request_service_async(
             vehicle_flight_service(vid, command),
-            b"{}",
+            payload,
             on_response=on_response,
             on_timeout=on_timeout,
-            timeout_ms=15000,
+            timeout_ms=20000 if command == "takeoff" else 15000,
         )
 
     def set_video(self, vid: str, params: dict) -> None:
@@ -673,16 +758,39 @@ class Dashboard:
             }
         if kind == "start_mission":
             self.start_mission(message.get("params", {}))
+        elif kind == "set_enabled":
+            vid = message.get("vehicle", "")
+            if vid in self.vehicles:
+                self.enabled[vid] = bool(message.get("enabled", True))
+                self.event(
+                    "vehicle.enabled" if self.enabled[vid] else "vehicle.disabled",
+                    vehicle=vid,
+                )
+                # re-enabling the IUAS mid-mission should pick up any
+                # targets that queued while it was disabled
+                if self.enabled[vid]:
+                    self._pump_dispatch()
         elif kind == "flight":
             vid = message.get("vehicle", "")
             command = message.get("command", "")
-            if command in ("rtl", "land", "hold") and vid in self.vehicles:
+            if command in ("rtl", "land", "hold", "takeoff") and vid in self.vehicles:
+                if not self.enabled.get(vid, True):
+                    # safety actions (rtl/land/hold) are ALWAYS allowed,
+                    # even to a disabled vehicle — disable must never trap
+                    # an aircraft in the air. Only takeoff is blocked.
+                    if command == "takeoff":
+                        self.event(
+                            "command.rejected", vehicle=vid,
+                            command=command, reason="vehicle disabled",
+                        )
+                        return None
                 if (
                     self.mission["state"] == "searching"
                     and vid == self.args.wuas_id
+                    and command in ("rtl", "land")
                 ):
                     self.mission["state"] = "aborted"
-                self._flight_command(vid, command)
+                self._flight_command(vid, command, message.get("params"))
         elif kind == "all":
             command = message.get("command", "")
             if command in ("rtl", "land", "hold"):
@@ -769,6 +877,7 @@ async def run_web(dash: Dashboard, args) -> None:
         await ws.send_str(json.dumps({
             "type": "hello",
             "vehicles": dash.vehicles,
+            "enabled": dash.enabled,
             "mission": {
                 "state": dash.mission["state"],
                 "mission_id": dash.mission["mission_id"],
