@@ -34,6 +34,26 @@ def gcs_detection_service() -> str:
     return "/muas/v2/gcs/perception/detect-object"
 
 
+def vehicle_sensor_service(vehicle_id: str) -> str:
+    """On-demand sensor tasking (SensorCaptureRequest)."""
+    return f"/muas/v2/{vehicle_id}/sensor/capture"
+
+
+def tasked_sensor_name(
+    vehicle_id: str, sensor_id: str, kind: str, timestamp_ns: int, seq: int
+) -> str:
+    """Data name for an operator-tasked (non-mission) sensor capture."""
+    return (
+        f"/muas/v2/{vehicle_id}/tasked/{sensor_id}/{kind}/{timestamp_ns}/{seq}"
+    )
+
+
+def vehicle_sensor_event_name(vehicle_id: str) -> str:
+    """Latest SensorCaptureResult (latest-wins; how opportunistic and
+    override captures reach the dashboard after the service ack)."""
+    return f"/muas/v2/{vehicle_id}/sensor/last"
+
+
 def mission_frame_name(
     mission_id: str,
     vehicle_id: str,
@@ -393,6 +413,11 @@ class TelemetrySample:
     battery_v: float = 0.0
     battery_pct: float = -1.0
     busy: str = ""  # "", "raster-search", "investigate", ...
+    # low-altitude confidence: rangefinder AGL when the vehicle carries
+    # one (-1 = not fitted / no reading), and an alarm the agent raises
+    # when baro-AGL and rangefinder disagree beyond tolerance
+    rangefinder_m: float = -1.0
+    agl_alarm: bool = False
 
     def to_bytes(self) -> bytes:
         return encode_dataclass(self)
@@ -415,6 +440,92 @@ class TelemetrySample:
             battery_v=float(value.get("battery_v", 0.0)),
             battery_pct=float(value.get("battery_pct", -1.0)),
             busy=str(value.get("busy", "")),
+            rangefinder_m=float(value.get("rangefinder_m", -1.0)),
+            agl_alarm=bool(value.get("agl_alarm", False)),
+        )
+
+
+@dataclass(frozen=True)
+class SensorCaptureRequest:
+    """Operator-tasked sensor capture — sensors are mission-controlled.
+
+    Sensors never run continuously: a capture happens only when a mission
+    step asks for it or an operator issues one of these. Modes:
+
+      now            capture immediately at the current position (the
+                     "directly requested" case; no flight involved)
+      override       fly to `target`, capture, then RESUME whatever task
+                     was interrupted (a WUAS mid-raster picks its leg back
+                     up). Rejected during an investigate orbit.
+      opportunistic  register a watchpoint: whenever the vehicle happens
+                     to pass within `radius_m` of `target` (during any
+                     flight) the capture fires. Expires after `expires_s`.
+
+    Audio additionally honors the agent's --audio-range-m guard: a
+    capture tied to a target only records while the vehicle is within
+    that range, so the microphone is never hot outside a tasked window.
+    """
+
+    request_id: str
+    sensor: str                       # "camera" | "audio"
+    mode: str = "now"                 # now | override | opportunistic
+    duration_s: float = 6.0           # audio clip length; camera ignores
+    target: GeoPoint | None = None
+    radius_m: float = 6.0             # trigger / positioning tolerance
+    expires_s: float = 600.0          # opportunistic watchpoint lifetime
+    note: str = ""
+
+    def to_bytes(self) -> bytes:
+        return encode_dataclass(self)
+
+    @classmethod
+    def from_bytes(cls, payload: bytes) -> "SensorCaptureRequest":
+        value = decode_json(payload)
+        target = value.get("target")
+        return cls(
+            request_id=str(value["request_id"]),
+            sensor=str(value["sensor"]),
+            mode=str(value.get("mode", "now")),
+            duration_s=float(value.get("duration_s", 6.0)),
+            target=None if target is None else GeoPoint.from_dict(target),
+            radius_m=float(value.get("radius_m", 6.0)),
+            expires_s=float(value.get("expires_s", 600.0)),
+            note=str(value.get("note", "")),
+        )
+
+
+@dataclass(frozen=True)
+class SensorCaptureResult:
+    """Terminal (or queued) record for one SensorCaptureRequest."""
+
+    request_id: str
+    vehicle_id: str
+    sensor: str
+    status: str                       # captured | queued | rejected | failed
+    message: str = ""
+    artifacts: list[str] = field(default_factory=list)
+    lat_deg: float = 0.0
+    lon_deg: float = 0.0
+    agl_m: float = 0.0
+    gps_time_ns: int = 0
+
+    def to_bytes(self) -> bytes:
+        return encode_dataclass(self)
+
+    @classmethod
+    def from_bytes(cls, payload: bytes) -> "SensorCaptureResult":
+        value = decode_json(payload)
+        return cls(
+            request_id=str(value["request_id"]),
+            vehicle_id=str(value["vehicle_id"]),
+            sensor=str(value["sensor"]),
+            status=str(value["status"]),
+            message=str(value.get("message", "")),
+            artifacts=[str(a) for a in value.get("artifacts", [])],
+            lat_deg=float(value.get("lat_deg", 0.0)),
+            lon_deg=float(value.get("lon_deg", 0.0)),
+            agl_m=float(value.get("agl_m", 0.0)),
+            gps_time_ns=int(value.get("gps_time_ns", 0)),
         )
 
 

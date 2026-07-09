@@ -245,6 +245,68 @@ def decode_image(body: bytes):
     return cv2.imdecode(array, cv2.IMREAD_COLOR)
 
 
+def project_ground(
+    center_px: tuple[float, float],
+    image_size: tuple[int, int],
+    *,
+    agl_m: float,
+    hfov_deg: float = 70.0,
+    heading_deg: float | None = None,
+    pitch_deg: float = 0.0,
+    roll_deg: float = 0.0,
+    cam_yaw_offset_deg: float = 0.0,
+) -> tuple[float, float]:
+    """Pixel in a belly camera frame -> ground offset (north_m, east_m).
+
+    Full ray cast, not a flat nadir map: the pixel becomes a direction in
+    the CAMERA frame, is rotated into the body frame by the mounting yaw
+    offset, then into local NED by the vehicle's roll/pitch/yaw at
+    capture, and intersected with the ground plane `agl_m` below. This is
+    what accounts for the vehicle NOT being level while translating — a
+    multirotor doing 3 m/s pitches several degrees nose-down, which at
+    6 m AGL displaces a "nadir" footprint by half a metre or more.
+
+    Conventions (ArduPilot ATTITUDE): pitch positive = nose up, roll
+    positive = right wing down, heading = compass yaw. Camera: image top
+    = vehicle nose (before cam_yaw_offset_deg), square pixels, boresight
+    through the belly. Degrades gracefully: all-zero angles reproduce the
+    old flat nadir projection exactly.
+    """
+
+    width, height = image_size
+    if width <= 0 or agl_m <= 0:
+        return (0.0, 0.0)
+    # pixel -> tangent-plane direction components in the CAMERA frame
+    # (right, up-image), normalized so boresight has unit down component
+    tan_half = math.tan(math.radians(hfov_deg) / 2.0)
+    cam_right = (center_px[0] - width / 2.0) / (width / 2.0) * tan_half
+    cam_fwd = (height / 2.0 - center_px[1]) / (width / 2.0) * tan_half
+    # camera -> body: mounting rotation about the boresight (clockwise
+    # from "image top = nose")
+    mount = math.radians(cam_yaw_offset_deg)
+    bx = cam_fwd * math.cos(mount) - cam_right * math.sin(mount)  # forward
+    by = cam_fwd * math.sin(mount) + cam_right * math.cos(mount)  # right
+    bz = 1.0                                                      # down
+    # body -> NED: R = Rz(yaw) @ Ry(pitch) @ Rx(roll)
+    cr, sr = math.cos(math.radians(roll_deg)), math.sin(math.radians(roll_deg))
+    cp, sp = math.cos(math.radians(pitch_deg)), math.sin(math.radians(pitch_deg))
+    yaw = math.radians(heading_deg or 0.0)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    # Rx(roll)
+    x1, y1, z1 = bx, cr * by - sr * bz, sr * by + cr * bz
+    # Ry(pitch)
+    x2, y2, z2 = cp * x1 + sp * z1, y1, -sp * x1 + cp * z1
+    # Rz(yaw)
+    dn, de, dd = cy * x2 - sy * y2, sy * x2 + cy * y2, z2
+    if dd < 0.15:
+        # ray near/above the horizon (extreme tilt + frame edge): no
+        # trustworthy ground intersection — clamp rather than launch the
+        # estimate kilometres away
+        dd = 0.15
+    scale = agl_m / dd
+    return (dn * scale, de * scale)
+
+
 def project_nadir(
     center_px: tuple[float, float],
     image_size: tuple[int, int],
@@ -253,27 +315,15 @@ def project_nadir(
     hfov_deg: float = 70.0,
     heading_deg: float | None = None,
 ) -> tuple[float, float]:
-    """Pixel offset in a downward-facing frame -> (north_m, east_m).
+    """Legacy flat-nadir projection: project_ground with a level vehicle."""
 
-    Ground sampling distance from HFOV and width; square pixels assumed.
-    Camera-frame +x (right) maps to east and -y (up) to north when the
-    camera's top edge faces the vehicle's nose and heading is 0/unknown;
-    a known heading rotates the offset into the world frame.
-    """
-
-    width, height = image_size
-    if width <= 0 or agl_m <= 0:
-        return (0.0, 0.0)
-    ground_width_m = 2.0 * agl_m * math.tan(math.radians(hfov_deg) / 2.0)
-    meters_per_px = ground_width_m / float(width)
-    right_m = (center_px[0] - width / 2.0) * meters_per_px
-    forward_m = (height / 2.0 - center_px[1]) * meters_per_px
-    if heading_deg is None:
-        return (forward_m, right_m)
-    heading = math.radians(heading_deg)
-    north = forward_m * math.cos(heading) - right_m * math.sin(heading)
-    east = forward_m * math.sin(heading) + right_m * math.cos(heading)
-    return (north, east)
+    return project_ground(
+        center_px,
+        image_size,
+        agl_m=agl_m,
+        hfov_deg=hfov_deg,
+        heading_deg=heading_deg,
+    )
 
 
 def offset_latlon(

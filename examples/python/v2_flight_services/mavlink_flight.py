@@ -18,6 +18,7 @@ auto-detects it from the first position fix when not supplied.
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -233,6 +234,9 @@ def ensure_airborne(
     home_alt_m: float,
     timeout_s: float = 120.0,
     settle_m: float = 2.0,
+    ground_agl_tolerance_m: float = 1.5,
+    climb_check_s: float = 12.0,
+    climb_check_min_gain_m: float = 1.0,
 ) -> bool:
     """Arm and take off to `target_agl_m` if not already flying.
 
@@ -241,6 +245,19 @@ def ensure_airborne(
     there. GUIDED is forced up front (no-op when already there): a
     vehicle that finished a previous flight sits in RTL or LAND, where
     ArduCopter rejects arming and ignores guided targets.
+
+    Altitude-source sanity (fleet has flaky barometers; a past crash hit
+    the ground while reported AGL was still positive):
+
+      * ground check — a DISARMED vehicle is on the ground by
+        definition. If it nonetheless reports AGL beyond
+        `ground_agl_tolerance_m`, the altitude estimate is lying and
+        every subsequent AGL-referenced command would be biased by that
+        error; refuse to launch.
+      * climb check — after NAV_TAKEOFF, if reported AGL hasn't gained
+        `climb_check_min_gain_m` within `climb_check_s`, either the
+        vehicle isn't climbing or the altitude source is stuck; abort
+        the mission start rather than fly on a suspect estimate.
     """
 
     if not link.set_mode_guided():
@@ -249,16 +266,50 @@ def ensure_airborne(
     if vehicle.armed and agl >= 3.0:
         return True
 
-    if not vehicle.armed and not link.arm():
-        return False
+    if not vehicle.armed:
+        if abs(agl) > ground_agl_tolerance_m:
+            link.command_log.append((
+                "takeoff_refused",
+                {"reason": "grounded vehicle reports nonzero AGL",
+                 "agl_m": round(agl, 2)},
+            ))
+            print(
+                json.dumps({
+                    "event": "flight.takeoff_refused",
+                    "reason": "altitude sensor disagrees with ground",
+                    "reported_agl_m": round(agl, 2),
+                    "tolerance_m": ground_agl_tolerance_m,
+                }),
+                flush=True,
+            )
+            return False
+        if not link.arm():
+            return False
+    start_agl = vehicle.position.alt - home_alt_m
     if not link.takeoff(target_agl_m):
         return False
 
     deadline = time.monotonic() + timeout_s
+    climb_deadline = time.monotonic() + climb_check_s
     while time.monotonic() < deadline:
         agl = vehicle.position.alt - home_alt_m
         if agl >= target_agl_m - settle_m:
             return True
+        if (
+            time.monotonic() > climb_deadline
+            and agl - start_agl < climb_check_min_gain_m
+        ):
+            print(
+                json.dumps({
+                    "event": "flight.climb_stall",
+                    "reason": "no observed climb after takeoff — altitude "
+                    "source suspect; aborting mission start",
+                    "gain_m": round(agl - start_agl, 2),
+                    "after_s": climb_check_s,
+                }),
+                flush=True,
+            )
+            return False
         time.sleep(0.5)
     return False
 

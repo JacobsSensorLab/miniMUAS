@@ -45,6 +45,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from contracts import (
+    CapabilityProfile,
     DetectionRequest,
     DetectionResponse,
     FrameRef,
@@ -54,6 +55,8 @@ from contracts import (
     RasterSearchRequest,
     SearchArea,
     SearchStatus,
+    SensorCaptureRequest,
+    SensorCaptureResult,
     TelemetrySample,
     VideoControlRequest,
     VideoStatus,
@@ -61,11 +64,19 @@ from contracts import (
     gps_time_ns,
     vehicle_flight_service,
     vehicle_search_status_name,
+    vehicle_sensor_event_name,
+    vehicle_sensor_service,
     vehicle_telemetry_live_name,
+    vehicle_telemetry_state_name,
     vehicle_video_live_name,
     vehicle_video_service,
 )
-from dataplane import FRAME_CONTENT_TYPE, fetch_segmented, frame_body
+from dataplane import (
+    FRAME_CONTENT_TYPE,
+    fetch_segmented,
+    frame_body,
+    parse_frame,
+)
 from raster import build_raster, estimate_duration_s
 from ndnsf_runtime import add_common_arguments, add_ndnsf_path, print_json
 
@@ -78,6 +89,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--http-port", type=int, default=8080)
     parser.add_argument("--wuas-id", default="wuas-01")
     parser.add_argument("--iuas-id", default="iuas-01")
+    parser.add_argument(
+        "--iuas-ids", default=None,
+        help="Comma-separated IUAS vehicle ids (e.g. iuas-01,iuas-02). "
+        "Targets dispatch per requested sensor to whichever idle enabled "
+        "IUAS advertises it — one drone can carry the camera and another "
+        "the microphone. Default: just --iuas-id.",
+    )
     parser.add_argument("--detect-timeout-ms", type=int, default=30000)
     parser.add_argument("--search-margin-s", type=float, default=60.0)
     parser.add_argument("--investigate-timeout-ms", type=int, default=120000)
@@ -130,7 +148,20 @@ class Dashboard:
     def __init__(self, args, user) -> None:
         self.args = args
         self.user = user
-        self.vehicles = [args.wuas_id, args.iuas_id]
+        self.iuas_ids = (
+            [v.strip() for v in args.iuas_ids.split(",") if v.strip()]
+            if args.iuas_ids
+            else [args.iuas_id]
+        )
+        self.vehicles = [args.wuas_id] + self.iuas_ids
+        # vid -> set of investigation sensors the vehicle advertises
+        # ("camera", "audio"); populated from CapabilityProfile extras
+        self.capabilities: dict[str, set] = {}
+        # everything captured this session, mission or operator-tasked:
+        # {vehicle, sensor, kind, name, lat, lon, t, source, label}
+        # — feeds the map's sensor-data layer and the playback modal
+        self.sensor_data: list[dict] = []
+        self.sensor_data_lock = threading.Lock()
         self.loop: asyncio.AbstractEventLoop | None = None
         self.executor = ThreadPoolExecutor(max_workers=8)
         self.clients: set = set()
@@ -200,10 +231,89 @@ class Dashboard:
     # ---- pollers (framework threads) ---------------------------------------
 
     def poll_forever(self) -> None:
+        # one poller thread PER STREAM: the old single loop fetched both
+        # vehicles' telemetry and the search status serially (800 ms
+        # timeout each) then slept 1 s — a slow vehicle stalled everyone
+        # and markers updated every 2-3 s. Independent threads at ~3 Hz
+        # follow the agents' 4 Hz publications closely.
+        for vid in self.vehicles:
+            threading.Thread(
+                target=self._poll_telemetry_forever, args=(vid,), daemon=True
+            ).start()
+        threading.Thread(target=self._poll_search_forever, daemon=True).start()
+        threading.Thread(
+            target=self._poll_capabilities_forever, daemon=True
+        ).start()
+        threading.Thread(
+            target=self._poll_sensor_events_forever, daemon=True
+        ).start()
+        while True:
+            time.sleep(3600)
+
+    def _poll_sensor_events_forever(self) -> None:
+        """Relay tasked-capture results the service response can't carry
+        (opportunistic watchpoints fire long after their ack)."""
+        seen: dict[str, tuple] = {}
         while True:
             for vid in self.vehicles:
-                self._poll_vehicle(vid)
-            time.sleep(1.0)
+                try:
+                    payload = fetch_segmented(
+                        vehicle_sensor_event_name(vid), timeout_ms=700
+                    )
+                    result = SensorCaptureResult.from_bytes(payload)
+                    key = (result.request_id, result.gps_time_ns, result.status)
+                    if seen.get(vid) == key:
+                        continue
+                    seen[vid] = key
+                    self._on_sensor_result(vid, result)
+                except Exception:
+                    pass
+            time.sleep(1.5)
+
+    def _poll_capabilities_forever(self) -> None:
+        """Track which investigation sensors each IUAS advertises.
+
+        The agents publish a CapabilityProfile once at startup (long-lived
+        producer); extras carry sensor strings ("camera", "audio"). An
+        agent predating sensor advertisement gets the legacy assumption:
+        camera only.
+        """
+        while True:
+            for vid in self.vehicles:
+                try:
+                    payload = fetch_segmented(
+                        vehicle_telemetry_state_name(vid), timeout_ms=800
+                    )
+                    profile = CapabilityProfile.from_bytes(payload)
+                    sensors = {
+                        s for s in ("camera", "audio")
+                        if s in (profile.extras or [])
+                    } or {"camera"}
+                    if sensors != self.capabilities.get(vid):
+                        self.capabilities[vid] = sensors
+                        self._send_loop({
+                            "type": "capabilities",
+                            "vehicle": vid,
+                            "sensors": sorted(sensors),
+                        })
+                        self._pump_dispatch()  # a new capability may unblock a job
+                except Exception:
+                    pass
+            time.sleep(10.0)
+
+    def _poll_telemetry_forever(self, vid: str) -> None:
+        period = 0.3
+        while True:
+            t0 = time.monotonic()
+            self._poll_vehicle(vid)
+            time.sleep(max(0.0, period - (time.monotonic() - t0)))
+
+    def _poll_search_forever(self) -> None:
+        vid = self.args.wuas_id
+        while True:
+            if self.mission["state"] == "searching":
+                self._poll_search(vid)
+            time.sleep(0.5)
 
     def _poll_vehicle(self, vid: str) -> None:
         try:
@@ -241,27 +351,37 @@ class Dashboard:
                 "silent_s": None if silent_s is None else round(silent_s, 1),
             })
 
-        if vid == self.args.wuas_id and self.mission["state"] == "searching":
-            try:
-                payload = fetch_segmented(
-                    vehicle_search_status_name(vid), timeout_ms=800
-                )
-                status = SearchStatus.from_bytes(payload)
-                self._send_loop({
-                    "type": "search_status",
-                    "vehicle": vid,
-                    "status": json.loads(payload.decode()),
-                    "detects_pending": self.detects_pending,
-                    "detects_done": self.detects_done,
-                })
-                for frame in status.last_frames:
-                    if frame not in self.seen_frames:
-                        self.seen_frames.add(frame)
-                        self._detect_frame(frame)
-            except Exception:
-                pass
+    def _poll_search(self, vid: str) -> None:
+        try:
+            payload = fetch_segmented(
+                vehicle_search_status_name(vid), timeout_ms=800
+            )
+            status = SearchStatus.from_bytes(payload)
+            self._send_loop({
+                "type": "search_status",
+                "vehicle": vid,
+                "status": json.loads(payload.decode()),
+                "detects_pending": self.detects_pending,
+                "detects_done": self.detects_done,
+            })
+            # last_frames is newest-first; dispatch oldest-first so
+            # detections leave (and usually return) in capture order
+            for frame in reversed(status.last_frames):
+                if frame not in self.seen_frames:
+                    self.seen_frames.add(frame)
+                    self._detect_frame(frame)
+        except Exception:
+            pass
 
     # ---- detection fan-out ---------------------------------------------------
+
+    @staticmethod
+    def _frame_seq(frame_name: str) -> int:
+        """Capture sequence number from a frame name (.../frame/<ts>/<seq>)."""
+        try:
+            return int(frame_name.rsplit("/", 1)[-1])
+        except (ValueError, IndexError):
+            return -1
 
     def _detect_frame(self, frame_name: str) -> None:
         params = self.mission["params"]
@@ -279,19 +399,24 @@ class Dashboard:
             ),
             object_query=params.get("object_query", "tennis racket"),
         )
+        seq = self._frame_seq(frame_name)
         self.detects_pending += 1
-        self.event("detect.sent", frame=frame_name)
+        self.event("detect.sent", frame=frame_name, seq=seq)
 
         def on_response(response) -> None:
             self.detects_pending -= 1
             self.detects_done += 1
             if not response.status:
-                self.event("detect.miss", frame=frame_name, error=response.error)
+                self.event(
+                    "detect.miss", frame=frame_name, seq=seq,
+                    error=response.error,
+                )
                 return
             detection = DetectionResponse.from_bytes(response.payload)
             self.event(
                 "detect.hit",
                 frame=frame_name,
+                seq=seq,
                 object_id=detection.object_id,
                 confidence=round(detection.confidence, 4),
                 lat=detection.estimate.lat_deg,
@@ -308,7 +433,7 @@ class Dashboard:
         def on_timeout(_request_id: str) -> None:
             self.detects_pending -= 1
             self.detects_done += 1
-            self.event("detect.timeout", frame=frame_name)
+            self.event("detect.timeout", frame=frame_name, seq=seq)
 
         self.user.request_service_async(
             gcs_detection_service(),
@@ -390,8 +515,11 @@ class Dashboard:
             )
             if cand["hits"] < need:
                 return
-            # promote candidate -> target
+            # promote candidate -> target, with one investigation JOB per
+            # sensor the operator asked for; each job is dispatched to an
+            # IUAS advertising that sensor (possibly different vehicles)
             self.candidates.remove(cand)
+            sensors = self._mission_sensors()
             target = {
                 "index": len(self.mission["targets"]),
                 "object_id": cand["object_id"],
@@ -401,6 +529,11 @@ class Dashboard:
                 "best_offset": cand["best_offset"],
                 "status": "queued",
                 "artifacts": [],
+                "jobs": [
+                    {"sensor": s, "vehicle": "", "status": "queued",
+                     "artifacts": []}
+                    for s in sensors
+                ],
             }
             self.mission["targets"].append(target)
         self.event(
@@ -408,55 +541,177 @@ class Dashboard:
             index=target["index"], object_id=target["object_id"],
             confidence=round(target["confidence"], 4),
             lat=target["lat"], lon=target["lon"], frame=target["frame"],
-            hits=need,
+            hits=need, sensors=sensors,
         )
         self._pump_dispatch()
 
+    def _mission_sensors(self) -> list[str]:
+        wanted = self.mission["params"].get("investigate_sensors") or ["camera"]
+        sensors = [s for s in wanted if s in ("camera", "audio")]
+        return sensors or ["camera"]
+
+    # ---- sensor data registry (map layer + playback modal) ------------------
+
+    def add_sensor_data(self, item: dict) -> None:
+        with self.sensor_data_lock:
+            if any(d["name"] == item["name"] for d in self.sensor_data):
+                return
+            self.sensor_data.append(item)
+            del self.sensor_data[:-500]
+        self._send_loop({"type": "sensor_data", "item": item})
+
+    def _on_sensor_result(self, vid: str, result: SensorCaptureResult) -> None:
+        fields = dict(
+            vehicle=vid,
+            request=result.request_id,
+            sensor=result.sensor,
+            status=result.status,
+        )
+        if result.message:
+            fields["message"] = result.message
+        if result.status == "captured":
+            fields["lat"] = result.lat_deg
+            fields["lon"] = result.lon_deg
+        self.event("sensor.result", **fields)
+        if result.status != "captured":
+            return
+        for name in result.artifacts:
+            self.add_sensor_data({
+                "vehicle": vid,
+                "sensor": result.sensor,
+                "kind": (
+                    "audio/wav" if result.sensor == "audio" else "image/jpeg"
+                ),
+                "name": name,
+                "lat": result.lat_deg,
+                "lon": result.lon_deg,
+                "t": time.time(),
+                "source": "tasked",
+                "label": f"tasked {result.sensor}",
+            })
+
+    def request_sensor_capture(self, vid: str, params: dict) -> None:
+        request_id = f"cap-{int(time.time() * 1000) % 100_000_000}"
+        target = params.get("target")
+        request = SensorCaptureRequest(
+            request_id=request_id,
+            sensor=str(params.get("sensor", "camera")),
+            mode=str(params.get("mode", "now")),
+            duration_s=float(params.get("duration_s", 6.0)),
+            target=(
+                None if not target else GeoPoint(
+                    lat_deg=float(target["lat"]),
+                    lon_deg=float(target["lon"]),
+                    alt_m=0.0,
+                )
+            ),
+            radius_m=float(params.get("radius_m", 6.0)),
+            expires_s=float(params.get("expires_s", 600.0)),
+            note=str(params.get("note", "")),
+        )
+        fields = dict(
+            vehicle=vid, request=request_id,
+            sensor=request.sensor, mode=request.mode,
+        )
+        if request.target is not None:
+            fields["lat"] = request.target.lat_deg
+            fields["lon"] = request.target.lon_deg
+        self.event("sensor.request", **fields)
+
+        def on_response(response) -> None:
+            if not response.status:
+                self.event(
+                    "sensor.failed", vehicle=vid, request=request_id,
+                    error=response.error,
+                )
+                return
+            self._on_sensor_result(
+                vid, SensorCaptureResult.from_bytes(response.payload)
+            )
+
+        def on_timeout(_request_id: str) -> None:
+            self.event("sensor.timeout", vehicle=vid, request=request_id)
+
+        timeout_ms = 300_000 if request.mode == "override" else 60_000
+        self.user.request_service_async(
+            vehicle_sensor_service(vid),
+            request.to_bytes(),
+            on_response=on_response,
+            on_timeout=on_timeout,
+            timeout_ms=timeout_ms,
+        )
+
     def _pump_dispatch(self) -> None:
-        """Send the next queued target to the IUAS if it's idle and enabled."""
+        """Assign queued jobs to idle, enabled, capability-matching IUAS.
+
+        Each target carries one job per requested sensor; every idle IUAS
+        that advertises a queued job's sensor gets one — so a camera
+        drone and a microphone drone work the same target concurrently,
+        or one dual-sensor drone flies the jobs back to back. Jobs whose
+        sensor no enabled vehicle carries stay queued (and stop blocking
+        completion once nothing else is in flight)."""
+        to_dispatch = []
         with self.targets_lock:
             if self.mission["state"] not in ("searching", "investigating"):
                 return  # operator aborted: stop draining the queue
-            if not self.enabled.get(self.args.iuas_id, True):
-                # IUAS disabled (e.g. WUAS-only flight): targets confirm
-                # and queue but are never launched. Mission can still
-                # complete — a queued-but-undispatchable target isn't
-                # "in flight", so check completion explicitly.
-                if self.mission["search_done"] and not any(
-                    t["status"] == "investigating"
-                    for t in self.mission["targets"]
-                ):
-                    self._complete_locked(note="iuas-disabled")
-                return
-            if any(
-                t["status"] == "investigating"
+            busy = {
+                j["vehicle"]
                 for t in self.mission["targets"]
-            ):
-                return
-            target = next(
-                (t for t in self.mission["targets"] if t["status"] == "queued"),
-                None,
-            )
-            if target is None:
+                for j in t["jobs"]
+                if j["status"] == "investigating"
+            }
+            for target in self.mission["targets"]:
+                for job in target["jobs"]:
+                    if job["status"] != "queued":
+                        continue
+                    vid = self._pick_vehicle_locked(job["sensor"], busy)
+                    if vid is None:
+                        continue
+                    job["status"] = "investigating"
+                    job["vehicle"] = vid
+                    busy.add(vid)
+                    target["status"] = "investigating"
+                    to_dispatch.append((target, job, vid))
+            if not to_dispatch:
                 self._maybe_complete_locked()
-                return
-            target["status"] = "investigating"
-        self._dispatch_iuas(target)
+        for target, job, vid in to_dispatch:
+            self._dispatch_iuas(target, job, vid)
+
+    def _pick_vehicle_locked(self, sensor: str, busy: set) -> str | None:
+        """First idle, enabled IUAS advertising `sensor`; None if none."""
+        for vid in self.iuas_ids:
+            if vid in busy or not self.enabled.get(vid, True):
+                continue
+            caps = self.capabilities.get(vid, {"camera"})
+            if sensor in caps:
+                return vid
+        return None
 
     def _maybe_complete_locked(self) -> None:
-        """Caller holds targets_lock. Mission ends when the raster is done
-        and no target is queued or in flight."""
+        """Caller holds targets_lock. Mission ends when the raster is done,
+        nothing is in flight, and no queued job could ever be served by a
+        currently enabled vehicle (disabled/absent capability must not
+        hold the mission open forever)."""
         if not self.mission["search_done"]:
             return
         if self.mission["state"] not in ("searching", "investigating"):
             return
-        if any(
-            t["status"] in ("queued", "investigating")
-            for t in self.mission["targets"]
-        ):
+        jobs = [j for t in self.mission["targets"] for j in t["jobs"]]
+        if any(j["status"] == "investigating" for j in jobs):
             self.mission["state"] = "investigating"
             return
-        self._complete_locked()
+        serviceable = [
+            j for j in jobs
+            if j["status"] == "queued"
+            and self._pick_vehicle_locked(j["sensor"], set()) is not None
+        ]
+        if serviceable:
+            self.mission["state"] = "investigating"
+            return
+        unserved = sum(1 for j in jobs if j["status"] == "queued")
+        self._complete_locked(
+            note=f"unserviceable-jobs:{unserved}" if unserved else ""
+        )
 
     def _complete_locked(self, note: str = "") -> None:
         """Caller holds targets_lock. Mark mission done and announce."""
@@ -478,11 +733,13 @@ class Dashboard:
             note=note,
         )
 
-    def _dispatch_iuas(self, target: dict) -> None:
+    def _dispatch_iuas(self, target: dict, job: dict, vid: str) -> None:
         params = self.mission["params"]
         request = InvestigatePointRequest(
             mission_id=self.mission["mission_id"],
-            source_detection_id=f"{target['object_id']}-{target['index']}",
+            source_detection_id=(
+                f"{target['object_id']}-{target['index']}-{job['sensor']}"
+            ),
             target=GeoPoint(
                 lat_deg=target["lat"], lon_deg=target["lon"], alt_m=0.0
             ),
@@ -490,28 +747,76 @@ class Dashboard:
             standoff_m=float(params.get("orbit_radius_m", 6.0)),
             circle_radius_m=float(params.get("orbit_radius_m", 6.0)),
             circle_count=float(params.get("orbit_count", 1.0)),
-            sensor_plan=["front"],
+            sensor_plan=[job["sensor"]],
         )
         self.event(
             "target.dispatch",
             index=target["index"],
-            vehicle=self.args.iuas_id,
+            sensor=job["sensor"],
+            vehicle=vid,
             lat=request.target.lat_deg,
             lon=request.target.lon_deg,
             radius_m=request.circle_radius_m,
             agl_m=request.approach_alt_m,
         )
 
-        def finish(status: str, artifacts: list[str], note: str = "") -> None:
+        def finish(
+            status: str, artifacts: list[str], note: str = "",
+            artifact_objs=(),
+        ) -> None:
             with self.targets_lock:
-                target["status"] = status
-                target["artifacts"] = artifacts
+                job["status"] = status
+                job["artifacts"] = artifacts
+                jobs = target["jobs"]
+                target["artifacts"] = [
+                    a for j in jobs for a in j["artifacts"]
+                ]
+                terminal = all(
+                    j["status"] in ("done", "failed") for j in jobs
+                )
+                if terminal:
+                    target["status"] = (
+                        "done"
+                        if all(j["status"] == "done" for j in jobs)
+                        else "failed"
+                    )
             self.event(
-                "target.completed" if status == "done" else "target.failed",
+                "target.job_completed" if status == "done"
+                else "target.job_failed",
                 index=target["index"],
+                sensor=job["sensor"],
+                vehicle=vid,
                 artifacts=artifacts,
                 note=note,
+                lat=target["lat"], lon=target["lon"],
             )
+            if terminal:
+                self.event(
+                    "target.completed" if target["status"] == "done"
+                    else "target.failed",
+                    index=target["index"],
+                    artifacts=target["artifacts"],
+                    note=note,
+                    lat=target["lat"], lon=target["lon"],
+                )
+            # mission evidence joins the sensor-data layer, pinned at the
+            # capture pose the artifact itself carries
+            for a in artifact_objs:
+                pos = a.pose.position
+                self.add_sensor_data({
+                    "vehicle": vid,
+                    "sensor": job["sensor"],
+                    "kind": a.kind,
+                    "name": a.data_name,
+                    "lat": pos.lat_deg,
+                    "lon": pos.lon_deg,
+                    "t": time.time(),
+                    "source": "mission",
+                    "label": (
+                        f"target #{target['index']} {target['object_id']} "
+                        f"({(target['confidence'] * 100):.0f}%)"
+                    ),
+                })
             self._pump_dispatch()
 
         def on_response(response) -> None:
@@ -525,13 +830,14 @@ class Dashboard:
                 "done" if result.status == "completed" else "failed",
                 [a.data_name for a in result.artifacts],
                 note=result.notes,
+                artifact_objs=result.artifacts,
             )
 
         def on_timeout(_request_id: str) -> None:
             finish("failed", [], note="timeout")
 
         self.user.request_service_async(
-            vehicle_flight_service(self.args.iuas_id, "investigate"),
+            vehicle_flight_service(vid, "investigate"),
             request.to_bytes(),
             on_response=on_response,
             on_timeout=on_timeout,
@@ -729,10 +1035,13 @@ class Dashboard:
                 time.sleep(0.15)
         relay["thread_alive"] = False
 
-    def fetch_artifact_jpeg(self, name: str) -> bytes | None:
+    def fetch_artifact(self, name: str) -> tuple[bytes, str] | None:
+        """Artifact body + declared content type (image/jpeg, audio/wav...)."""
         try:
             payload = fetch_segmented(name, timeout_ms=15000)
-            return frame_body(payload)
+            header = parse_frame(payload)
+            kind = str(header.get("kind") or "image/jpeg")
+            return frame_body(payload), kind
         except Exception as exc:
             self.event("artifact.fetch_failed", name=name, error=str(exc))
             return None
@@ -802,6 +1111,16 @@ class Dashboard:
             vid = message.get("vehicle", "")
             if vid in self.vehicles:
                 self.set_video(vid, message.get("params", {}))
+        elif kind == "sensor":
+            vid = message.get("vehicle", "")
+            if vid in self.vehicles:
+                if not self.enabled.get(vid, True):
+                    self.event(
+                        "sensor.rejected", vehicle=vid,
+                        reason="vehicle disabled",
+                    )
+                else:
+                    self.request_sensor_capture(vid, message.get("params", {}))
         return None
 
 
@@ -819,12 +1138,13 @@ async def run_web(dash: Dashboard, args) -> None:
 
     async def artifact(request):
         name = request.query.get("name", "")
-        body = await asyncio.get_event_loop().run_in_executor(
-            dash.executor, dash.fetch_artifact_jpeg, name
+        result = await asyncio.get_event_loop().run_in_executor(
+            dash.executor, dash.fetch_artifact, name
         )
-        if body is None:
+        if result is None:
             return web.Response(status=404, text="artifact unavailable")
-        return web.Response(body=body, content_type="image/jpeg")
+        body, kind = result
+        return web.Response(body=body, content_type=kind)
 
     async def tile(request):
         """Serve satellite tiles: local cache first, then (if configured
@@ -878,6 +1198,10 @@ async def run_web(dash: Dashboard, args) -> None:
             "type": "hello",
             "vehicles": dash.vehicles,
             "enabled": dash.enabled,
+            "capabilities": {
+                v: sorted(c) for v, c in dash.capabilities.items()
+            },
+            "sensor_data": list(dash.sensor_data),
             "mission": {
                 "state": dash.mission["state"],
                 "mission_id": dash.mission["mission_id"],

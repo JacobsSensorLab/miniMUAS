@@ -5,8 +5,8 @@ One NDNSF provider per drone, registering every vehicle service:
 
   wuas + iuas : flight/rtl, flight/land, flight/hold, video/control
   wuas only   : flight/raster-search (lawnmower + capture-per-point)
-  iuas only   : flight/investigate (same execution path as the validated
-                run_iuas_provider: investigate_plan over sim or MAVLink)
+  iuas only   : flight/investigate (climb + continuous carrot orbit,
+                streamed guided targets on sim or MAVLink)
 
 Continuous publications (segmented objects, short freshness, latest-wins):
 
@@ -46,6 +46,8 @@ from contracts import (
     RasterSearchRequest,
     RasterSearchResult,
     SearchStatus,
+    SensorCaptureRequest,
+    SensorCaptureResult,
     TakeoffRequest,
     TelemetrySample,
     VideoControlRequest,
@@ -53,8 +55,11 @@ from contracts import (
     gps_time_ns,
     mission_frame_name,
     mission_sensor_name,
+    tasked_sensor_name,
     vehicle_flight_service,
     vehicle_search_status_name,
+    vehicle_sensor_event_name,
+    vehicle_sensor_service,
     vehicle_telemetry_live_name,
     vehicle_telemetry_state_name,
     vehicle_video_live_name,
@@ -85,6 +90,221 @@ def _dist_m(lat_a, lon_a, lat_b, lon_b) -> float:
     return math.hypot(dn, de)
 
 
+def _leg_axis(leg_start, leg_end):
+    """Unit vector (north, east) and length in metres of one raster leg."""
+    lat0 = (leg_start[0] + leg_end[0]) / 2.0
+    dn = (leg_end[0] - leg_start[0]) * EARTH_M_PER_DEG_LAT
+    de = (leg_end[1] - leg_start[1]) * _m_per_deg_lon(lat0)
+    length = math.hypot(dn, de)
+    if length < 1e-6:
+        return (1.0, 0.0), 0.0
+    return (dn / length, de / length), length
+
+
+def _along_leg_m(leg_start, axis, lat, lon) -> float:
+    """Projection of (lat, lon) onto the leg axis, metres from leg_start."""
+    dn = (lat - leg_start[0]) * EARTH_M_PER_DEG_LAT
+    de = (lon - leg_start[1]) * _m_per_deg_lon(leg_start[0])
+    return dn * axis[0] + de * axis[1]
+
+
+def fly_raster(
+    flight,
+    plan,
+    *,
+    agl_m: float,
+    speed_m_s: float,
+    abort: threading.Event,
+    deadline_mono: float,
+    on_capture,
+    on_leg,
+    service_interrupt=None,
+) -> str:
+    """Fly the serpentine raster as one continuous motion.
+
+    Field debrief 2026-07: the previous loop commanded only each leg's far
+    end (so the vehicle cut diagonals that never overflew the capture
+    points), fired captures on a proximity radius those diagonals never
+    entered, and then refused to leave the leg end while captures were
+    still "pending" — with a leg deadline that assumed 0.3 m/s. Net
+    effect: fly to one waypoint, hover for minutes. This version
+
+      * transits to each leg's START, so the leg itself is flown on-line;
+      * fires captures by ALONG-TRACK progress — a point is captured the
+        moment the vehicle passes abeam of it, regardless of cross-track
+        GPS scatter, with the actual pose stamped into the frame;
+      * never waits at a leg end: on arrival any not-yet-fired points are
+        captured immediately and the next leg is commanded;
+      * re-sends the position target every 2 s so one lost
+        SET_POSITION_TARGET cannot strand the vehicle in a hover;
+      * sizes deadlines from the commanded speed, not a 0.3 m/s floor.
+
+    `service_interrupt`, when given, is polled each control tick: it
+    services any pending operator override (fly to a point, capture,
+    fly back to where the raster was interrupted) and returns True if it
+    did — the loop then re-commands its current target and the sweep
+    resumes exactly where it left off.
+
+    Returns "completed", "aborted", or "timeout".
+    """
+    speed = max(float(speed_m_s), 0.3)
+    caps_by_leg: dict[int, list] = {}
+    for cp in plan.captures:
+        caps_by_leg.setdefault(cp.leg, []).append(cp)
+
+    def cruise(t_lat, t_lon, fire_from=None) -> str:
+        here = flight.position()
+        travel_deadline = (
+            time.monotonic()
+            + _dist_m(here[0], here[1], t_lat, t_lon) / (0.5 * speed)
+            + 45.0
+        )
+        next_send = 0.0
+        while True:
+            if abort.is_set():
+                return "aborted"
+            now = time.monotonic()
+            if now > deadline_mono:
+                return "timeout"
+            if service_interrupt is not None and service_interrupt():
+                next_send = 0.0  # we were flown elsewhere: re-command
+                continue
+            if now >= next_send:
+                flight.goto(t_lat, t_lon, agl_m)
+                next_send = now + 2.0
+            here = flight.position()
+            if fire_from is not None:
+                leg_start, axis, pending = fire_from
+                along = _along_leg_m(leg_start, axis, here[0], here[1])
+                while pending and pending[0][0] <= along:
+                    _, cp = pending.pop(0)
+                    on_capture(cp, here)
+            if flight.at_target(t_lat, t_lon, agl_m, tol_m=2.5):
+                return "arrived"
+            if now > travel_deadline:
+                # blocked short of the target (wind, EKF disagreement):
+                # move on rather than hover — the caller captures any
+                # stragglers so coverage is not silently dropped
+                return "arrived"
+            time.sleep(0.1)
+
+    for leg_index, (leg_start, leg_end) in enumerate(plan.legs):
+        on_leg(leg_index)
+        outcome = cruise(leg_start[0], leg_start[1])
+        if outcome in ("aborted", "timeout"):
+            return outcome
+        axis, _length = _leg_axis(leg_start, leg_end)
+        pending = sorted(
+            (
+                (_along_leg_m(leg_start, axis, cp.lat_deg, cp.lon_deg), cp)
+                for cp in caps_by_leg.get(leg_index, [])
+            ),
+            key=lambda item: item[0],
+        )
+        outcome = cruise(leg_end[0], leg_end[1], (leg_start, axis, pending))
+        for _, cp in pending:
+            if abort.is_set():
+                return "aborted"
+            on_capture(cp, flight.position())
+        if outcome in ("aborted", "timeout"):
+            return outcome
+    return "completed"
+
+
+def fly_orbit(
+    flight,
+    *,
+    center_lat: float,
+    center_lon: float,
+    agl_m: float,
+    radius_m: float,
+    turns: float,
+    speed_m_s: float,
+    abort: threading.Event,
+    tick_s: float = 0.4,
+) -> str:
+    """Continuous carrot-chasing orbit around a ground point.
+
+    The old segmented waypoint ring (12–16 position targets per lap, each
+    with an arrival wait) made the vehicle brake and pitch at every
+    vertex. Instead, stream guided position targets: each tick, read the
+    vehicle's ACTUAL bearing from the center and command the point on the
+    circle a fixed lead-arc ahead, yaw facing the center. The autopilot
+    chases a smoothly moving target, so the path is a clean circle.
+    Closed-loop on measured bearing (not open-loop time) so wind cannot
+    detach the carrot; sweep accumulates from measured motion, so `turns`
+    means what it says. Returns "completed", "aborted", or "timeout".
+    """
+    radius = max(float(radius_m), 2.0)
+    speed = min(max(float(speed_m_s), 0.5), 8.0)
+    turns = max(float(turns), 0.25)
+    m_lon = _m_per_deg_lon(center_lat)
+
+    def bearing_dist(lat, lon):
+        dn = (lat - center_lat) * EARTH_M_PER_DEG_LAT
+        de = (lon - center_lon) * m_lon
+        return math.atan2(de, dn), math.hypot(dn, de)
+
+    def circle_point(ang):
+        return (
+            center_lat + radius * math.cos(ang) / EARTH_M_PER_DEG_LAT,
+            center_lon + radius * math.sin(ang) / m_lon,
+        )
+
+    # enter at the nearest point of the circle (due north when starting
+    # from over the center, where "nearest" is undefined)
+    here = flight.position()
+    ang, dist = bearing_dist(here[0], here[1])
+    if dist < 1.0:
+        ang = 0.0
+    elat, elon = circle_point(ang)
+    entry_deadline = (
+        time.monotonic()
+        + max(_dist_m(here[0], here[1], elat, elon), 5.0) / (0.5 * speed)
+        + 30.0
+    )
+    next_send = 0.0
+    while not flight.at_target(elat, elon, agl_m, tol_m=2.5):
+        if abort.is_set():
+            return "aborted"
+        now = time.monotonic()
+        if now > entry_deadline:
+            return "timeout"
+        if now >= next_send:
+            flight.goto(elat, elon, agl_m)
+            next_send = now + 2.0
+        time.sleep(0.2)
+
+    # lead arc ~1.5 s of travel, clamped so the carrot stays meaningfully
+    # ahead without pulling the track inside the circle (the vehicle flies
+    # the chord to the carrot; chord depth grows with the lead angle)
+    lead = min(0.8, max(0.25, speed * 1.5 / radius))
+    goal = 2.0 * math.pi * turns
+    swept = 0.0
+    here = flight.position()
+    prev_ang, _ = bearing_dist(here[0], here[1])
+    budget = time.monotonic() + ((goal + lead) * radius / speed) * 3.0 + 60.0
+    while swept < goal:
+        if abort.is_set():
+            return "aborted"
+        if time.monotonic() > budget:
+            return "timeout"
+        here = flight.position()
+        ang, _ = bearing_dist(here[0], here[1])
+        delta = ang - prev_ang
+        while delta > math.pi:
+            delta -= 2.0 * math.pi
+        while delta < -math.pi:
+            delta += 2.0 * math.pi
+        swept = max(0.0, swept + delta)  # clockwise = increasing bearing
+        prev_ang = ang
+        t_lat, t_lon = circle_point(ang + lead)
+        yaw = (math.degrees(ang) + 180.0) % 360.0  # face the center
+        flight.goto(t_lat, t_lon, agl_m, yaw_deg=yaw)
+        time.sleep(tick_s)
+    return "completed"
+
+
 # ---------------------------------------------------------------------------
 # Flight backends
 # ---------------------------------------------------------------------------
@@ -105,6 +325,8 @@ class SimFlightBackend:
         self._agl = 0.0
         self._target = None  # (lat, lon, agl)
         self._speed = 2.0
+        self._heading = 0.0
+        self._yaw_cmd = None
         self.armed = False
         self.mode = "STABILIZE"
         self._stop = threading.Event()
@@ -125,6 +347,13 @@ class SimFlightBackend:
                 # horizontal
                 dist = _dist_m(self._lat, self._lon, t_lat, t_lon)
                 step = self._speed * dt
+                if self._yaw_cmd is not None:
+                    self._heading = self._yaw_cmd  # guided yaw override
+                elif dist > 0.2:
+                    self._heading = math.degrees(math.atan2(
+                        (t_lon - self._lon) * _m_per_deg_lon(self._lat),
+                        (t_lat - self._lat) * EARTH_M_PER_DEG_LAT,
+                    )) % 360.0
                 if dist <= step or dist < 0.05:
                     self._lat, self._lon = t_lat, t_lon
                 else:
@@ -163,10 +392,11 @@ class SimFlightBackend:
         # kinematic sim (arm, climb to agl, hold).
         return self.ensure_airborne(agl)
 
-    def goto(self, lat: float, lon: float, agl: float) -> None:
+    def goto(self, lat: float, lon: float, agl: float, *, yaw_deg=None) -> None:
         with self._lock:
             self.mode = "GUIDED"
             self._target = (lat, lon, agl)
+            self._yaw_cmd = yaw_deg
 
     def at_target(self, lat, lon, agl, tol_m=1.0) -> bool:
         p = self.position()
@@ -175,23 +405,34 @@ class SimFlightBackend:
             and abs(p[2] - agl) <= max(0.5, tol_m / 2)
         )
 
+    def heading(self) -> float | None:
+        with self._lock:
+            return self._heading
+
+    def attitude(self):
+        """(roll_deg, pitch_deg); the bench vehicle is always level."""
+        return (0.0, 0.0)
+
     def rtl(self) -> bool:
         with self._lock:
             home = getattr(self, "_home", (self._lat, self._lon))
             self.mode = "RTL"
             self._target = (home[0], home[1], 0.0)
+            self._yaw_cmd = None
         return True
 
     def land(self) -> bool:
         with self._lock:
             self.mode = "LAND"
             self._target = (self._lat, self._lon, 0.0)
+            self._yaw_cmd = None
         return True
 
     def hold(self) -> bool:
         with self._lock:
             self.mode = "GUIDED"
             self._target = (self._lat, self._lon, self._agl)
+            self._yaw_cmd = None
         return True
 
     def telemetry(self) -> dict:
@@ -201,6 +442,7 @@ class SimFlightBackend:
             "lon_deg": lon,
             "alt_m": agl,
             "agl_m": agl,
+            "heading_deg": self.heading() or 0.0,
             "armed": self.armed,
             "mode": self.mode,
         }
@@ -266,10 +508,10 @@ class MavlinkFlightBackend:
         # raster/investigate use, exposed as its own command.
         return self.ensure_airborne(agl)
 
-    def goto(self, lat: float, lon: float, agl: float) -> None:
+    def goto(self, lat: float, lon: float, agl: float, *, yaw_deg=None) -> None:
         # agl passes straight through: link sends it as the RELATIVE_ALT
         # wire value (home_alt_m=0).
-        self._link.goto(lat, lon, agl)
+        self._link.goto(lat, lon, agl, yaw_deg=yaw_deg)
 
     def at_target(self, lat, lon, agl, tol_m=2.0) -> bool:
         p = self.position()
@@ -277,6 +519,64 @@ class MavlinkFlightBackend:
             _dist_m(p[0], p[1], lat, lon) <= tol_m
             and abs(p[2] - agl) <= max(1.0, tol_m)
         )
+
+    def heading(self) -> float | None:
+        """Compass heading at the last telemetry drain, degrees, or None.
+
+        MavlinkDroneLink doesn't decode GLOBAL_POSITION_INT.hdg, but
+        pymavlink caches the last message of every type on the
+        connection; position() above already drained it. 65535 = unknown.
+        """
+        try:
+            msg = self._link._inner._conn.messages.get("GLOBAL_POSITION_INT")
+            hdg = getattr(msg, "hdg", None)
+            if hdg is None or int(hdg) >= 65535:
+                return None
+            return (int(hdg) % 36000) / 100.0
+        except Exception:
+            return None
+
+    def attitude(self):
+        """(roll_deg, pitch_deg) from the ATTITUDE cache, or None.
+
+        A translating multirotor is NOT level — nose-down pitch swings a
+        belly camera's footprint backward by AGL·tan(pitch). Captured
+        with every frame so the GCS ray-casts through the true attitude.
+        """
+        try:
+            msg = self._link._inner._conn.messages.get("ATTITUDE")
+            if msg is None:
+                return None
+            return (
+                math.degrees(float(msg.roll)),
+                math.degrees(float(msg.pitch)),
+            )
+        except Exception:
+            return None
+
+    def rangefinder_m(self) -> float:
+        """Downward rangefinder AGL, metres; -1 when not fitted/no data.
+
+        These airframes fly WITHOUT rangefinders today — every consumer
+        treats -1 as "absent" and falls back to baro AGL, so this must
+        never gate a mission. If one is ever fitted it starts feeding the
+        low-altitude cross-check for free.
+        """
+        try:
+            msgs = self._link._inner._conn.messages
+            m = msgs.get("RANGEFINDER")
+            if m is not None and float(m.distance) > 0.0:
+                return float(m.distance)
+            m = msgs.get("DISTANCE_SENSOR")
+            if (
+                m is not None
+                and int(getattr(m, "orientation", 25)) == 25  # facing down
+                and int(m.current_distance) > 0
+            ):
+                return int(m.current_distance) / 100.0
+        except Exception:
+            pass
+        return -1.0
 
     def rtl(self) -> bool:
         return bool(self._link.rtl())
@@ -303,14 +603,21 @@ class MavlinkFlightBackend:
                 battery_pct = float(bp)
         except Exception:
             pass
+        rf = self.rangefinder_m()
+        # cross-check only when a rangefinder exists AND is in its
+        # trustworthy band; drones without one (rf = -1) never alarm
+        alarm = 0.0 < rf < 8.0 and abs(rf - agl) > 2.0
         return {
             "lat_deg": lat,
             "lon_deg": lon,
             "alt_m": agl,  # AGL frame throughout
             "agl_m": agl,
+            "heading_deg": self.heading() or 0.0,
             "armed": bool(self._link.is_armed()),
             "mode": str(getattr(inner, "mode", "") or ""),
             "battery_pct": battery_pct,
+            "rangefinder_m": rf,
+            "agl_alarm": bool(alarm),
         }
 
 
@@ -362,17 +669,30 @@ class CameraHub:
                 self._latest_ts,
             )
 
-    def jpeg(self, *, width=None, height=None, quality=85):
-        """Latest frame as JPEG bytes (optionally downscaled); None if dry."""
+    def jpeg(self, *, width=None, quality=85):
+        """Latest frame as JPEG, downscaled to `width` preserving aspect.
+
+        Returns (bytes, (w, h), ts) or (None, None, 0.0) when dry. The
+        aspect ratio is ALWAYS preserved: the old fixed width×height
+        resize silently squashed non-8:5 sensors, which broke the nadir
+        projection's square-pixel assumption (vertical ground offsets
+        scaled by the squash factor). Callers embed the returned actual
+        dimensions in the frame header.
+        """
         frame, ts = self.latest_bgr()
         if frame is None or self._cv2 is None:
-            return None, 0.0
-        if width and height:
-            frame = self._cv2.resize(frame, (int(width), int(height)))
+            return None, None, 0.0
+        h0, w0 = frame.shape[:2]
+        if width and int(width) < w0:
+            w = int(width)
+            h = max(2, int(round(w * h0 / w0)))
+            frame = self._cv2.resize(frame, (w, h))
+        else:
+            w, h = w0, h0
         ok, buf = self._cv2.imencode(
             ".jpg", frame, [int(self._cv2.IMWRITE_JPEG_QUALITY), int(quality)]
         )
-        return (buf.tobytes() if ok else None), ts
+        return (buf.tobytes() if ok else None), (w, h), ts
 
     def capture_frame_payload(self, **kwargs) -> bytes:
         """Full frame-container payload via the underlying source.
@@ -381,16 +701,15 @@ class CameraHub:
         synthetic/file sources this just delegates.
         """
         if self._cv2 is not None:
-            body, _ = self.jpeg(quality=85)
+            body, dims, _ = self.jpeg(quality=85)
             if body is not None:
-                frame, _ = self.latest_bgr()
-                h, w = frame.shape[:2]
                 return build_frame_bytes(
-                    body, kind="image/jpeg", width=w, height=h, **kwargs
+                    body, kind="image/jpeg",
+                    width=dims[0], height=dims[1], **kwargs
                 )
         return self._source.capture(**kwargs)
 
-    # frame-source surface for investigate_plan.execute_investigation
+    # frame-source surface (capture(**kwargs) -> frame payload bytes)
     capture = capture_frame_payload
 
     @property
@@ -436,9 +755,31 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--role", choices=["wuas", "iuas"], required=True)
     parser.add_argument("--vehicle-id", default=None)
     parser.add_argument("--camera", default="synthetic")
+    parser.add_argument(
+        "--audio", default="none",
+        help="Microphone source for the iuas audio capability (audio.py): "
+        "none, synthetic[:hz], or alsa:<device>[?rate=16000]. When set, "
+        "the vehicle advertises 'audio' and an investigate whose "
+        "sensor_plan includes audio records a WAV clip from the orbit.",
+    )
+    parser.add_argument(
+        "--audio-seconds", type=float, default=6.0,
+        help="Length of the audio clip recorded per investigation.",
+    )
+    parser.add_argument(
+        "--audio-range-m", type=float, default=30.0,
+        help="Audio captures tied to a target point only record while the "
+        "vehicle is within this range of it — the microphone is never hot "
+        "outside a tasked window. 0 disables the guard.",
+    )
     parser.add_argument("--mavlink-endpoint", default=None)
     parser.add_argument("--uas-ipbrc-root", default=None)
-    parser.add_argument("--telemetry-hz", type=float, default=1.0)
+    parser.add_argument(
+        "--telemetry-hz", type=float, default=4.0,
+        help="Telemetry publish rate. 4 Hz keeps the dashboard marker "
+        "moving smoothly; samples are ~300 bytes, so the radio cost is "
+        "negligible next to one video frame.",
+    )
     parser.add_argument(
         "--sim-lat", type=float, default=None,
         help="Sim start latitude (default: bench home)",
@@ -490,6 +831,21 @@ def main() -> int:
         return 2
     print_json("agent.camera.ready", **camera.describe())
 
+    audio_src = None
+    if args.audio and args.audio != "none":
+        from audio import audio_source_from_spec
+
+        try:
+            audio_src = audio_source_from_spec(args.audio)
+        except Exception as exc:
+            # a broken microphone must not ground the aircraft: fly
+            # camera-only and say so, loudly
+            print_json(
+                "agent.audio.unavailable", audio=args.audio, error=str(exc)
+            )
+        else:
+            print_json("agent.audio.ready", **audio_src.describe())
+
     if args.mavlink_endpoint:
         try:
             flight = MavlinkFlightBackend(
@@ -510,6 +866,14 @@ def main() -> int:
         flight = SimFlightBackend(sim_lat, sim_lon)
     print_json("agent.flight.ready", backend=flight.source)
 
+    # Floor for commandable altitudes. On a real autopilot this must stay
+    # above 3 m: MavlinkDroneLink.goto() suppresses ALL position targets
+    # until the vehicle is 3 m off the ground after a takeoff (protecting
+    # ArduCopter's guided-takeoff sub-state) — a mission commanded below
+    # that never receives a single goto and hovers at the takeoff point
+    # forever. Reject it at the ack instead.
+    min_agl = 3.5 if flight.source == "mavlink" else 0.5
+
     add_ndnsf_path(args.ndnsf_root)
     from ndnsf import AckDecision, ServiceProvider, ServiceResponse
 
@@ -526,9 +890,203 @@ def main() -> int:
     }
     producers_keepalive: list[object] = []  # frames must outlive handlers
 
-    telemetry_pub = LatestPublisher(vehicle_telemetry_live_name(vehicle_id))
+    telemetry_pub = LatestPublisher(
+        vehicle_telemetry_live_name(vehicle_id), freshness_ms=700
+    )
     search_pub = LatestPublisher(vehicle_search_status_name(vehicle_id))
     video_status_pub = LatestPublisher(vehicle_video_status_name(vehicle_id))
+    sensor_event_pub = LatestPublisher(
+        vehicle_sensor_event_name(vehicle_id), freshness_ms=3000
+    )
+
+    # ---- operator sensor tasking --------------------------------------------
+    # Sensors are mission-controlled: nothing records or captures outside
+    # an explicit window. This is the tasking state — a single pending
+    # raster OVERRIDE (serviced by fly_raster between control ticks) and
+    # any number of OPPORTUNISTIC watchpoints (fired by the monitor loop
+    # whenever the vehicle happens to pass within range, whatever it is
+    # doing at the time).
+    tasking_lock = threading.Lock()
+    tasking = {"override": None, "watchpoints": []}
+    sensor_seq = {"n": 0}
+
+    def agent_sensors() -> set:
+        return {"camera"} | ({"audio"} if audio_src else set())
+
+    def do_sensor_capture(req: SensorCaptureRequest) -> SensorCaptureResult:
+        """Capture `req.sensor` at the CURRENT position and publish it."""
+        here = flight.position()
+        ts = gps_time_ns()
+        heading = flight.heading() if hasattr(flight, "heading") else None
+        sensor_seq["n"] += 1
+        meta = {
+            "request_id": req.request_id,
+            "note": req.note,
+            "lat_deg": f"{here[0]:.7f}",
+            "lon_deg": f"{here[1]:.7f}",
+            "agl_m": f"{here[2]:.2f}",
+            **({"heading_deg": f"{heading:.1f}"} if heading is not None else {}),
+        }
+        try:
+            if req.sensor == "audio":
+                if audio_src is None:
+                    raise RuntimeError("no audio capability")
+                if (
+                    req.target is not None
+                    and args.audio_range_m > 0
+                    and _dist_m(
+                        here[0], here[1],
+                        req.target.lat_deg, req.target.lon_deg,
+                    ) > args.audio_range_m
+                ):
+                    raise RuntimeError(
+                        f"outside audio range ({args.audio_range_m:.0f} m) "
+                        "of the requested target"
+                    )
+                body = audio_src.record_wav(
+                    max(1.0, min(req.duration_s, 30.0))
+                )
+                name = tasked_sensor_name(
+                    vehicle_id, "mic", "audio", ts, sensor_seq["n"]
+                )
+                payload_bytes = build_frame_bytes(
+                    body,
+                    mission_id="tasked",
+                    vehicle_id=vehicle_id,
+                    sensor_id="mic",
+                    gps_time_ns=ts,
+                    kind="audio/wav",
+                    metadata=meta,
+                )
+            else:
+                payload_bytes = camera.capture_frame_payload(
+                    mission_id="tasked",
+                    vehicle_id=vehicle_id,
+                    sensor_id="bottom",
+                    gps_time_ns=ts,
+                    metadata=meta,
+                )
+                name = tasked_sensor_name(
+                    vehicle_id, "bottom", "frame", ts, sensor_seq["n"]
+                )
+            producer = publish_segmented(name, payload_bytes)
+            producers_keepalive.append(producer)
+            result = SensorCaptureResult(
+                request_id=req.request_id,
+                vehicle_id=vehicle_id,
+                sensor=req.sensor,
+                status="captured",
+                artifacts=[name],
+                lat_deg=here[0], lon_deg=here[1], agl_m=here[2],
+                gps_time_ns=ts,
+            )
+        except Exception as exc:
+            result = SensorCaptureResult(
+                request_id=req.request_id,
+                vehicle_id=vehicle_id,
+                sensor=req.sensor,
+                status="failed",
+                message=str(exc),
+                lat_deg=here[0], lon_deg=here[1], agl_m=here[2],
+                gps_time_ns=ts,
+            )
+        try:
+            sensor_event_pub.publish(result.to_bytes())
+        except Exception:
+            pass
+        print_json(
+            "agent.sensor.capture",
+            request=req.request_id, sensor=req.sensor,
+            status=result.status, message=result.message,
+            artifacts=result.artifacts,
+        )
+        return result
+
+    def goto_and_wait(lat: float, lon: float, agl: float,
+                      tol_m: float = 2.5, timeout_s: float = 120.0) -> bool:
+        flight.goto(lat, lon, agl)
+        next_send = time.monotonic() + 2.0
+        deadline = time.monotonic() + timeout_s
+        while not flight.at_target(lat, lon, agl, tol_m=tol_m):
+            if abort.is_set() or time.monotonic() > deadline:
+                return False
+            if time.monotonic() >= next_send:
+                flight.goto(lat, lon, agl)
+                next_send = time.monotonic() + 2.0
+            time.sleep(0.2)
+        return True
+
+    def service_override() -> bool:
+        """fly_raster hook: serve one pending override capture, then
+        return the vehicle to where the sweep was interrupted."""
+        with tasking_lock:
+            entry = tasking["override"]
+            tasking["override"] = None
+        if entry is None:
+            return False
+        req, done, slot = entry
+        resume = flight.position()
+        print_json(
+            "agent.sensor.override_start",
+            request=req.request_id, sensor=req.sensor,
+        )
+        if req.target is not None and goto_and_wait(
+            req.target.lat_deg, req.target.lon_deg, resume[2],
+            tol_m=max(2.5, req.radius_m),
+        ):
+            slot["result"] = do_sensor_capture(req)
+        else:
+            slot["result"] = SensorCaptureResult(
+                request_id=req.request_id, vehicle_id=vehicle_id,
+                sensor=req.sensor, status="failed",
+                message="could not reach override target (aborted or timed out)",
+            )
+        # resume: fly back to the interrupt point before handing control
+        # back to the sweep
+        goto_and_wait(resume[0], resume[1], resume[2])
+        done.set()
+        return True
+
+    def watchpoint_loop() -> None:
+        while True:
+            time.sleep(0.5)
+            with tasking_lock:
+                pending = list(tasking["watchpoints"])
+            if not pending:
+                continue
+            here = flight.position()
+            now = time.monotonic()
+            for wp in pending:
+                req = wp["req"]
+                fire = expired = False
+                if now > wp["expires"]:
+                    expired = True
+                elif req.target is not None and _dist_m(
+                    here[0], here[1],
+                    req.target.lat_deg, req.target.lon_deg,
+                ) <= max(req.radius_m, 1.0):
+                    fire = True
+                if not (fire or expired):
+                    continue
+                with tasking_lock:
+                    if wp in tasking["watchpoints"]:
+                        tasking["watchpoints"].remove(wp)
+                    else:
+                        continue  # raced with another disposition
+                if expired:
+                    try:
+                        sensor_event_pub.publish(SensorCaptureResult(
+                            request_id=req.request_id,
+                            vehicle_id=vehicle_id,
+                            sensor=req.sensor,
+                            status="failed",
+                            message="watchpoint expired before the vehicle "
+                            "passed within range",
+                        ).to_bytes())
+                    except Exception:
+                        pass
+                else:
+                    do_sensor_capture(req)
 
     def set_busy(task: str) -> bool:
         with state_lock:
@@ -582,9 +1140,8 @@ def main() -> int:
                 time.sleep(0.25)
                 continue
             t0 = time.monotonic()
-            jpeg, ts = camera.jpeg(
+            jpeg, _dims, ts = camera.jpeg(
                 width=video_cfg["width"],
-                height=video_cfg["height"],
                 quality=video_cfg["quality"],
             )
             if jpeg is not None:
@@ -676,17 +1233,17 @@ def main() -> int:
         request = TakeoffRequest.from_bytes(payload)
         if busy["task"]:
             return AckDecision(status=False, message=f"busy:{busy['task']}")
-        if not (0.5 <= request.target_agl_m <= args.max_agl_m):
+        if not (min_agl <= request.target_agl_m <= args.max_agl_m):
             return AckDecision(
                 status=False,
-                message=f"agl {request.target_agl_m} outside 0.5..{args.max_agl_m}",
+                message=f"agl {request.target_agl_m} outside {min_agl}..{args.max_agl_m}",
             )
         return AckDecision(status=True, message=f"agl={request.target_agl_m}")
 
     @provider.handler(vehicle_flight_service(vehicle_id, "takeoff"))
     def cmd_takeoff(payload: bytes) -> bytes:
         request = TakeoffRequest.from_bytes(payload)
-        if not (0.5 <= request.target_agl_m <= args.max_agl_m):
+        if not (min_agl <= request.target_agl_m <= args.max_agl_m):
             return FlightCommandResult(
                 vehicle_id=vehicle_id, command="takeoff", status="rejected",
                 message=f"agl {request.target_agl_m} outside guard",
@@ -718,8 +1275,124 @@ def main() -> int:
             message=message,
         ).to_bytes()
 
+    # ---- service: sensor/capture (operator tasking, all roles) -------------
+    sensor_service = vehicle_sensor_service(vehicle_id)
+
+    @provider.ack_handler(sensor_service)
+    def ack_sensor(payload: bytes) -> AckDecision:
+        req = SensorCaptureRequest.from_bytes(payload)
+        if req.sensor not in agent_sensors():
+            return AckDecision(
+                status=False,
+                message=f"sensor {req.sensor!r} not carried "
+                f"(have: {sorted(agent_sensors())})",
+            )
+        if req.mode not in ("now", "override", "opportunistic"):
+            return AckDecision(status=False, message=f"unknown mode {req.mode!r}")
+        if req.mode in ("override", "opportunistic") and req.target is None:
+            return AckDecision(status=False, message=f"{req.mode} needs a target")
+        if req.target is not None:
+            here = flight.position()
+            range_m = _dist_m(
+                here[0], here[1], req.target.lat_deg, req.target.lon_deg
+            )
+            if range_m > args.max_range_m:
+                return AckDecision(
+                    status=False,
+                    message=f"target {range_m:.0f}m away > "
+                    f"{args.max_range_m:.0f}m guard",
+                )
+        if req.mode == "override" and busy["task"] == "investigate":
+            return AckDecision(
+                status=False, message="override rejected mid-investigation"
+            )
+        return AckDecision(status=True, message=req.mode)
+
+    @provider.handler(sensor_service)
+    def sensor_capture(payload: bytes) -> bytes:
+        req = SensorCaptureRequest.from_bytes(payload)
+        if req.mode == "opportunistic":
+            with tasking_lock:
+                tasking["watchpoints"].append({
+                    "req": req,
+                    "expires": time.monotonic() + max(30.0, req.expires_s),
+                })
+            print_json(
+                "agent.sensor.watchpoint",
+                request=req.request_id, sensor=req.sensor,
+                radius_m=req.radius_m, expires_s=req.expires_s,
+            )
+            return SensorCaptureResult(
+                request_id=req.request_id, vehicle_id=vehicle_id,
+                sensor=req.sensor, status="queued",
+                message="watchpoint armed; fires when the vehicle passes "
+                f"within {req.radius_m:.0f} m",
+            ).to_bytes()
+
+        if req.mode == "now" or req.target is None:
+            # capture where we are — the "directly requested" case
+            return do_sensor_capture(req).to_bytes()
+
+        # override with a target
+        if busy["task"] == "raster-search":
+            done = threading.Event()
+            slot: dict = {}
+            with tasking_lock:
+                if tasking["override"] is not None:
+                    return SensorCaptureResult(
+                        request_id=req.request_id, vehicle_id=vehicle_id,
+                        sensor=req.sensor, status="rejected",
+                        message="another override is already pending",
+                    ).to_bytes()
+                tasking["override"] = (req, done, slot)
+            if not done.wait(timeout=240.0):
+                with tasking_lock:
+                    if (
+                        tasking["override"] is not None
+                        and tasking["override"][0] is req
+                    ):
+                        tasking["override"] = None
+                return SensorCaptureResult(
+                    request_id=req.request_id, vehicle_id=vehicle_id,
+                    sensor=req.sensor, status="failed",
+                    message="override not serviced (raster ended or busy); "
+                    "re-issue as mode=now near the point",
+                ).to_bytes()
+            return slot["result"].to_bytes()
+
+        # idle vehicle: fly there, capture, hold at the point
+        if not set_busy("sensor-capture"):
+            return SensorCaptureResult(
+                request_id=req.request_id, vehicle_id=vehicle_id,
+                sensor=req.sensor, status="rejected",
+                message=f"busy:{busy['task']}",
+            ).to_bytes()
+        abort.clear()
+        try:
+            here = flight.position()
+            agl = max(here[2], min_agl)
+            if not flight.ensure_airborne(agl):
+                return SensorCaptureResult(
+                    request_id=req.request_id, vehicle_id=vehicle_id,
+                    sensor=req.sensor, status="failed",
+                    message="could not get airborne",
+                ).to_bytes()
+            if not goto_and_wait(
+                req.target.lat_deg, req.target.lon_deg, agl,
+                tol_m=max(2.5, req.radius_m),
+            ):
+                return SensorCaptureResult(
+                    request_id=req.request_id, vehicle_id=vehicle_id,
+                    sensor=req.sensor, status="failed",
+                    message="could not reach the target point",
+                ).to_bytes()
+            return do_sensor_capture(req).to_bytes()
+        finally:
+            set_busy("")
+
     services = [
         vehicle_video_service(vehicle_id),
+        vehicle_sensor_service(vehicle_id),
         vehicle_flight_service(vehicle_id, "rtl"),
         vehicle_flight_service(vehicle_id, "land"),
         vehicle_flight_service(vehicle_id, "hold"),
@@ -736,10 +1409,10 @@ def main() -> int:
             request = RasterSearchRequest.from_bytes(payload)
             if busy["task"]:
                 return AckDecision(status=False, message=f"busy:{busy['task']}")
-            if not (0.5 <= request.agl_m <= args.max_agl_m):
+            if not (min_agl <= request.agl_m <= args.max_agl_m):
                 return AckDecision(
                     status=False,
-                    message=f"agl {request.agl_m} outside 0.5..{args.max_agl_m}",
+                    message=f"agl {request.agl_m} outside {min_agl}..{args.max_agl_m}",
                 )
             from raster import resolve_area
 
@@ -816,9 +1489,19 @@ def main() -> int:
                 name = mission_frame_name(
                     request.mission_id, vehicle_id, "bottom", ts, frame_index
                 )
-                jpeg, _ = camera.jpeg(
+                # heading: the ACTUAL compass heading at capture when the
+                # FC provides one — the planned leg heading was wrong
+                # whenever the vehicle was crabbing, turning, or hovering,
+                # and every degree of error swings the geo-projection by
+                # the in-frame lever arm
+                heading = flight.heading() if hasattr(flight, "heading") else None
+                if heading is None:
+                    heading = cp.heading_deg
+                attitude = (
+                    flight.attitude() if hasattr(flight, "attitude") else None
+                )
+                jpeg, dims, _ = camera.jpeg(
                     width=args.search_frame_width,
-                    height=args.search_frame_height,
                     quality=args.search_frame_quality,
                 )
                 if jpeg is None:
@@ -827,7 +1510,7 @@ def main() -> int:
                         vehicle_id=vehicle_id,
                         sensor_id="bottom",
                         gps_time_ns=ts,
-                        metadata={"heading_deg": str(cp.heading_deg)},
+                        metadata={"heading_deg": f"{heading:.1f}"},
                     )
                 else:
                     payload_bytes = build_frame_bytes(
@@ -837,13 +1520,21 @@ def main() -> int:
                         sensor_id="bottom",
                         gps_time_ns=ts,
                         kind="image/jpeg",
-                        width=args.search_frame_width,
-                        height=args.search_frame_height,
+                        width=dims[0],
+                        height=dims[1],
                         metadata={
                             "lat_deg": f"{here[0]:.7f}",
                             "lon_deg": f"{here[1]:.7f}",
                             "agl_m": f"{here[2]:.2f}",
-                            "heading_deg": str(cp.heading_deg),
+                            "heading_deg": f"{heading:.1f}",
+                            **(
+                                {
+                                    "roll_deg": f"{attitude[0]:.1f}",
+                                    "pitch_deg": f"{attitude[1]:.1f}",
+                                }
+                                if attitude is not None
+                                else {}
+                            ),
                         },
                     )
                 try:
@@ -871,75 +1562,29 @@ def main() -> int:
                         notes="could not reach search altitude",
                     ).to_bytes()
 
-                outcome = "completed"
-                # Fly each leg as ONE continuous motion to its far
-                # endpoint, capturing on the fly when passing near a
-                # pending capture point. The previous design issued a
-                # goto per capture point and waited for arrival at each
-                # — that produced the field stutter (accelerate, brake,
-                # pitch back, repeat) and the pitch oscillation ruined
-                # the nadir frames. A multirotor holds a far better
-                # constant-velocity attitude across a whole leg.
-                cap_radius = max(request.capture_every_m * 0.5, 1.5)
-                legs = plan.legs
-                # group capture points by leg, preserving order
-                caps_by_leg: dict[int, list] = {}
-                for cp in plan.captures:
-                    caps_by_leg.setdefault(cp.leg, []).append(cp)
-
-                aborted = False
-                for leg_index, (leg_start, leg_end) in enumerate(legs):
-                    if abort.is_set():
-                        outcome = "aborted"
-                        break
-                    if time.monotonic() > deadline:
-                        outcome = "failed"
-                        break
+                def on_leg(leg_index: int) -> None:
                     status_state.update(state="searching", leg=leg_index)
-                    # command the far end of the leg ONCE; the vehicle
-                    # cruises the whole leg without stopping
-                    flight.goto(leg_end[0], leg_end[1], request.agl_m)
-                    pending = list(caps_by_leg.get(leg_index, []))
-                    leg_deadline = time.monotonic() + max(
-                        60.0, _dist_m(*leg_start, *leg_end) / 0.3
-                    )
-                    while pending or not flight.at_target(
-                        leg_end[0], leg_end[1], request.agl_m, tol_m=2.0
-                    ):
-                        if abort.is_set():
-                            outcome = "aborted"
-                            aborted = True
-                            break
-                        if time.monotonic() > deadline or time.monotonic() > leg_deadline:
-                            break
-                        here = flight.position()
-                        # capture any pending point we're now near
-                        fired = [
-                            cp for cp in pending
-                            if _dist_m(here[0], here[1], cp.lat_deg, cp.lon_deg)
-                            <= cap_radius
-                        ]
-                        for cp in fired:
-                            pending.remove(cp)
-                            frames += 1
-                            _publish_capture(cp, frames, here)
-                            push_status()
-                        if not pending and flight.at_target(
-                            leg_end[0], leg_end[1], request.agl_m, tol_m=2.0
-                        ):
-                            break
-                        time.sleep(0.1)
-                    if aborted:
-                        break
-                    # any capture points not reached (overshoot / GPS
-                    # scatter): take them at the leg end so coverage is
-                    # never silently dropped
-                    for cp in pending:
-                        if abort.is_set():
-                            break
-                        frames += 1
-                        _publish_capture(cp, frames, flight.position())
-                        push_status()
+                    push_status()
+
+                def on_capture(cp, here) -> None:
+                    nonlocal frames
+                    frames += 1
+                    _publish_capture(cp, frames, here)
+                    push_status()
+
+                outcome = fly_raster(
+                    flight,
+                    plan,
+                    agl_m=request.agl_m,
+                    speed_m_s=request.speed_m_s,
+                    abort=abort,
+                    deadline_mono=deadline,
+                    on_capture=on_capture,
+                    on_leg=on_leg,
+                    service_interrupt=service_override,
+                )
+                if outcome == "timeout":
+                    outcome = "failed"
                 status_state["state"] = (
                     "done" if outcome == "completed" else outcome
                 )
@@ -957,33 +1602,36 @@ def main() -> int:
             finally:
                 set_busy("")
 
-    # ---- iuas: investigate (mirrors the validated run_iuas_provider) --------
+    # ---- iuas: investigate (continuous carrot orbit on either backend) ------
     if args.role == "iuas":
         investigate_service = vehicle_flight_service(vehicle_id, "investigate")
         services.append(investigate_service)
-
-        import investigate_plan
-
-        investigate_plan.add_flight_path(uas_root)
-
-        def active_profile():
-            if flight.source == "mavlink":
-                import mavlink_flight
-
-                return mavlink_flight.mavlink_capability_profile()
-            return investigate_plan.default_capability_profile(native_orbit=True)
 
         @provider.ack_handler(investigate_service)
         def ack_investigate(payload: bytes) -> AckDecision:
             request = InvestigatePointRequest.from_bytes(payload)
             if busy["task"]:
                 return AckDecision(status=False, message=f"busy:{busy['task']}")
-            if request.circle_radius_m <= 0 or request.approach_alt_m <= 0:
+            if request.circle_radius_m <= 0 or request.circle_count <= 0:
                 return AckDecision(status=False, message="invalid request geometry")
-            if request.approach_alt_m > args.max_agl_m:
+            wanted = _investigate_sensors(request)
+            unknown = wanted - {"camera", "audio"}
+            if unknown:
                 return AckDecision(
                     status=False,
-                    message=f"agl {request.approach_alt_m} > {args.max_agl_m} guard",
+                    message=f"unknown sensors: {sorted(unknown)}",
+                )
+            if "audio" in wanted and audio_src is None:
+                return AckDecision(
+                    status=False, message="no audio capability on this vehicle"
+                )
+            if not (min_agl <= request.approach_alt_m <= args.max_agl_m):
+                return AckDecision(
+                    status=False,
+                    message=(
+                        f"agl {request.approach_alt_m} outside "
+                        f"{min_agl}..{args.max_agl_m} guard"
+                    ),
                 )
             here = flight.position()
             range_m = _dist_m(
@@ -995,23 +1643,23 @@ def main() -> int:
                     status=False,
                     message=f"target {range_m:.0f}m away > {args.max_range_m:.0f}m guard",
                 )
-            compiled = investigate_plan.compile_investigation(
-                request, vehicle_id=vehicle_id, profile=active_profile()
-            )
-            if compiled.rejected:
-                return AckDecision(
-                    status=False, message=compiled.reason or compiled.mode
-                )
-            return AckDecision(status=True, message=compiled.mode)
+            return AckDecision(status=True, message="carrot-orbit")
 
-        def _sim_investigate(request: InvestigatePointRequest):
-            """Fly the investigation on the agent's own sim vehicle.
+        def _investigate_sensors(request: InvestigatePointRequest) -> set:
+            # legacy requesters say "front" for the camera
+            plan = request.sensor_plan or ["camera"]
+            return {"camera" if s in ("front", "camera") else s for s in plan}
 
-            investigate_plan's internal executor simulates a *separate*
-            vehicle, which completes in milliseconds and never moves the
-            telemetry the dashboard watches. Driving SimFlightBackend
-            instead makes the bench IUAS visibly take off, transit, and
-            orbit at real speed on the map.
+        def _run_investigate(request: InvestigatePointRequest):
+            """Fly the investigation directly on the agent's flight backend.
+
+            One path for sim and MAVLink: climb, then a CONTINUOUS carrot
+            orbit (fly_orbit) around the target with yaw facing it. The
+            previous MAVLink path went through relay.flight's
+            guided-yaw-path, a 16-waypoint ring with an arrival wait at
+            every vertex — the field IUAS flew a stop-and-go polygon.
+            Streaming guided targets makes the lap one smooth circle.
+            Everything is AGL (mavlink link pinned to home_alt_m=0).
             """
             import types
             from contracts import FlightTaskResult, SensorArtifact
@@ -1019,55 +1667,123 @@ def main() -> int:
             started = gps_time_ns()
             tgt = request.target
             agl = request.approach_alt_m
-            radius = max(request.circle_radius_m, 1.0)
-            flight.set_cruise_speed(3.0)
-            status = "completed"
+            speed = request.constraints.max_speed_mps or 3.0
+            flight.set_cruise_speed(speed)
             if not flight.ensure_airborne(agl):
-                status = "failed"
+                status, note = "failed", "could not reach approach altitude"
             else:
-                # orbit entry north of target, then waypoints around it
-                steps_per_orbit = 12
-                total = max(1, int(round(request.circle_count * steps_per_orbit)))
-                for k in range(total + 1):
-                    if abort.is_set():
-                        status = "aborted"
-                        break
-                    ang = 2.0 * math.pi * k / steps_per_orbit
-                    dn = radius * math.cos(ang)
-                    de = radius * math.sin(ang)
-                    lat = tgt.lat_deg + dn / EARTH_M_PER_DEG_LAT
-                    lon = tgt.lon_deg + de / _m_per_deg_lon(tgt.lat_deg)
-                    flight.goto(lat, lon, agl)
-                    settle = time.monotonic() + 30
-                    while not flight.at_target(lat, lon, agl, tol_m=0.8):
-                        if abort.is_set() or time.monotonic() > settle:
-                            break
-                        time.sleep(0.2)
-            # capture from the orbit (whatever the camera sees on the bench)
+                orbit = fly_orbit(
+                    flight,
+                    center_lat=tgt.lat_deg,
+                    center_lon=tgt.lon_deg,
+                    agl_m=agl,
+                    radius_m=request.circle_radius_m,
+                    turns=request.circle_count,
+                    speed_m_s=speed,
+                    abort=abort,
+                )
+                status = {
+                    "completed": "completed", "aborted": "aborted"
+                }.get(orbit, "failed")
+                note = (
+                    "carrot-orbit" if orbit == "completed"
+                    else f"carrot-orbit: {orbit}"
+                )
+            # capture per requested sensor from the orbit's end pose: a
+            # camera frame, an audio clip, or both — whatever this
+            # vehicle carries and the request asked for
+            artifacts: list[SensorArtifact] = []
+            payloads: list[bytes] = []
             here = flight.position()
-            artifact_time = gps_time_ns()
-            artifact = SensorArtifact(
-                data_name=mission_sensor_name(
-                    request.mission_id, vehicle_id, "front", "frame",
-                    artifact_time, 1,
+            heading = flight.heading() if hasattr(flight, "heading") else None
+            pose = Pose(
+                position=GeoPoint(
+                    lat_deg=here[0], lon_deg=here[1], alt_m=here[2]
                 ),
-                kind="image/jpeg",
-                gps_time_ns=artifact_time,
-                pose=Pose(
-                    position=GeoPoint(
-                        lat_deg=here[0], lon_deg=here[1], alt_m=here[2]
-                    ),
-                    yaw_deg=0.0,
-                ),
-                metadata={"target_id": request.source_detection_id},
+                yaw_deg=heading if heading is not None else 0.0,
             )
-            payload = camera.capture_frame_payload(
-                mission_id=request.mission_id,
-                vehicle_id=vehicle_id,
-                sensor_id="front",
-                gps_time_ns=artifact_time,
-                metadata={"target_id": request.source_detection_id},
-            )
+            base_meta = {
+                "target_id": request.source_detection_id,
+                "lat_deg": f"{here[0]:.7f}",
+                "lon_deg": f"{here[1]:.7f}",
+                "agl_m": f"{here[2]:.2f}",
+            }
+            sensor_errors: list[str] = []
+            if status != "failed":
+                for i, sensor in enumerate(sorted(_investigate_sensors(request))):
+                    artifact_time = gps_time_ns()
+                    if sensor == "audio":
+                        if audio_src is None:
+                            sensor_errors.append("audio: not fitted")
+                            continue
+                        if args.audio_range_m > 0 and _dist_m(
+                            here[0], here[1],
+                            request.target.lat_deg, request.target.lon_deg,
+                        ) > args.audio_range_m:
+                            sensor_errors.append(
+                                f"audio: outside {args.audio_range_m:.0f} m "
+                                "listen range of the target"
+                            )
+                            continue
+                        try:
+                            wav = audio_src.record_wav(args.audio_seconds)
+                        except Exception as exc:
+                            sensor_errors.append(f"audio: {exc}")
+                            continue
+                        payloads.append(build_frame_bytes(
+                            wav,
+                            mission_id=request.mission_id,
+                            vehicle_id=vehicle_id,
+                            sensor_id="mic",
+                            gps_time_ns=artifact_time,
+                            kind="audio/wav",
+                            metadata={
+                                **base_meta,
+                                "seconds": f"{args.audio_seconds:g}",
+                            },
+                        ))
+                        artifacts.append(SensorArtifact(
+                            data_name=mission_sensor_name(
+                                request.mission_id, vehicle_id, "mic",
+                                "audio", artifact_time, i + 1,
+                            ),
+                            kind="audio/wav",
+                            gps_time_ns=artifact_time,
+                            pose=pose,
+                            metadata={
+                                "target_id": request.source_detection_id
+                            },
+                        ))
+                    else:
+                        try:
+                            payloads.append(camera.capture_frame_payload(
+                                mission_id=request.mission_id,
+                                vehicle_id=vehicle_id,
+                                sensor_id="front",
+                                gps_time_ns=artifact_time,
+                                metadata=dict(base_meta),
+                            ))
+                        except Exception as exc:
+                            sensor_errors.append(f"camera: {exc}")
+                            continue
+                        artifacts.append(SensorArtifact(
+                            data_name=mission_sensor_name(
+                                request.mission_id, vehicle_id, "front",
+                                "frame", artifact_time, i + 1,
+                            ),
+                            kind="image/jpeg",
+                            gps_time_ns=artifact_time,
+                            pose=pose,
+                            metadata={
+                                "target_id": request.source_detection_id
+                            },
+                        ))
+                if sensor_errors:
+                    # the flight succeeded but the evidence didn't: a job
+                    # whose sensor produced nothing must not report done
+                    if not artifacts:
+                        status = "failed"
+                    note = f"{note}; " + "; ".join(sensor_errors)
             result = FlightTaskResult(
                 task_id=(
                     f"{vehicle_id}-investigate-{request.source_detection_id}"
@@ -1075,15 +1791,13 @@ def main() -> int:
                 status=status,
                 started_at_gps_ns=started,
                 completed_at_gps_ns=gps_time_ns(),
-                artifacts=[artifact] if status != "failed" else [],
-                notes="sim-circle-mode",
+                artifacts=artifacts if status != "failed" else [],
+                notes=note,
             )
             return types.SimpleNamespace(
                 result=result,
-                artifact_payloads=(
-                    [payload] if status != "failed" else []
-                ),
-                mode="sim-circle-mode",
+                artifact_payloads=payloads if status != "failed" else [],
+                mode="carrot-orbit",
                 command_log=[],
             )
 
@@ -1094,42 +1808,7 @@ def main() -> int:
                 return ServiceResponse(status=False, error=f"busy:{busy['task']}")
             abort.clear()
             try:
-                if flight.source == "mavlink":
-                    import mavlink_flight
-
-                    backend: MavlinkFlightBackend = flight  # type: ignore
-                    if not backend.ensure_airborne(request.approach_alt_m):
-                        return FlightTaskResultFailed(request, vehicle_id)
-                    # Everything is AGL (link pinned to home_alt_m=0):
-                    # pass the request through unchanged, target on the
-                    # ground (alt 0 AGL), approach at the requested AGL.
-                    flown = InvestigatePointRequest(
-                        mission_id=request.mission_id,
-                        source_detection_id=request.source_detection_id,
-                        target=GeoPoint(
-                            lat_deg=request.target.lat_deg,
-                            lon_deg=request.target.lon_deg,
-                            alt_m=0.0,
-                        ),
-                        approach_alt_m=request.approach_alt_m,
-                        standoff_m=request.standoff_m,
-                        circle_radius_m=request.circle_radius_m,
-                        circle_count=request.circle_count,
-                        sensor_plan=list(request.sensor_plan),
-                        constraints=request.constraints,
-                    )
-                    outcome = investigate_plan.execute_investigation(
-                        flown,
-                        vehicle_id=vehicle_id,
-                        uas_ipbrc_root=uas_root,
-                        link=backend._link,
-                        vehicle=backend._vehicle,
-                        profile=mavlink_flight.mavlink_capability_profile(),
-                        realtime=True,
-                        frame_source=camera,
-                    )
-                else:
-                    outcome = _sim_investigate(request)
+                outcome = _run_investigate(request)
                 for artifact, art_payload in zip(
                     outcome.result.artifacts, outcome.artifact_payloads
                 ):
@@ -1156,19 +1835,6 @@ def main() -> int:
             finally:
                 set_busy("")
 
-        def FlightTaskResultFailed(request, vid):
-            from contracts import FlightTaskResult
-
-            now = gps_time_ns()
-            return FlightTaskResult(
-                task_id=f"{vid}-investigate-{request.source_detection_id}",
-                status="failed",
-                started_at_gps_ns=now,
-                completed_at_gps_ns=gps_time_ns(),
-                artifacts=[],
-                notes="mavlink preflight failed",
-            ).to_bytes()
-
     # ---- capability + run ----------------------------------------------------
     with optional_local_nfd(args.start_local_nfd):
         profile = CapabilityProfile(
@@ -1178,7 +1844,13 @@ def main() -> int:
             velocity=True,
             yaw_control=True,
             mode_control=True,
-            extras=["orbit"] if args.role == "iuas" else [],
+            # investigation/tasking sensors ride in extras so the GCS can
+            # route per-sensor jobs and tasked captures to a vehicle that
+            # actually carries them
+            extras=(
+                (["orbit"] if args.role == "iuas" else [])
+                + sorted(agent_sensors())
+            ),
         )
         try:
             producers_keepalive.append(
@@ -1192,6 +1864,7 @@ def main() -> int:
 
         threading.Thread(target=telemetry_loop, daemon=True).start()
         threading.Thread(target=video_loop, daemon=True).start()
+        threading.Thread(target=watchpoint_loop, daemon=True).start()
 
         # Register EVERY service before entering the native loop. run(service)
         # only registers one; the per-service registrar is the supported path

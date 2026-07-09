@@ -18,7 +18,7 @@ from detector import (
     decode_image,
     detector_from_spec,
     offset_latlon,
-    project_nadir,
+    project_ground,
 )
 from ndnsf_runtime import (
     add_common_arguments,
@@ -46,6 +46,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=70.0,
         help="capture camera horizontal FOV for nadir geo-projection",
+    )
+    parser.add_argument(
+        "--cam-yaw-offset-deg",
+        type=float,
+        default=0.0,
+        help="camera mounting rotation about nadir, degrees clockwise from "
+        "'image top = vehicle nose'. Added to the capture heading before "
+        "projection — the field calibration knob when detections land "
+        "consistently rotated around the capture position.",
     )
     parser.add_argument("--lat-offset-deg", type=float, default=0.00008)
     parser.add_argument("--lon-offset-deg", type=float, default=0.00006)
@@ -146,6 +155,10 @@ def main() -> int:
                 if cap_heading is not None
                 else getattr(pose, "yaw_deg", None)
             )
+            # attitude at capture: a translating multirotor is NOT level,
+            # and the tilt swings the belly camera's ground footprint
+            roll_deg = float(meta.get("roll_deg", 0.0))
+            pitch_deg = float(meta.get("pitch_deg", 0.0))
             detections = detector.detect(image)
             print_json(
                 "gcs.detection.inference",
@@ -184,12 +197,15 @@ def main() -> int:
                 return ServiceResponse(status=False, error="no-detection")
             best = detections[0]
             height_px, width_px = image.shape[:2]
-            north_m, east_m = project_nadir(
+            north_m, east_m = project_ground(
                 best.center_px,
                 (width_px, height_px),
                 agl_m=max(cap_agl, 0.0),
                 hfov_deg=args.hfov_deg,
                 heading_deg=heading,
+                pitch_deg=pitch_deg,
+                roll_deg=roll_deg,
+                cam_yaw_offset_deg=args.cam_yaw_offset_deg,
             )
             lat_deg, lon_deg = offset_latlon(cap_lat, cap_lon, north_m, east_m)
             # In-frame offset magnitude: a nadir single-frame fix is most
@@ -213,6 +229,7 @@ def main() -> int:
                 image_px=[width_px, height_px],
                 capture_lat=cap_lat, capture_lon=cap_lon, capture_agl=cap_agl,
                 heading_deg=heading,
+                pitch_deg=pitch_deg, roll_deg=roll_deg,
                 offset_m={"north": round(north_m, 2), "east": round(east_m, 2)},
                 estimate={"lat": lat_deg, "lon": lon_deg},
             )

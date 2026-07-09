@@ -247,6 +247,8 @@ h3:first-child { margin-top: 0; }
   <span class="name"><b>miniMUAS</b>v2 Mission Console</span>
   <span class="cds-tag cds-tag--gray" id="mstate">idle</span>
   <span class="spacer"></span>
+  <button class="cds-btn cds-btn--ghost" id="dataBtn">Data on</button>
+  <button class="cds-btn cds-btn--ghost" id="eventsBtn">Events on</button>
   <button class="cds-btn cds-btn--ghost" id="imageryBtn">Imagery on</button>
   <span class="cds-tag cds-tag--red" id="conn">offline</span>
 </header>
@@ -304,7 +306,7 @@ h3:first-child { margin-top: 0; }
   </div>
   <span id="estimate"></span>
 
-  <h3>IUAS orbit</h3>
+  <h3>IUAS investigation</h3>
   <div class="grid-3">
     <div class="field"><label for="oagl">AGL (m)</label>
       <input id="oagl" type="number" step="0.5" value="8"></div>
@@ -313,6 +315,14 @@ h3:first-child { margin-top: 0; }
     <div class="field"><label for="ocount">Orbits</label>
       <input id="ocount" type="number" step="0.5" value="1"></div>
   </div>
+  <div class="field"><label>Investigate with (each sensor is flown by an
+    IUAS that carries it)</label>
+    <div style="display:flex;gap:16px;padding:4px 0">
+      <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
+        <input type="checkbox" id="senscam" checked> camera</label>
+      <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
+        <input type="checkbox" id="sensaud"> audio</label>
+    </div></div>
 
   <h3>Mission</h3>
   <div class="btnrow">
@@ -322,6 +332,32 @@ h3:first-child { margin-top: 0; }
     <button class="cds-btn cds-btn--danger" id="rtlAll">RTL all</button>
     <button class="cds-btn cds-btn--danger" id="landAll">Land all</button>
     <button class="cds-btn cds-btn--secondary" id="holdAll">Hold all</button>
+  </div>
+
+  <h3>Sensor tasking</h3>
+  <div class="grid-2">
+    <div class="field"><label for="tvid">Vehicle</label>
+      <select id="tvid"></select></div>
+    <div class="field"><label for="tsensor">Sensor</label>
+      <select id="tsensor">
+        <option value="camera">camera</option>
+        <option value="audio">audio</option>
+      </select></div>
+    <div class="field"><label for="tmode">Mode</label>
+      <select id="tmode"
+        title="now: capture at the vehicle's current position. override:
+fly to the picked point, capture, then resume the interrupted sweep.
+opportunistic: fire whenever the vehicle happens to pass within range.">
+        <option value="now">now (here)</option>
+        <option value="override">override + resume</option>
+        <option value="opportunistic">opportunistic</option>
+      </select></div>
+    <div class="field"><label for="tdur">Audio secs</label>
+      <input id="tdur" type="number" step="1" value="6"></div>
+  </div>
+  <div class="btnrow">
+    <button class="cds-btn cds-btn--secondary" id="capNow">Capture now</button>
+    <button class="cds-btn cds-btn--tertiary" id="capPick">Pick point</button>
   </div>
 
   <h3>Detection</h3>
@@ -350,12 +386,26 @@ h3:first-child { margin-top: 0; }
   <div id="videos"></div>
 </div>
 
+<!-- sensor-data playback modal -->
+<div id="modal" style="display:none;position:fixed;inset:0;z-index:60;
+     background:rgba(0,0,0,0.65)">
+  <div style="max-width:600px;margin:7vh auto;background:var(--cds-layer-01,#262626);
+       border:1px solid #393939;padding:16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;
+         margin-bottom:12px">
+      <b id="modalTitle"></b>
+      <button class="cds-btn cds-btn--ghost" id="modalClose">✕ close</button>
+    </div>
+    <div id="modalBody" style="max-height:72vh;overflow:auto"></div>
+  </div>
+</div>
+
 <script>
 "use strict";
 const M_PER_DEG_LAT = 111111;
 const mPerDegLon = lat => M_PER_DEG_LAT * Math.max(Math.cos(lat*Math.PI/180), 1e-6);
-// Carbon categorical palette (blue 40, purple 40)
-const PALETTE = ["#78a9ff", "#be95ff"];
+// Carbon categorical palette (blue 40, purple 40, teal 40, magenta 40)
+const PALETTE = ["#78a9ff", "#be95ff", "#08bdba", "#ff7eb6"];
 const COLORS = {};
 let VEHICLES = ["wuas-01","iuas-01"];
 
@@ -378,6 +428,8 @@ function connect() {
     else if (m.type === "search_status") onSearch(m);
     else if (m.type === "raster_preview") onPreview(m);
     else if (m.type === "event") onEvent(m);
+    else if (m.type === "capabilities") onCaps(m);
+    else if (m.type === "sensor_data") pushSensorData(m.item);
     else if (m.type === "video_stats") onVideoStats(m);
   };
 }
@@ -430,6 +482,52 @@ function toLL(x, y){
 // Esri and cached when the bench has internet. Missing tiles -> the meter
 // grid still shows underneath, so the map degrades gracefully offline.
 let imagery = true;
+// ---------- event map layer: every georeferenced event, pinned in ----------
+// time AND space so the log can be correlated with the ground track
+let showEvents = true;
+let mapEvents = [];           // {t, kind, lat, lon, seq?, conf?, extra}
+let hoverEvt = null;          // event under the cursor (tooltip)
+const EVT_STYLE = kind =>
+  kind === "detect.hit"        ? "#42be65" :
+  kind === "detect.candidate"  ? "#f1c21b" :
+  kind === "mission.target_found" ? "#fa4d56" :
+  kind.startsWith("target.")   ? "#4589ff" : "#a8a8a8";
+function pushMapEvent(m){
+  if (typeof m.lat !== "number" || typeof m.lon !== "number") return;
+  mapEvents.push({ t:m.t, kind:m.kind, lat:m.lat, lon:m.lon,
+    seq:m.seq, conf:m.confidence, sensor:m.sensor, index:m.index });
+  if (mapEvents.length > 600) mapEvents.shift();
+}
+// ---------- sensor-data layer: everything captured, where + when ----------
+let showData = true;
+let sensorData = [];          // {vehicle,sensor,kind,name,lat,lon,t,source,label}
+let CAPS = {};                // vid -> ["camera","audio"]
+const SENSOR_COLOR = { camera:"#78a9ff", audio:"#ff832b" };
+function pushSensorData(item){
+  if (!item || sensorData.some(d => d.name === item.name)) return;
+  sensorData.push(item);
+  if (sensorData.length > 500) sensorData.shift();
+}
+function artifactHTML(d){
+  const url = `/artifact?name=${encodeURIComponent(d.name)}`;
+  const player = (d.kind || "").startsWith("audio")
+    ? `<audio controls preload="none" src="${url}" style="width:100%"></audio>`
+    : `<img src="${url}" style="max-width:100%" alt="${d.label || d.name}">`;
+  const when = new Date((d.t || 0) * 1000).toLocaleTimeString();
+  return `<div style="margin-bottom:16px">${player}
+    <div class="mono" style="margin-top:4px;font-size:12px;color:#a8a8a8">
+      ${d.label || ""} · ${d.vehicle} · ${d.sensor} · ${d.source} · ${when}<br>
+      ${(d.lat ?? 0).toFixed(6)}, ${(d.lon ?? 0).toFixed(6)}
+      <a target="_blank" href="${url}">open ↗</a></div></div>`;
+}
+function openModal(title, items){
+  modalTitle.textContent = title;
+  modalBody.innerHTML = items.length
+    ? items.map(artifactHTML).join("")
+    : "<span style='color:#a8a8a8'>no captured data yet</span>";
+  modal.style.display = "";
+}
+function closeModal(){ modal.style.display = "none"; modalBody.innerHTML = ""; }
 const tileImgs = new Map();   // "z/x/y" -> Image (img.ok set on load)
 const lon2tx = (lon, z) => (lon + 180) / 360 * 2**z;
 const lat2ty = (lat, z) => {
@@ -519,6 +617,66 @@ function draw(){
     plan.captures.forEach(c => { const p = toPx(c.lat, c.lon);
       ctx.fillRect(p[0]-1.5, p[1]-1.5, 3, 3); });
   }
+  if (showData){
+    // captured data: squares = camera frames, circles = audio clips;
+    // hollow = mission evidence, filled = operator-tasked
+    for (const d of sensorData){
+      const p = toPx(d.lat, d.lon);
+      if (p[0] < -20 || p[0] > cv.width+20 || p[1] < -20 || p[1] > cv.height+20)
+        continue;
+      const col = SENSOR_COLOR[d.sensor] || "#a8a8a8";
+      ctx.lineWidth = 1.5;
+      if (d.sensor === "audio"){
+        ctx.beginPath(); ctx.arc(p[0], p[1], 4, 0, 7);
+        if (d.source === "tasked"){ ctx.fillStyle = col; ctx.fill(); }
+        else { ctx.strokeStyle = col; ctx.stroke(); }
+      } else {
+        if (d.source === "tasked"){ ctx.fillStyle = col;
+          ctx.fillRect(p[0]-3.5, p[1]-3.5, 7, 7); }
+        else { ctx.strokeStyle = col;
+          ctx.strokeRect(p[0]-3.5, p[1]-3.5, 7, 7); }
+      }
+    }
+  }
+  if (showEvents){
+    // diamonds, oldest faintest — a spatial replay of the event log
+    const tNow = Date.now()/1000;
+    for (const e of mapEvents){
+      const p = toPx(e.lat, e.lon);
+      if (p[0] < -20 || p[0] > cv.width+20 || p[1] < -20 || p[1] > cv.height+20)
+        continue;
+      const age = Math.min((tNow - e.t) / 600, 1);   // fades over 10 min
+      ctx.globalAlpha = 0.9 - 0.55 * age;
+      ctx.strokeStyle = EVT_STYLE(e.kind); ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(p[0], p[1]-4); ctx.lineTo(p[0]+4, p[1]);
+      ctx.lineTo(p[0], p[1]+4); ctx.lineTo(p[0]-4, p[1]);
+      ctx.closePath(); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    if (hoverEvt){
+      const p = toPx(hoverEvt.lat, hoverEvt.lon);
+      ctx.strokeStyle = "#f4f4f4"; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(p[0], p[1], 7, 0, 7); ctx.stroke();
+      const when = new Date(hoverEvt.t*1000).toLocaleTimeString();
+      const parts = [ `${when}  ${hoverEvt.kind}` ];
+      if (hoverEvt.label)        parts.push(hoverEvt.label);
+      if (hoverEvt.seq != null)  parts.push(`frame #${hoverEvt.seq}`);
+      if (hoverEvt.index != null) parts.push(`target #${hoverEvt.index}`);
+      if (hoverEvt.sensor)       parts.push(hoverEvt.sensor);
+      if (hoverEvt.conf != null) parts.push(`${(hoverEvt.conf*100).toFixed(0)}%`);
+      const text = parts.join(" · ");
+      ctx.font = "12px 'IBM Plex Mono', monospace";
+      const w = ctx.measureText(text).width;
+      const bx = Math.min(p[0]+10, cv.width - w - 16), by = p[1] - 26;
+      ctx.fillStyle = "rgba(22,22,22,0.92)";
+      ctx.fillRect(bx-6, by-13, w+12, 20);
+      ctx.strokeStyle = "#393939"; ctx.lineWidth = 1;
+      ctx.strokeRect(bx-6, by-13, w+12, 20);
+      ctx.fillStyle = "#f4f4f4";
+      ctx.fillText(text, bx, by+2);
+    }
+  }
   // targets: yellow=queued, pulsing blue=investigating, green=done, red=failed
   const TGT = { queued:"#f1c21b", investigating:"#4589ff",
                 done:"#42be65", failed:"#fa4d56" };
@@ -536,8 +694,22 @@ function draw(){
     ctx.fillText(`#${t.index} ${t.object_id} ${(t.confidence*100).toFixed(0)}%`,
                  p[0]+12, p[1]-8);
   }
+  // ease each marker toward its latest telemetry fix: samples arrive at
+  // ~3-4 Hz, frames at 60 — exponential smoothing (τ≈0.25 s) turns the
+  // stepwise fixes into continuous motion without lying about position
+  // by more than one sample interval
+  const now = performance.now();
+  const dt = Math.min((now - (draw.last || now)) / 1000, 0.25);
+  draw.last = now;
+  const k = 1 - Math.exp(-dt / 0.25);
+  for (const d of Object.values(drones)){
+    if (d.tlat === undefined) continue;
+    if (d.lat === undefined || d.stale){ d.lat = d.tlat; d.lon = d.tlon; }
+    else { d.lat += (d.tlat - d.lat) * k; d.lon += (d.tlon - d.lon) * k; }
+  }
   for (const [vid, d] of Object.entries(drones)){
     const col = COLORS[vid] || "#f4f4f4";
+    if (d.lat === undefined) continue;
     if (d.trail && d.trail.length > 1){
       ctx.strokeStyle = col + "55"; ctx.lineWidth = 1.5; ctx.beginPath();
       d.trail.forEach((t,i) => { const p = toPx(t[0],t[1]);
@@ -560,7 +732,28 @@ function draw(){
 let drag = null;
 cv.addEventListener("mousedown", e => drag = {x:e.offsetX, y:e.offsetY});
 cv.addEventListener("mousemove", e => {
-  if (!drag) return;
+  if (!drag){
+    // hit-test the event + data layers for the hover tooltip
+    hoverEvt = null;
+    let best = 121;  // 11 px pick radius, squared
+    if (showEvents){
+      for (const ev of mapEvents){
+        const p = toPx(ev.lat, ev.lon);
+        const d = (p[0]-e.offsetX)**2 + (p[1]-e.offsetY)**2;
+        if (d < best){ best = d; hoverEvt = ev; }
+      }
+    }
+    if (showData){
+      for (const it of sensorData){
+        const p = toPx(it.lat, it.lon);
+        const d = (p[0]-e.offsetX)**2 + (p[1]-e.offsetY)**2;
+        if (d < best){ best = d;
+          hoverEvt = { t:it.t, kind:`data.${it.sensor}`, lat:it.lat,
+                       lon:it.lon, label:`${it.label} — click to play` }; }
+      }
+    }
+    return;
+  }
   view.lon -= (e.offsetX - drag.x) * view.mppx / mPerDegLon(view.lat);
   view.lat += (e.offsetY - drag.y) * view.mppx / M_PER_DEG_LAT;
   drag = {x:e.offsetX, y:e.offsetY};
@@ -571,8 +764,28 @@ cv.addEventListener("wheel", e => {
   view.mppx = Math.min(4, Math.max(0.02, view.mppx * (e.deltaY>0 ? 1.15 : 0.87)));
 }, {passive:false});
 cv.addEventListener("click", e => {
-  if (!picking) return;
+  if (!picking){
+    // clicking a sensor-data point opens its playback/details modal
+    if (!showData) return;
+    let best = 144, hit = null;
+    for (const d of sensorData){
+      const p = toPx(d.lat, d.lon);
+      const dist = (p[0]-e.offsetX)**2 + (p[1]-e.offsetY)**2;
+      if (dist < best){ best = dist; hit = d; }
+    }
+    if (hit) openModal(`${hit.label} · ${hit.vehicle}`, [hit]);
+    return;
+  }
   const [lat, lon] = toLL(e.offsetX, e.offsetY);
+  if (picking === "capture"){
+    // "now" is a here-capture; a picked point implies flying there
+    const mode = tmode.value === "now" ? "override" : tmode.value;
+    send({cmd:"sensor", vehicle:tvid.value, params:{
+      sensor:tsensor.value, mode, duration_s:+tdur.value,
+      target:{lat, lon}, radius_m:6, expires_s:600}});
+    picking = null; pickhint.style.display = "none";
+    return;
+  }
   if (picking === "center"){ clat.value = lat.toFixed(6); clon.value = lon.toFixed(6); }
   if (picking === "A") ca.value = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
   if (picking === "B") cb.value = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
@@ -588,6 +801,28 @@ imageryBtn.onclick = () => {
   imagery = !imagery;
   imageryBtn.textContent = imagery ? "Imagery on" : "Imagery off";
 };
+eventsBtn.onclick = () => {
+  showEvents = !showEvents;
+  if (!showEvents) hoverEvt = null;
+  eventsBtn.textContent = showEvents ? "Events on" : "Events off";
+};
+dataBtn.onclick = () => {
+  showData = !showData;
+  if (!showData) hoverEvt = null;
+  dataBtn.textContent = showData ? "Data on" : "Data off";
+};
+modalClose.onclick = closeModal;
+modal.onclick = e => { if (e.target === modal) closeModal(); };
+window.addEventListener("keydown", e => {
+  if (e.key === "Escape") closeModal();
+});
+
+// ---------- sensor tasking ----------
+capNow.onclick = () =>
+  send({cmd:"sensor", vehicle:tvid.value, params:{
+    sensor:tsensor.value, mode:"now", duration_s:+tdur.value}});
+capPick.onclick = () => pick("capture",
+  `${tsensor.value} capture point for ${tvid.value}`);
 
 // ---------- area + mission params ----------
 let areaMode = "center";
@@ -612,7 +847,9 @@ function missionParams(){
     object_query: objq.value, min_confidence:+minconf.value,
     target_separation_m:+sep.value,
     orbit_agl_m:+oagl.value, orbit_radius_m:+oradius.value,
-    orbit_count:+ocount.value, max_duration_s: 600 };
+    orbit_count:+ocount.value, max_duration_s: 600,
+    investigate_sensors: [senscam.checked && "camera",
+                          sensaud.checked && "audio"].filter(Boolean) };
 }
 function preview(){
   const a = areaSpec();
@@ -651,7 +888,9 @@ function onHello(m){
     setState(m.mission.state || "idle");
     renderTargets();
   }
+  (m.sensor_data || []).forEach(pushSensorData);
   VEHICLES.forEach((v,i) => COLORS[v] = PALETTE[i % PALETTE.length]);
+  tvid.innerHTML = VEHICLES.map(v => `<option value="${v}">${v}</option>`).join("");
   cards.innerHTML = ""; videos.innerHTML = "";
   VEHICLES.forEach(vid => {
     drones[vid] = drones[vid] || {lat:view.lat, lon:view.lon, trail:[], stale:true};
@@ -663,6 +902,8 @@ function onHello(m){
               tabindex="0" title="Enable/disable this vehicle. Disabled: no auto-dispatch and no takeoff, but RTL/Land/Hold still work."><span class="lbl">enabled</span><span class="track"></span></span></div>
       <div class="head" style="margin-bottom:8px">
         <span class="cds-tag cds-tag--gray" id="link-${vid}">no link</span>
+        <span class="cds-tag cds-tag--gray" id="caps-${vid}" style="display:none"
+              title="sensors this vehicle advertises"></span>
         <span class="cds-tag cds-tag--gray" id="gate-${vid}" style="display:none">disabled</span></div>
       <div class="kv">
         <span class="k">mode</span><span class="k">AGL</span><span class="k">battery</span>
@@ -724,21 +965,31 @@ function onHello(m){
       tog.setAttribute("aria-checked", on);
       document.getElementById(`vimg-${vid}`).style.display = on ? "" : "none";
       send({cmd:"video", vehicle:vid,
-            params:{enable:on, width:320, height:240, fps:5, quality:40}});
+            params:{enable:on, width:320, height:240, fps:8, quality:40}});
     };
     tog.onclick = flip;
     tog.onkeydown = e => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); flip(); } };
   });
+  if (m.capabilities)
+    Object.entries(m.capabilities).forEach(([v, sensors]) =>
+      onCaps({vehicle:v, sensors}));
 }
 function onTelemetry(m){
   const s = m.sample, vid = m.vehicle;
   const d = drones[vid] = drones[vid] || {trail:[]};
-  Object.assign(d, { lat:s.lat_deg, lon:s.lon_deg, agl:s.agl_m,
+  Object.assign(d, { tlat:s.lat_deg, tlon:s.lon_deg, agl:s.agl_m,
     heading:s.heading_deg, stale:false });
-  d.trail.push([s.lat_deg, s.lon_deg]); if (d.trail.length > 240) d.trail.shift();
+  const tail = d.trail[d.trail.length-1];
+  if (!tail || tail[0] !== s.lat_deg || tail[1] !== s.lon_deg){
+    d.trail.push([s.lat_deg, s.lon_deg]);
+    if (d.trail.length > 600) d.trail.shift();
+  }
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
   set(`mode-${vid}`, s.mode || "–");
-  set(`agl-${vid}`, `${(s.agl_m??0).toFixed(1)} m`);
+  set(`agl-${vid}`, `${(s.agl_m??0).toFixed(1)} m` +
+    (s.rangefinder_m >= 0 ? ` · rf ${s.rangefinder_m.toFixed(1)}` : ""));
+  const aglEl = document.getElementById(`agl-${vid}`);
+  if (aglEl) aglEl.style.color = s.agl_alarm ? "var(--cds-support-error)" : "";
   set(`armed-${vid}`, s.armed ? "yes" : "no");
   set(`busy-${vid}`, s.busy || "idle");
   set(`src-${vid}`, s.source);
@@ -788,6 +1039,21 @@ function onVideoFrame(buf){
   blobURLs[vid] = URL.createObjectURL(blob);
   img.src = blobURLs[vid];
 }
+const SENSOR_ICON = { camera:"📷", audio:"🎙" };
+function onCaps(m){
+  CAPS[m.vehicle] = m.sensors || [];
+  const el = document.getElementById(`caps-${m.vehicle}`);
+  if (!el) return;
+  el.textContent = (m.sensors || []).map(s => SENSOR_ICON[s] || s).join(" ")
+    || "–";
+  el.title = `sensors: ${(m.sensors || []).join(", ") || "none"} — `
+    + "click to browse this vehicle's captured data";
+  el.style.display = "";
+  el.style.cursor = "pointer";
+  el.onclick = () =>
+    openModal(`${m.vehicle} captured data`,
+      sensorData.filter(d => d.vehicle === m.vehicle).slice().reverse());
+}
 function onVideoStats(m){
   const el = document.getElementById(`vstats-${m.vehicle}`);
   if (el) el.textContent = `${m.fps} fps · ${m.kbps} kbps · #${m.seq}`;
@@ -817,8 +1083,13 @@ function renderTargets(){
                 margin-bottom:8px">
       <span><b>#${t.index} ${t.object_id}</b> · ${(t.confidence*100).toFixed(1)}%
         <div class="mono">${t.lat.toFixed(6)}, ${t.lon.toFixed(6)}</div>
-        ${t.artifacts && t.artifacts.length ? `<a target="_blank"
-          href="/artifact?name=${encodeURIComponent(t.artifacts[0])}">IUAS capture ↗</a>` : ""}
+        <div>${(t.jobs || []).map(j => `
+          <span class="cds-tag ${TGT_TAG[j.status]||'cds-tag--gray'}"
+                title="${j.vehicle || 'not assigned yet'}">${j.sensor} ${j.status}</span>
+          ${(j.artifacts || []).map(a => `<a target="_blank"
+            href="/artifact?name=${encodeURIComponent(a)}">${j.sensor === "audio"
+              ? "audio" : "capture"} ↗</a>`).join(" ")}`).join(" ")}
+        </div>
       </span>
       <span class="cds-tag ${TGT_TAG[t.status]||'cds-tag--gray'}">${t.status}</span>
     </div>`).join("");
@@ -833,24 +1104,52 @@ function onEvent(m){
   const line = document.createElement("div");
   line.className = "n";
   const t = new Date(m.t*1000).toLocaleTimeString();
+  const isDetect = m.kind.startsWith("detect.") && m.seq != null;
+  const skip = ["type","kind","t"].concat(isDetect ? ["frame","seq"] : []);
   const extra = Object.entries(m).filter(([k]) =>
-    !["type","kind","t"].includes(k)).map(([k,v]) =>
+    !skip.includes(k)).map(([k,v]) =>
     `${k}=${typeof v==="number" ? +v.toFixed(5) : JSON.stringify(v)}`).join(" ");
-  line.innerHTML = `<span class="t">${t}</span>${m.kind} ${extra}`;
+  const tag = isDetect ? `<b>frame #${m.seq}</b> ` : "";
+  line.innerHTML = `<span class="t">${t}</span>${m.kind} ${tag}${extra}`;
   if (m.kind.includes("hit") || m.kind.includes("target_found") ||
       m.kind.includes("completed")) line.classList.add("hit");
   if (m.kind.includes("fail") || m.kind.includes("timeout")) line.classList.add("err");
-  log.prepend(line);
+  // detect responses complete out of capture order (each frame's round
+  // trip varies); slot each detect line above the first detect line with
+  // a LOWER frame number so the log reads in frame order
+  let anchor = null;
+  if (isDetect){
+    line.dataset.seq = m.seq;
+    for (const child of log.children){
+      const s = child.dataset.seq;
+      if (s !== undefined && Number(s) < m.seq){ anchor = child; break; }
+    }
+  }
+  if (anchor) log.insertBefore(line, anchor); else log.prepend(line);
   while (log.children.length > 250) log.lastChild.remove();
 
+  // pin georeferenced events to the map, and let the log line locate
+  // them: click pans the view to where (and shows when) it happened
+  pushMapEvent(m);
+  if (typeof m.lat === "number" && typeof m.lon === "number"){
+    line.style.cursor = "pointer";
+    line.title = "click to locate on map";
+    line.onclick = () => { view.lat = m.lat; view.lon = m.lon; };
+  }
+
   const byIndex = i => targets.find(x => x.index === i);
+  const jobOf = (tg, sensor) =>
+    (tg.jobs || []).find(j => j.sensor === sensor);
   switch (m.kind){
     case "mission.started":
-      setState("searching"); targets = []; renderTargets(); break;
+      setState("searching"); targets = []; mapEvents = []; hoverEvt = null;
+      renderTargets(); break;
     case "mission.target_found":
       targets.push({ index:m.index, object_id:m.object_id,
         confidence:m.confidence, lat:m.lat, lon:m.lon, frame:m.frame,
-        status:"queued", artifacts:[] });
+        status:"queued", artifacts:[],
+        jobs:(m.sensors || ["camera"]).map(s =>
+          ({sensor:s, vehicle:"", status:"queued", artifacts:[]})) });
       renderTargets(); break;
     case "target.updated": {
       const tg = byIndex(m.index);
@@ -859,7 +1158,19 @@ function onEvent(m){
       break; }
     case "target.dispatch": {
       const tg = byIndex(m.index);
-      if (tg){ tg.status = "investigating"; renderTargets(); }
+      if (tg){ tg.status = "investigating";
+               const j = jobOf(tg, m.sensor);
+               if (j){ j.status = "investigating"; j.vehicle = m.vehicle; }
+               renderTargets(); }
+      break; }
+    case "target.job_completed":
+    case "target.job_failed": {
+      const tg = byIndex(m.index);
+      if (tg){ const j = jobOf(tg, m.sensor);
+               if (j){ j.status = m.kind === "target.job_completed"
+                         ? "done" : "failed";
+                       j.artifacts = m.artifacts || []; }
+               renderTargets(); }
       break; }
     case "target.completed":
     case "target.failed": {
