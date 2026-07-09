@@ -1146,7 +1146,11 @@ function onTelemetry(m){
     if (d.trail.length > 600) d.trail.shift();
   }
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
-  set(`mode-${vid}`, s.mode || "–");
+  const avoid = s.avoid_bias_m
+    ? ` ⚠${s.avoid_bias_m > 0 ? "+" : ""}${s.avoid_bias_m.toFixed(0)}m` : "";
+  set(`mode-${vid}`, (s.mode || "–") + avoid);
+  const modeEl = document.getElementById(`mode-${vid}`);
+  if (modeEl) modeEl.style.color = avoid ? "var(--cds-support-warning)" : "";
   set(`agl-${vid}`, `${(s.agl_m??0).toFixed(1)} m` +
     (s.rangefinder_m >= 0 ? ` · rf ${s.rangefinder_m.toFixed(1)}` : ""));
   const aglEl = document.getElementById(`agl-${vid}`);

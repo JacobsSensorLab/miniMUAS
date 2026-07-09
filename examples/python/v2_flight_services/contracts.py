@@ -44,6 +44,19 @@ def vehicle_system_service(vehicle_id: str, action: str) -> str:
     return f"/muas/v2/{vehicle_id}/system/{action}"
 
 
+def vehicle_coord_status_name(vehicle_id: str) -> str:
+    """Latest-wins list of the vehicle's active avoidance maneuvers.
+
+    Coordination is data-plane only: the pair plan is deterministic and
+    symmetric (both vehicles compute identical roles from each other's
+    telemetry), so no request/response is needed — publishing your
+    entry and OBSERVING the peer's matching one IS the agreement. A peer
+    that never publishes within the grace window is handled as
+    uncooperative.
+    """
+    return f"/muas/v2/{vehicle_id}/coord/status"
+
+
 def tasked_sensor_name(
     vehicle_id: str, sensor_id: str, kind: str, timestamp_ns: int, seq: int
 ) -> str:
@@ -423,6 +436,11 @@ class TelemetrySample:
     # when baro-AGL and rangefinder disagree beyond tolerance
     rangefinder_m: float = -1.0
     agl_alarm: bool = False
+    # fleet coordination: ground velocity (peers extrapolate each other
+    # with physics from these) and the active vertical avoidance bias
+    vn_m_s: float = 0.0
+    ve_m_s: float = 0.0
+    avoid_bias_m: float = 0.0
 
     def to_bytes(self) -> bytes:
         return encode_dataclass(self)
@@ -447,6 +465,9 @@ class TelemetrySample:
             busy=str(value.get("busy", "")),
             rangefinder_m=float(value.get("rangefinder_m", -1.0)),
             agl_alarm=bool(value.get("agl_alarm", False)),
+            vn_m_s=float(value.get("vn_m_s", 0.0)),
+            ve_m_s=float(value.get("ve_m_s", 0.0)),
+            avoid_bias_m=float(value.get("avoid_bias_m", 0.0)),
         )
 
 

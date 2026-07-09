@@ -60,6 +60,7 @@ from contracts import (
     mission_sensor_name,
     tasked_sensor_name,
     vehicle_flight_service,
+    vehicle_coord_status_name,
     vehicle_search_status_name,
     vehicle_sensor_event_name,
     vehicle_sensor_service,
@@ -71,7 +72,7 @@ from contracts import (
     vehicle_video_status_name,
 )
 from camera import frame_source_from_spec
-from dataplane import build_frame_bytes, publish_segmented
+from dataplane import build_frame_bytes, fetch_segmented, publish_segmented
 from raster import build_raster
 from ndnsf_runtime import (
     add_common_arguments,
@@ -312,6 +313,359 @@ def fly_orbit(
 
 
 # ---------------------------------------------------------------------------
+# Fleet coordination: separation by communication
+# ---------------------------------------------------------------------------
+
+
+class PeerGuard:
+    """Watches peer telemetry, predicts conflicts, flies vertical avoidance.
+
+    These airframes have no useful perception sensors, so separation is a
+    communication problem: fetch each peer's telemetry on an adaptive
+    schedule (relay.flight.deconflict.peer_poll_interval_s — distant or
+    opening peers cost one fetch per ~5 s, an imminent one is watched at
+    2 Hz), extrapolate with constant-velocity physics, and when the
+    predicted closest approach violates the separation envelope, apply a
+    vertical bias through the flight backend's altitude overlay.
+
+    Coordination protocol (data-plane only, no request/response): the
+    cooperative pair plan is DETERMINISTIC AND SYMMETRIC — both vehicles
+    compute identical roles from each other's telemetry — so each side
+    just applies its own role immediately and publishes the maneuver on
+    its coord/status name. Seeing the peer's matching entry inside the
+    grace window confirms cooperation; not seeing it escalates to the
+    uncooperative plan (take the whole burden upward, with headroom).
+    A peer-published entry naming US is adopted even before our own
+    detector fires, so whichever side notices first drags both.
+
+    Transport is injected (fetch_telemetry / fetch_coord / publish_coord
+    callables) so the whole loop runs against bench sim backends in
+    tests with no NDN anywhere.
+    """
+
+    def __init__(
+        self,
+        vehicle_id: str,
+        flight,
+        peer_ids,
+        *,
+        fetch_telemetry,
+        fetch_coord,
+        publish_coord,
+        deconflict_module,
+        envelope=None,
+        on_event=None,
+        min_airborne_agl_m: float = 2.0,
+        grace_s: float = 2.5,
+        tick_s: float = 0.1,
+    ) -> None:
+        self.vehicle_id = vehicle_id
+        self.flight = flight
+        self.peer_ids = list(peer_ids)
+        self.fetch_telemetry = fetch_telemetry
+        self.fetch_coord = fetch_coord
+        self.publish_coord = publish_coord
+        self.dc = deconflict_module
+        self.envelope = envelope or deconflict_module.DeconflictionEnvelope()
+        self.on_event = on_event or (lambda **kw: None)
+        self.min_airborne = min_airborne_agl_m
+        self.grace_s = grace_s
+        self.tick_s = tick_s
+        self._peers = {
+            vid: {"due": 0.0, "sample": None, "seen_mono": 0.0}
+            for vid in self.peer_ids
+        }
+        # active avoidance per peer:
+        #   {mode: coop-pending|coop|unco, bias, started, clear_since,
+        #    hold_s, expires}
+        self._active: dict[str, dict] = {}
+        self._stop = threading.Event()
+        self._thread = None
+
+    # -- lifecycle -----------------------------------------------------
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    # -- geometry ------------------------------------------------------
+
+    def _relative(self, sample: dict):
+        own = self.flight.position()
+        own_v = (
+            self.flight.velocity() if hasattr(self.flight, "velocity")
+            else (0.0, 0.0)
+        )
+        return self.dc.RelativeState(
+            north_m=(sample["lat_deg"] - own[0]) * EARTH_M_PER_DEG_LAT,
+            east_m=(sample["lon_deg"] - own[1]) * _m_per_deg_lon(own[0]),
+            up_m=sample.get("agl_m", 0.0) - own[2],
+            vnorth_m_s=sample.get("vn_m_s", 0.0) - own_v[0],
+            veast_m_s=sample.get("ve_m_s", 0.0) - own_v[1],
+            vup_m_s=0.0,
+        ), own
+
+    # -- bias + coord publication ---------------------------------------
+
+    def _apply(self) -> None:
+        biases = [entry["bias"] for entry in self._active.values()]
+        if not biases:
+            bias = 0.0
+        else:
+            ups = [b for b in biases if b > 0]
+            # when several conflicts disagree, climbing wins: descending
+            # into one conflict to solve another is never the answer
+            bias = max(ups) if ups else min(biases)
+        if hasattr(self.flight, "set_alt_bias"):
+            self.flight.set_alt_bias(bias)
+        entries = [
+            {
+                "from_id": self.vehicle_id,
+                "to_id": peer,
+                "biases": {self.vehicle_id: entry["bias"]},
+                "mode": entry["mode"],
+                "gps_time_ns": gps_time_ns(),
+            }
+            for peer, entry in self._active.items()
+        ]
+        try:
+            self.publish_coord(entries)
+        except Exception:
+            pass
+
+    def _engage(self, peer: str, mode: str, bias: float, hold_s: float,
+                reason: str) -> None:
+        now = time.monotonic()
+        self._active[peer] = {
+            "mode": mode, "bias": bias, "started": now,
+            "clear_since": None, "hold_s": hold_s, "expires": now + 60.0,
+        }
+        self._apply()
+        self.on_event(
+            kind=f"coord.{mode}", peer=peer,
+            bias_m=round(bias, 2), reason=reason,
+        )
+
+    def _release(self, peer: str, why: str) -> None:
+        if self._active.pop(peer, None) is not None:
+            self._apply()
+            self.on_event(kind="coord.clear", peer=peer, reason=why)
+
+    # -- main loop -------------------------------------------------------
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.tick_s):
+            try:
+                self._step(time.monotonic())
+            except Exception as exc:
+                self.on_event(kind="coord.error", error=str(exc))
+
+    def _step(self, now: float) -> None:
+        own_pos = self.flight.position()
+        airborne = own_pos[2] >= self.min_airborne
+        for peer in self.peer_ids:
+            state = self._peers[peer]
+            if now < state["due"]:
+                continue
+            sample = None
+            try:
+                sample = self.fetch_telemetry(peer)
+            except Exception:
+                sample = None
+            if sample is not None:
+                state["sample"] = sample
+                state["seen_mono"] = now
+            elif now - state["seen_mono"] > 20.0:
+                state["sample"] = None
+            sample = state["sample"]
+            if sample is None or not airborne or (
+                sample.get("agl_m", 0.0) < self.min_airborne
+            ):
+                # nothing to separate from: relaxed re-check, and any
+                # active maneuver against this peer expires below
+                state["due"] = now + 3.0
+                self._expire(peer, now)
+                continue
+            rel, own = self._relative(sample)
+            cpa = self.dc.closest_point_of_approach(rel)
+            entry = self._active.get(peer)
+            if entry is None:
+                if self.dc.in_conflict(cpa, self.envelope):
+                    self._on_conflict(peer, sample, own)
+                else:
+                    # not in conflict: adopt a peer-initiated maneuver if
+                    # the peer's coord status names us (it noticed first)
+                    self._adopt_remote(peer)
+            else:
+                self._update_active(peer, entry, cpa, now)
+            interval = self.dc.peer_poll_interval_s(rel)
+            if peer in self._active:
+                interval = min(interval, 0.5)
+            state["due"] = now + interval
+        self._expire_all(now)
+
+    def _on_conflict(self, peer: str, sample: dict, own) -> None:
+        plan = self.dc.cooperative_plan(
+            self.vehicle_id, own[2], peer, sample.get("agl_m", 0.0),
+            envelope=self.envelope,
+        )
+        self._engage(
+            peer, "coop-pending", plan.biases[self.vehicle_id],
+            plan.hold_s, plan.reason,
+        )
+
+    def _adopt_remote(self, peer: str) -> None:
+        try:
+            entries = self.fetch_coord(peer) or []
+        except Exception:
+            return
+        for entry in entries:
+            if entry.get("to_id") != self.vehicle_id:
+                continue
+            own_pos = self.flight.position()
+            sample = self._peers[peer]["sample"]
+            plan = self.dc.cooperative_plan(
+                self.vehicle_id, own_pos[2],
+                peer, sample.get("agl_m", 0.0),
+                envelope=self.envelope,
+            )
+            self._engage(
+                peer, "coop", plan.biases[self.vehicle_id],
+                plan.hold_s, "adopted peer-initiated maneuver",
+            )
+            return
+
+    def _update_active(self, peer: str, entry: dict, cpa, now: float) -> None:
+        if entry["mode"] == "coop-pending":
+            confirmed = False
+            try:
+                for e in self.fetch_coord(peer) or []:
+                    if e.get("to_id") == self.vehicle_id or (
+                        e.get("from_id") == peer
+                        and e.get("to_id") == self.vehicle_id
+                    ):
+                        confirmed = True
+            except Exception:
+                pass
+            if confirmed:
+                entry["mode"] = "coop"
+                self.on_event(kind="coord.confirmed", peer=peer)
+            elif now - entry["started"] > self.grace_s:
+                # peer never joined: assume it holds course, take the
+                # whole burden upward with headroom
+                plan = self.dc.uncooperative_plan(
+                    self.vehicle_id, peer, envelope=self.envelope,
+                )
+                self._engage(
+                    peer, "unco", plan.biases[self.vehicle_id],
+                    plan.hold_s, plan.reason,
+                )
+                return
+        if self.dc.conflict_cleared(cpa, self.envelope):
+            if entry["clear_since"] is None:
+                entry["clear_since"] = now
+            elif now - entry["clear_since"] >= entry["hold_s"]:
+                self._release(peer, "cpa passed")
+        else:
+            entry["clear_since"] = None
+            entry["expires"] = now + 60.0
+
+    def _expire(self, peer: str, now: float) -> None:
+        entry = self._active.get(peer)
+        if entry is not None and now > entry["expires"]:
+            self._release(peer, "expired")
+
+    def _expire_all(self, now: float) -> None:
+        for peer in list(self._active):
+            self._expire(peer, now)
+
+
+def smart_rtl(
+    flight,
+    vehicle_id: str,
+    fleet_ids,
+    *,
+    deconflict_module,
+    cancel: threading.Event,
+    base_agl_m: float = 8.0,
+    separation_m: float = 3.0,
+    on_event=None,
+) -> str:
+    """Layered return-to-launch: collision-free by construction.
+
+    The autopilot's native RTL climbs to ONE configured altitude and
+    flies straight home — with several vehicles that leaves the crossing
+    to chance. Here every vehicle computes the same deterministic
+    altitude slot table (sorted fleet ids, `separation_m` apart), climbs
+    in place to ITS slot, cruises home at it, and lands — so simultaneous
+    returns cross at guaranteed vertical separation no matter how the
+    horizontal paths intersect, with the PeerGuard still biasing
+    underneath as a second layer. Falls back to the autopilot's RTL when
+    home is unknown, and backs off entirely if the operator takes the
+    aircraft out of GUIDED (the RC pilot always wins).
+    """
+
+    emit = on_event or (lambda **kw: None)
+    slots = deconflict_module.rtl_altitude_slots(
+        fleet_ids, base_agl_m=base_agl_m, separation_m=separation_m
+    )
+    slot = slots[vehicle_id]
+    home = flight.home() if hasattr(flight, "home") else None
+    here = flight.position()
+    if here[2] < 2.0:
+        emit(kind="rtl.on_ground")
+        return "on-ground"
+    if home is None:
+        emit(kind="rtl.fallback", reason="home unknown")
+        flight.rtl()
+        return "fallback"
+    emit(kind="rtl.smart", slot_agl_m=slot, home=list(home))
+
+    def pilot_took_over() -> bool:
+        mode = str(flight.telemetry().get("mode", "") or "").upper()
+        return mode not in ("", "GUIDED")
+
+    def cruise(lat, lon, agl, deadline_s, tol_m) -> bool:
+        deadline = time.monotonic() + deadline_s
+        next_send = 0.0
+        while not flight.at_target(lat, lon, agl, tol_m=tol_m):
+            if cancel.is_set():
+                return False
+            if pilot_took_over():
+                emit(kind="rtl.takeover")
+                return False
+            if time.monotonic() > deadline:
+                return False
+            if time.monotonic() >= next_send:
+                flight.goto(lat, lon, agl)
+                next_send = time.monotonic() + 2.0
+            time.sleep(0.2)
+        return True
+
+    # climb in place to the slot, cruise home at it, then land
+    if not cruise(here[0], here[1], slot,
+                  abs(slot - here[2]) / 0.5 + 30.0, tol_m=3.0):
+        if not cancel.is_set() and not pilot_took_over():
+            emit(kind="rtl.fallback", reason="climb failed")
+            flight.rtl()
+        return "fallback"
+    dist = _dist_m(here[0], here[1], home[0], home[1])
+    if not cruise(home[0], home[1], slot, dist / 1.0 + 60.0, tol_m=3.0):
+        if not cancel.is_set() and not pilot_took_over():
+            emit(kind="rtl.fallback", reason="cruise failed")
+            flight.rtl()
+        return "fallback"
+    if cancel.is_set() or pilot_took_over():
+        return "cancelled"
+    flight.land()
+    emit(kind="rtl.landing", home=list(home))
+    return "landing"
+
+
+# ---------------------------------------------------------------------------
 # Flight backends
 # ---------------------------------------------------------------------------
 
@@ -333,6 +687,10 @@ class SimFlightBackend:
         self._speed = 2.0
         self._heading = 0.0
         self._yaw_cmd = None
+        self._vn = 0.0
+        self._ve = 0.0
+        self._alt_bias = 0.0
+        self._last_cmd = None  # raw (lat, lon, agl, yaw) pre-bias
         self.armed = False
         self.mode = "STABILIZE"
         self._stop = threading.Event()
@@ -343,7 +701,9 @@ class SimFlightBackend:
         dt = 0.2
         while not self._stop.wait(dt):
             with self._lock:
+                prev = (self._lat, self._lon)
                 if self._target is None:
+                    self._vn = self._ve = 0.0
                     continue
                 t_lat, t_lon, t_agl = self._target
                 # vertical
@@ -366,6 +726,8 @@ class SimFlightBackend:
                     f = step / dist
                     self._lat += (t_lat - self._lat) * f
                     self._lon += (t_lon - self._lon) * f
+                self._vn = (self._lat - prev[0]) * EARTH_M_PER_DEG_LAT / dt
+                self._ve = (self._lon - prev[1]) * _m_per_deg_lon(self._lat) / dt
                 if self.mode == "RTL" and dist < 0.1 and abs(dz) < 0.1:
                     if self._agl <= 0.05:
                         self.armed = False
@@ -398,18 +760,44 @@ class SimFlightBackend:
         # kinematic sim (arm, climb to agl, hold).
         return self.ensure_airborne(agl)
 
+    def _effective_agl(self, agl: float) -> float:
+        return max(0.5, float(agl) + self._alt_bias)
+
     def goto(self, lat: float, lon: float, agl: float, *, yaw_deg=None) -> None:
         with self._lock:
             self.mode = "GUIDED"
-            self._target = (lat, lon, agl)
+            self._last_cmd = (lat, lon, agl, yaw_deg)
+            self._target = (lat, lon, self._effective_agl(agl))
             self._yaw_cmd = yaw_deg
 
     def at_target(self, lat, lon, agl, tol_m=1.0) -> bool:
         p = self.position()
         return (
             _dist_m(p[0], p[1], lat, lon) <= tol_m
-            and abs(p[2] - agl) <= max(0.5, tol_m / 2)
+            and abs(p[2] - self._effective_agl(agl)) <= max(0.5, tol_m / 2)
         )
+
+    def set_alt_bias(self, bias_m: float) -> None:
+        """Vertical de-confliction overlay: every commanded altitude is
+        shifted by this until cleared; the current target is re-issued
+        immediately so the maneuver starts now, not at the next resend."""
+        with self._lock:
+            self._alt_bias = max(-4.0, min(float(bias_m), 8.0))
+            cmd = self._last_cmd
+        if cmd is not None:
+            self.goto(cmd[0], cmd[1], cmd[2], yaw_deg=cmd[3])
+
+    def avoid_bias(self) -> float:
+        return self._alt_bias
+
+    def velocity(self):
+        """Ground velocity (north, east) m/s."""
+        with self._lock:
+            return (self._vn, self._ve)
+
+    def home(self):
+        h = getattr(self, "_home", None)
+        return None if h is None else (h[0], h[1])
 
     def heading(self) -> float | None:
         with self._lock:
@@ -443,6 +831,7 @@ class SimFlightBackend:
 
     def telemetry(self) -> dict:
         lat, lon, agl = self.position()
+        vn, ve = self.velocity()
         return {
             "lat_deg": lat,
             "lon_deg": lon,
@@ -451,6 +840,9 @@ class SimFlightBackend:
             "heading_deg": self.heading() or 0.0,
             "armed": self.armed,
             "mode": self.mode,
+            "vn_m_s": vn,
+            "ve_m_s": ve,
+            "avoid_bias_m": self._alt_bias,
         }
 
 
@@ -492,6 +884,9 @@ class MavlinkFlightBackend:
         # _home_alt is 0.0 by construction; kept as a field only so the
         # rest of the class can read it without branching. Never re-derive.
         self._home_alt = 0.0
+        self._alt_bias = 0.0
+        self._last_cmd = None  # raw (lat, lon, agl, yaw) pre-bias
+        self._home = None      # (lat, lon) captured at last ground arm
 
     def position(self):
         p = self._vehicle.position
@@ -502,6 +897,10 @@ class MavlinkFlightBackend:
         self._link.set_cruise_speed_m_s(speed)
 
     def ensure_airborne(self, agl: float) -> bool:
+        if not self._link.is_armed():
+            # about to launch from here: THIS is home for smart RTL
+            p = self.position()
+            self._home = (p[0], p[1])
         return self._mod.ensure_airborne(
             self._link,
             self._vehicle,
@@ -514,17 +913,42 @@ class MavlinkFlightBackend:
         # raster/investigate use, exposed as its own command.
         return self.ensure_airborne(agl)
 
+    def _effective_agl(self, agl: float) -> float:
+        # floor 3.5: the link suppresses gotos below the 3 m takeoff gate
+        return max(3.5, float(agl) + self._alt_bias)
+
     def goto(self, lat: float, lon: float, agl: float, *, yaw_deg=None) -> None:
-        # agl passes straight through: link sends it as the RELATIVE_ALT
-        # wire value (home_alt_m=0).
-        self._link.goto(lat, lon, agl, yaw_deg=yaw_deg)
+        # agl passes straight through (link pinned to home_alt_m=0),
+        # shifted by the de-confliction bias when one is active.
+        self._last_cmd = (lat, lon, agl, yaw_deg)
+        self._link.goto(lat, lon, self._effective_agl(agl), yaw_deg=yaw_deg)
 
     def at_target(self, lat, lon, agl, tol_m=2.0) -> bool:
         p = self.position()
         return (
             _dist_m(p[0], p[1], lat, lon) <= tol_m
-            and abs(p[2] - agl) <= max(1.0, tol_m)
+            and abs(p[2] - self._effective_agl(agl)) <= max(1.0, tol_m)
         )
+
+    def set_alt_bias(self, bias_m: float) -> None:
+        """Vertical de-confliction overlay (see SimFlightBackend)."""
+        self._alt_bias = max(-4.0, min(float(bias_m), 8.0))
+        cmd = self._last_cmd
+        if cmd is not None:
+            self.goto(cmd[0], cmd[1], cmd[2], yaw_deg=cmd[3])
+
+    def avoid_bias(self) -> float:
+        return self._alt_bias
+
+    def velocity(self):
+        """Ground velocity (north, east) m/s from GLOBAL_POSITION_INT."""
+        vel = getattr(self._link._inner, "_last_velocity_enu", None)
+        if vel is None:
+            return (0.0, 0.0)
+        return (float(vel[0]), float(vel[1]))
+
+    def home(self):
+        return self._home
 
     def heading(self) -> float | None:
         """Heading at the last telemetry drain, degrees, or None.
@@ -619,6 +1043,7 @@ class MavlinkFlightBackend:
         # cross-check only when a rangefinder exists AND is in its
         # trustworthy band; drones without one (rf = -1) never alarm
         alarm = 0.0 < rf < 8.0 and abs(rf - agl) > 2.0
+        vn, ve = self.velocity()
         return {
             "lat_deg": lat,
             "lon_deg": lon,
@@ -630,6 +1055,9 @@ class MavlinkFlightBackend:
             "battery_pct": battery_pct,
             "rangefinder_m": rf,
             "agl_alarm": bool(alarm),
+            "vn_m_s": vn,
+            "ve_m_s": ve,
+            "avoid_bias_m": self._alt_bias,
         }
 
 
@@ -821,6 +1249,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="Field-safety guard: reject requested altitudes above this.",
     )
     parser.add_argument(
+        "--sensors", default="auto",
+        help="Investigation sensors this vehicle advertises: auto "
+        "(camera, plus audio when --audio is fitted) or an explicit "
+        "comma list, e.g. 'audio' for a microphone-only IUAS whose "
+        "camera should not receive capture jobs.",
+    )
+    parser.add_argument(
+        "--fleet-ids", default="",
+        help="Comma-separated ids of EVERY vehicle in the fleet (self "
+        "included). Enables fleet coordination: adaptive peer telemetry "
+        "watching, physics-based conflict prediction, cooperative/"
+        "uncooperative vertical avoidance, and slot-layered smart RTL. "
+        "Empty disables (single-vehicle behavior).",
+    )
+    parser.add_argument(
+        "--coord-hsep-m", type=float, default=8.0,
+        help="Horizontal separation minimum for conflict prediction.",
+    )
+    parser.add_argument(
+        "--coord-vsep-m", type=float, default=4.0,
+        help="Vertical separation minimum for conflict prediction.",
+    )
+    parser.add_argument(
+        "--coord-horizon-s", type=float, default=20.0,
+        help="Reaction horizon: predicted approaches beyond this are "
+        "watched, not acted on.",
+    )
+    parser.add_argument(
+        "--rtl-base-agl-m", type=float, default=8.0,
+        help="Smart RTL: lowest return-cruise altitude slot.",
+    )
+    parser.add_argument(
+        "--rtl-sep-m", type=float, default=3.0,
+        help="Smart RTL: vertical spacing between fleet altitude slots.",
+    )
+    parser.add_argument(
         "--log-dir", default="/var/lib/minimuas/log",
         help="Directory for the agent's persistent event journal "
         "(fsync-per-line JSONL that survives a pulled battery, unlike "
@@ -941,7 +1405,11 @@ def main() -> int:
     sensor_seq = {"n": 0}
 
     def agent_sensors() -> set:
-        return {"camera"} | ({"audio"} if audio_src else set())
+        available = {"camera"} | ({"audio"} if audio_src else set())
+        if args.sensors and args.sensors != "auto":
+            wanted = {s.strip() for s in args.sensors.split(",") if s.strip()}
+            return (wanted & available) or {"camera"}
+        return available
 
     def do_sensor_capture(req: SensorCaptureRequest) -> SensorCaptureResult:
         """Capture `req.sensor` at the CURRENT position and publish it."""
@@ -1125,6 +1593,99 @@ def main() -> int:
             busy["task"] = task
             return True
 
+    # ---- fleet coordination: PeerGuard + smart RTL ---------------------------
+    fleet_ids = [v.strip() for v in args.fleet_ids.split(",") if v.strip()]
+    peer_ids = [v for v in fleet_ids if v != vehicle_id]
+    deconflict = None
+    peer_guard = None
+    rtl_cancel = threading.Event()
+    rtl_thread: dict = {"t": None}
+    if peer_ids:
+        try:
+            from investigate_plan import add_flight_path
+
+            add_flight_path(uas_root)
+            import relay.flight.deconflict as deconflict
+        except Exception as exc:
+            print_json(
+                "agent.coord.disabled",
+                error=str(exc),
+                note="relay.flight.deconflict unavailable — flying "
+                "WITHOUT fleet separation",
+            )
+    if deconflict is not None:
+        coord_pub = LatestPublisher(
+            vehicle_coord_status_name(vehicle_id), freshness_ms=700
+        )
+
+        def _fetch_peer_telemetry(vid: str):
+            try:
+                return json.loads(fetch_segmented(
+                    vehicle_telemetry_live_name(vid), timeout_ms=600
+                ).decode())
+            except Exception:
+                return None
+
+        def _fetch_peer_coord(vid: str):
+            try:
+                return json.loads(fetch_segmented(
+                    vehicle_coord_status_name(vid), timeout_ms=600
+                ).decode())
+            except Exception:
+                return None
+
+        def _publish_coord(entries) -> None:
+            coord_pub.publish(json.dumps(entries).encode())
+
+        peer_guard = PeerGuard(
+            vehicle_id,
+            flight,
+            peer_ids,
+            fetch_telemetry=_fetch_peer_telemetry,
+            fetch_coord=_fetch_peer_coord,
+            publish_coord=_publish_coord,
+            deconflict_module=deconflict,
+            envelope=deconflict.DeconflictionEnvelope(
+                horizontal_sep_m=args.coord_hsep_m,
+                vertical_sep_m=args.coord_vsep_m,
+                horizon_s=args.coord_horizon_s,
+            ),
+            on_event=lambda **kw: print_json(
+                "agent." + str(kw.pop("kind")), **kw
+            ),
+        )
+        print_json(
+            "agent.coord.ready", peers=peer_ids,
+            hsep_m=args.coord_hsep_m, vsep_m=args.coord_vsep_m,
+            horizon_s=args.coord_horizon_s,
+        )
+
+    def _start_smart_rtl() -> bool:
+        prev = rtl_thread["t"]
+        if prev is not None and prev.is_alive():
+            return True  # already returning; don't restart the sequence
+        rtl_cancel.clear()
+
+        def run() -> None:
+            outcome = smart_rtl(
+                flight,
+                vehicle_id,
+                fleet_ids,
+                deconflict_module=deconflict,
+                cancel=rtl_cancel,
+                base_agl_m=args.rtl_base_agl_m,
+                separation_m=args.rtl_sep_m,
+                on_event=lambda **kw: print_json(
+                    "agent." + str(kw.pop("kind")), **kw
+                ),
+            )
+            print_json("agent.rtl.finished", outcome=outcome)
+
+        thread = threading.Thread(target=run, daemon=True)
+        rtl_thread["t"] = thread
+        thread.start()
+        return True
+
     # ---- telemetry loop ----------------------------------------------------
     def telemetry_loop() -> None:
         period = 1.0 / max(args.telemetry_hz, 0.2)
@@ -1229,10 +1790,19 @@ def main() -> int:
     # ---- services: rtl / land / hold ----------------------------------------
     def flight_command(command: str) -> bytes:
         abort.set()  # any running task loop terminates at its next check
+        if command != "rtl":
+            rtl_cancel.set()  # land/hold override an in-progress smart RTL
         try:
-            ok = {"rtl": flight.rtl, "land": flight.land, "hold": flight.hold}[
-                command
-            ]()
+            if command == "rtl" and fleet_ids and deconflict is not None:
+                # layered return: deterministic altitude slot per vehicle,
+                # collision-free by construction on simultaneous RTL
+                ok = _start_smart_rtl()
+            else:
+                ok = {
+                    "rtl": flight.rtl,
+                    "land": flight.land,
+                    "hold": flight.hold,
+                }[command]()
         except Exception as exc:
             ok, message = False, str(exc)
         else:
@@ -1964,6 +2534,8 @@ def main() -> int:
         threading.Thread(target=telemetry_loop, daemon=True).start()
         threading.Thread(target=video_loop, daemon=True).start()
         threading.Thread(target=watchpoint_loop, daemon=True).start()
+        if peer_guard is not None:
+            peer_guard.start()
 
         # Register EVERY service before entering the native loop. run(service)
         # only registers one; the per-service registrar is the supported path
