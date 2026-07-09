@@ -706,6 +706,11 @@ function draw(){
     if (d.tlat === undefined) continue;
     if (d.lat === undefined || d.stale){ d.lat = d.tlat; d.lon = d.tlon; }
     else { d.lat += (d.tlat - d.lat) * k; d.lon += (d.tlon - d.lon) * k; }
+    if (d.thead !== undefined){
+      // shortest-arc easing so 359°→1° turns 2°, not −358°
+      if (d.heading === undefined || d.stale) d.heading = d.thead;
+      else d.heading += (((d.thead - d.heading + 540) % 360) - 180) * k;
+    }
   }
   for (const [vid, d] of Object.entries(drones)){
     const col = COLORS[vid] || "#f4f4f4";
@@ -978,7 +983,7 @@ function onTelemetry(m){
   const s = m.sample, vid = m.vehicle;
   const d = drones[vid] = drones[vid] || {trail:[]};
   Object.assign(d, { tlat:s.lat_deg, tlon:s.lon_deg, agl:s.agl_m,
-    heading:s.heading_deg, stale:false });
+    thead:s.heading_deg, stale:false });
   const tail = d.trail[d.trail.length-1];
   if (!tail || tail[0] !== s.lat_deg || tail[1] !== s.lon_deg){
     d.trail.push([s.lat_deg, s.lon_deg]);

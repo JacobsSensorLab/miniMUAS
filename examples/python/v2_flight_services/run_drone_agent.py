@@ -521,18 +521,24 @@ class MavlinkFlightBackend:
         )
 
     def heading(self) -> float | None:
-        """Compass heading at the last telemetry drain, degrees, or None.
+        """Heading at the last telemetry drain, degrees, or None.
 
         MavlinkDroneLink doesn't decode GLOBAL_POSITION_INT.hdg, but
         pymavlink caches the last message of every type on the
-        connection; position() above already drained it. 65535 = unknown.
+        connection; position() above already drained it. 65535 = compass
+        unknown/failed — fall back to the ground-track course from the
+        link's cached GLOBAL_POSITION_INT velocities when the vehicle is
+        actually moving, so the map indicator still turns.
         """
         try:
             msg = self._link._inner._conn.messages.get("GLOBAL_POSITION_INT")
             hdg = getattr(msg, "hdg", None)
-            if hdg is None or int(hdg) >= 65535:
-                return None
-            return (int(hdg) % 36000) / 100.0
+            if hdg is not None and int(hdg) < 65535:
+                return (int(hdg) % 36000) / 100.0
+            vel = getattr(self._link._inner, "_last_velocity_enu", None)
+            if vel is not None and math.hypot(vel[0], vel[1]) > 0.5:
+                return math.degrees(math.atan2(vel[1], vel[0])) % 360.0
+            return None
         except Exception:
             return None
 
