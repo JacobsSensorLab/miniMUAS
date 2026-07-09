@@ -32,7 +32,10 @@ at the commanded speed so the bench dashboard shows live motion.
 from __future__ import annotations
 
 import argparse
+import json
 import math
+import os
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -60,6 +63,7 @@ from contracts import (
     vehicle_search_status_name,
     vehicle_sensor_event_name,
     vehicle_sensor_service,
+    vehicle_system_service,
     vehicle_telemetry_live_name,
     vehicle_telemetry_state_name,
     vehicle_video_live_name,
@@ -72,6 +76,8 @@ from raster import build_raster
 from ndnsf_runtime import (
     add_common_arguments,
     add_ndnsf_path,
+    enable_json_log,
+    flush_json_log,
     optional_local_nfd,
     print_json,
     provider_kwargs,
@@ -814,6 +820,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-agl-m", type=float, default=20.0,
         help="Field-safety guard: reject requested altitudes above this.",
     )
+    parser.add_argument(
+        "--log-dir", default="/var/lib/minimuas/log",
+        help="Directory for the agent's persistent event journal "
+        "(fsync-per-line JSONL that survives a pulled battery, unlike "
+        "journald + the page cache). Unwritable directory just disables "
+        "it. Empty string disables explicitly.",
+    )
     return parser
 
 
@@ -828,6 +841,17 @@ def main() -> int:
     if args.dry_run:
         print_json("agent.dry_run", role=args.role, vehicle=vehicle_id)
         return 0
+
+    if args.log_dir:
+        try:
+            log_path = enable_json_log(
+                Path(args.log_dir) / f"{vehicle_id}-agent.jsonl"
+            )
+            print_json("agent.journal.ready", path=str(log_path))
+        except Exception as exc:
+            print_json(
+                "agent.journal.disabled", dir=args.log_dir, error=str(exc)
+            )
 
     # ---- camera + flight backend -----------------------------------------
     try:
@@ -1396,9 +1420,78 @@ def main() -> int:
         finally:
             set_busy("")
 
+    # ---- service: system/shutdown (authorized companion power-off) ----------
+    # SD-card filesystems rewind to their last real flush when the battery
+    # is pulled — journals, tasked captures, and tiles written since then
+    # vanish. A clean poweroff (sync + unmount) is the only real
+    # assurance, so give the operator one: guarded (never while armed or
+    # mid-task) and authorized (the request must carry the vehicle id as
+    # a typed confirm phrase — no accidental single click can take a
+    # companion down).
+    shutdown_service = vehicle_system_service(vehicle_id, "shutdown")
+
+    def _shutdown_guard(payload: bytes) -> str:
+        """Empty string when shutdown is permitted, else the refusal."""
+        try:
+            confirm = str(json.loads(payload.decode() or "{}").get("confirm", ""))
+        except Exception:
+            confirm = ""
+        if confirm != vehicle_id:
+            return f"confirm phrase must be the vehicle id ({vehicle_id!r})"
+        t = flight.telemetry()
+        if t.get("armed"):
+            return "refused: vehicle is ARMED"
+        if busy["task"]:
+            return f"refused: busy:{busy['task']}"
+        return ""
+
+    @provider.ack_handler(shutdown_service)
+    def ack_shutdown(payload: bytes) -> AckDecision:
+        reason = _shutdown_guard(payload)
+        if reason:
+            return AckDecision(status=False, message=reason)
+        return AckDecision(status=True, message="will sync + poweroff")
+
+    @provider.handler(shutdown_service)
+    def cmd_shutdown(payload: bytes) -> bytes:
+        reason = _shutdown_guard(payload)  # re-check: state may have changed
+        if reason:
+            return FlightCommandResult(
+                vehicle_id=vehicle_id, command="shutdown",
+                status="rejected", message=reason,
+            ).to_bytes()
+        print_json("agent.system.shutdown", vehicle=vehicle_id)
+        flush_json_log()
+
+        def poweroff() -> None:
+            # flush everything the kernel holds, then a clean poweroff
+            # (which also syncs + unmounts). The 3 s delay lets the NDN
+            # response reach the GCS before the network goes away.
+            try:
+                os.sync()
+            except Exception:
+                pass
+            for cmd in (
+                ["systemctl", "poweroff", "--no-wall"],
+                ["poweroff"],
+                ["shutdown", "-h", "now"],
+            ):
+                try:
+                    if subprocess.run(cmd, timeout=20).returncode == 0:
+                        return
+                except Exception:
+                    continue
+
+        threading.Timer(3.0, poweroff).start()
+        return FlightCommandResult(
+            vehicle_id=vehicle_id, command="shutdown",
+            status="accepted", message="syncing and powering off in 3 s",
+        ).to_bytes()
+
     services = [
         vehicle_video_service(vehicle_id),
         vehicle_sensor_service(vehicle_id),
+        vehicle_system_service(vehicle_id, "shutdown"),
         vehicle_flight_service(vehicle_id, "rtl"),
         vehicle_flight_service(vehicle_id, "land"),
         vehicle_flight_service(vehicle_id, "hold"),

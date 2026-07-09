@@ -68,8 +68,54 @@ def controller_kwargs(args) -> dict:
     }
 
 
+_JSON_LOG = {"file": None}
+
+
+def enable_json_log(path: Path | str) -> Path:
+    """Tee every print_json line to `path` with per-line flush + fsync.
+
+    Best-effort persistence for the companion computers: journald and the
+    page cache do not survive a pulled battery, and the SD filesystem
+    rewinds to its last real flush. Event lines are low-rate (telemetry
+    samples are NOT print_json'd), so an fsync per line is cheap and buys
+    the strongest guarantee the hardware can give. Failures to open or
+    write never take the role process down — the log is a debugging aid,
+    not a dependency.
+    """
+
+    path = Path(path).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _JSON_LOG["file"] = open(path, "a", buffering=1)
+    return path
+
+
 def print_json(event: str, **fields: object) -> None:
-    print(json.dumps({"event": event, **fields}, sort_keys=True), flush=True)
+    line = json.dumps({"event": event, **fields}, sort_keys=True)
+    print(line, flush=True)
+    log = _JSON_LOG["file"]
+    if log is not None:
+        try:
+            import time as _time
+
+            log.write(json.dumps(
+                {"ts": _time.time(), "event": event, **fields},
+                sort_keys=True,
+            ) + "\n")
+            log.flush()
+            os.fsync(log.fileno())
+        except Exception:
+            pass
+
+
+def flush_json_log() -> None:
+    """Flush + fsync the tee'd event log (pre-shutdown assurance)."""
+    log = _JSON_LOG["file"]
+    if log is not None:
+        try:
+            log.flush()
+            os.fsync(log.fileno())
+        except Exception:
+            pass
 
 
 def ensure_multicast_strategy(prefix: str) -> None:

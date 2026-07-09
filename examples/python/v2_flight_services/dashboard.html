@@ -247,6 +247,7 @@ h3:first-child { margin-top: 0; }
   <span class="name"><b>miniMUAS</b>v2 Mission Console</span>
   <span class="cds-tag cds-tag--gray" id="mstate">idle</span>
   <span class="spacer"></span>
+  <button class="cds-btn cds-btn--ghost" id="replayBtn">Replay</button>
   <button class="cds-btn cds-btn--ghost" id="dataBtn">Data on</button>
   <button class="cds-btn cds-btn--ghost" id="eventsBtn">Events on</button>
   <button class="cds-btn cds-btn--ghost" id="imageryBtn">Imagery on</button>
@@ -386,6 +387,28 @@ opportunistic: fire whenever the vehicle happens to pass within range.">
   <div id="videos"></div>
 </div>
 
+<!-- replay transport (hidden until a recording is loaded) -->
+<div id="replaybar" style="display:none;position:fixed;left:0;right:0;bottom:0;
+     z-index:55;background:#262626;border-top:2px solid #8a3ffc;padding:8px 16px">
+  <div style="display:flex;align-items:center;gap:12px">
+    <span class="cds-tag" style="background:#8a3ffc;color:#fff">REPLAY</span>
+    <span id="rname" class="mono" style="font-size:12px"></span>
+    <button class="cds-btn cds-btn--secondary" id="rplay"
+            style="min-width:44px">⏸</button>
+    <select id="rspeed" style="height:28px;background:#393939;color:#f4f4f4;
+            border:none;padding:0 8px">
+      <option value="1">1×</option>
+      <option value="4" selected>4×</option>
+      <option value="16">16×</option>
+      <option value="60">60×</option>
+    </select>
+    <input id="rslider" type="range" min="0" max="100" value="0" step="0.1"
+           style="flex:1">
+    <span id="rtime" class="mono" style="font-size:12px;min-width:130px"></span>
+    <button class="cds-btn cds-btn--danger-tertiary" id="rexit">Exit replay</button>
+  </div>
+</div>
+
 <!-- sensor-data playback modal -->
 <div id="modal" style="display:none;position:fixed;inset:0;z-index:60;
      background:rgba(0,0,0,0.65)">
@@ -414,26 +437,36 @@ let ws, wsOK = false;
 function connect() {
   ws = new WebSocket(`ws://${location.host}/ws`);
   ws.binaryType = "arraybuffer";
-  ws.onopen = () => { wsOK = true; setConn(true); };
-  ws.onclose = () => { wsOK = false; setConn(false); setTimeout(connect, 1500); };
+  ws.onopen = () => { wsOK = true; if (!REPLAY.active) setConn(true); };
+  ws.onclose = () => { wsOK = false; if (!REPLAY.active) setConn(false);
+                       setTimeout(connect, 1500); };
   ws.onmessage = ev => {
     // any traffic proves the link — the tag must never read "offline"
     // while data is visibly streaming
-    if (!wsOK) { wsOK = true; setConn(true); }
+    if (!wsOK) { wsOK = true; if (!REPLAY.active) setConn(true); }
+    if (REPLAY.active) return;  // replay owns the UI; live resumes on exit
     if (ev.data instanceof ArrayBuffer) { onVideoFrame(ev.data); return; }
-    const m = JSON.parse(ev.data);
-    if (m.type === "hello") onHello(m);
-    else if (m.type === "telemetry") onTelemetry(m);
-    else if (m.type === "telemetry_stale") onStale(m);
-    else if (m.type === "search_status") onSearch(m);
-    else if (m.type === "raster_preview") onPreview(m);
-    else if (m.type === "event") onEvent(m);
-    else if (m.type === "capabilities") onCaps(m);
-    else if (m.type === "sensor_data") pushSensorData(m.item);
-    else if (m.type === "video_stats") onVideoStats(m);
+    dispatch(JSON.parse(ev.data));
   };
 }
-const send = obj => { if (wsOK) ws.send(JSON.stringify(obj)); };
+function dispatch(m){
+  if (m.type === "hello") onHello(m);
+  else if (m.type === "telemetry") onTelemetry(m);
+  else if (m.type === "telemetry_stale") onStale(m);
+  else if (m.type === "search_status") onSearch(m);
+  else if (m.type === "raster_preview") onPreview(m);
+  else if (m.type === "event") onEvent(m);
+  else if (m.type === "capabilities") onCaps(m);
+  else if (m.type === "sensor_data") pushSensorData(m.item);
+  else if (m.type === "video_stats") onVideoStats(m);
+}
+const send = obj => {
+  if (REPLAY.active){
+    console.warn("replay mode: command suppressed", obj);
+    return;
+  }
+  if (wsOK) ws.send(JSON.stringify(obj));
+};
 function setConn(ok){ const c = document.getElementById("conn");
   c.textContent = ok ? "connected" : "offline";
   c.className = "cds-tag " + (ok ? "cds-tag--green" : "cds-tag--red"); }
@@ -520,14 +553,110 @@ function artifactHTML(d){
       ${(d.lat ?? 0).toFixed(6)}, ${(d.lon ?? 0).toFixed(6)}
       <a target="_blank" href="${url}">open ↗</a></div></div>`;
 }
-function openModal(title, items){
+function openModalHTML(title, html){
   modalTitle.textContent = title;
-  modalBody.innerHTML = items.length
-    ? items.map(artifactHTML).join("")
-    : "<span style='color:#a8a8a8'>no captured data yet</span>";
+  modalBody.innerHTML = html;
   modal.style.display = "";
 }
+function openModal(title, items){
+  openModalHTML(title, items.length
+    ? items.map(artifactHTML).join("")
+    : "<span style='color:#a8a8a8'>no captured data yet</span>");
+}
 function closeModal(){ modal.style.display = "none"; modalBody.innerHTML = ""; }
+
+// ---------- mission replay: re-dispatch a recorded broadcast stream ----------
+// The GCS records every WS broadcast to JSONL ({ts, m} per line); replay
+// resets the UI and feeds those messages through the SAME dispatch()
+// handlers with a transport bar — what you debug is exactly what the
+// operator saw, on the same rendering code.
+const REPLAY = { active:false, msgs:[], i:0, cur:0, dur:0, timer:null,
+                 playing:false };
+const fmtClock = s => {
+  s = Math.max(0, Math.round(s));
+  return `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
+};
+function resetUIState(){
+  drones = {}; targets = []; mapEvents = []; sensorData = [];
+  hoverEvt = null; plan = null;
+  log.innerHTML = "";
+  mframes.textContent = "0"; mleg.textContent = "–";
+  mdet.textContent = "0/0"; mtargets.textContent = "0";
+  renderTargets();
+}
+function openReplayPicker(){
+  fetch("/replays").then(r => r.json()).then(j => {
+    const rows = (j.replays || []).map(r => `
+      <div style="display:flex;justify-content:space-between;align-items:center;
+                  margin-bottom:8px">
+        <a href="#" onclick="loadReplay('${r.name}');return false"
+           class="mono">${r.name}</a>
+        <span style="color:#a8a8a8;font-size:12px">
+          ${(r.bytes/1024).toFixed(0)} kB
+          ${r.recording ? ' · <b style="color:#8a3ffc">recording now</b>' : ""}
+        </span>
+      </div>`).join("");
+    openModalHTML("Mission replays",
+      rows || "<span style='color:#a8a8a8'>no recordings yet — the GCS " +
+              "records every session to --record-dir</span>");
+  }).catch(() => openModalHTML("Mission replays",
+    "<span style='color:#fa4d56'>could not list recordings</span>"));
+}
+function loadReplay(name){
+  fetch(`/replays/${name}`).then(r => r.text()).then(text => {
+    const msgs = [];
+    for (const line of text.split("\n")){
+      if (!line.trim()) continue;
+      try { const o = JSON.parse(line);
+            if (o && o.ts && o.m) msgs.push(o); } catch (e) {}
+    }
+    if (!msgs.length){
+      openModalHTML("Mission replays",
+        "<span style='color:#fa4d56'>recording is empty</span>");
+      return;
+    }
+    closeModal();
+    REPLAY.msgs = msgs;
+    REPLAY.t0 = msgs[0].ts;
+    REPLAY.dur = msgs[msgs.length-1].ts - msgs[0].ts;
+    REPLAY.i = 0; REPLAY.cur = 0;
+    REPLAY.active = true; REPLAY.playing = true;
+    resetUIState();
+    rname.textContent = name;
+    rslider.max = REPLAY.dur; rslider.value = 0;
+    rplay.textContent = "⏸";
+    replaybar.style.display = "";
+    const c = document.getElementById("conn");
+    c.textContent = "replay"; c.className = "cds-tag";
+    c.style.background = "#8a3ffc"; c.style.color = "#fff";
+    if (REPLAY.timer) clearInterval(REPLAY.timer);
+    REPLAY.timer = setInterval(replayTick, 100);
+  });
+}
+function replayTick(){
+  if (!REPLAY.playing) return;
+  REPLAY.cur = Math.min(REPLAY.cur + 0.1 * (+rspeed.value), REPLAY.dur + 0.01);
+  while (REPLAY.i < REPLAY.msgs.length &&
+         REPLAY.msgs[REPLAY.i].ts - REPLAY.t0 <= REPLAY.cur){
+    dispatch(REPLAY.msgs[REPLAY.i].m); REPLAY.i++;
+  }
+  rslider.value = REPLAY.cur;
+  rtime.textContent = `${fmtClock(REPLAY.cur)} / ${fmtClock(REPLAY.dur)}`;
+  if (REPLAY.i >= REPLAY.msgs.length){
+    REPLAY.playing = false; rplay.textContent = "▶";
+  }
+}
+function replaySeek(t){
+  // deterministic seek: rebuild state by fast-dispatching from the start
+  REPLAY.cur = Math.max(0, Math.min(t, REPLAY.dur));
+  resetUIState();
+  REPLAY.i = 0;
+  while (REPLAY.i < REPLAY.msgs.length &&
+         REPLAY.msgs[REPLAY.i].ts - REPLAY.t0 <= REPLAY.cur){
+    dispatch(REPLAY.msgs[REPLAY.i].m); REPLAY.i++;
+  }
+  rtime.textContent = `${fmtClock(REPLAY.cur)} / ${fmtClock(REPLAY.dur)}`;
+}
 const tileImgs = new Map();   // "z/x/y" -> Image (img.ok set on load)
 const lon2tx = (lon, z) => (lon + 180) / 360 * 2**z;
 const lat2ty = (lat, z) => {
@@ -829,6 +958,28 @@ capNow.onclick = () =>
 capPick.onclick = () => pick("capture",
   `${tsensor.value} capture point for ${tvid.value}`);
 
+// ---------- replay transport ----------
+replayBtn.onclick = openReplayPicker;
+rplay.onclick = () => {
+  if (REPLAY.i >= REPLAY.msgs.length && !REPLAY.playing) replaySeek(0);
+  REPLAY.playing = !REPLAY.playing;
+  rplay.textContent = REPLAY.playing ? "⏸" : "▶";
+};
+rslider.addEventListener("input", () => replaySeek(+rslider.value));
+rexit.onclick = () => location.reload();  // cleanest path back to live
+
+// ---------- authorized companion shutdown ----------
+function cmdShutdown(vid){
+  const typed = prompt(
+    `AUTHORIZED SHUTDOWN of ${vid}'s companion computer.\n` +
+    `The vehicle must be DISARMED and idle. The companion syncs its\n` +
+    `journals and powers off cleanly (safe to pull the battery after).\n\n` +
+    `Type the vehicle id (${vid}) to confirm:`);
+  if (typed === null) return;
+  if (typed.trim() !== vid){ alert("confirm mismatch — not sent"); return; }
+  send({cmd:"system", vehicle:vid, command:"shutdown", confirm:vid});
+}
+
 // ---------- area + mission params ----------
 let areaMode = "center";
 modeSeg.querySelectorAll("button").forEach(b => b.onclick = () => {
@@ -938,6 +1089,11 @@ function onHello(m){
           onclick="send({cmd:'flight',vehicle:'${vid}',command:'land'})">Land</button>
         <button class="cds-btn cds-btn--tertiary"
           onclick="send({cmd:'flight',vehicle:'${vid}',command:'hold'})">Hold</button>
+      </div>
+      <div class="btnrow" style="margin-top:8px">
+        <button class="cds-btn cds-btn--ghost" style="font-size:12px"
+          title="clean sync + poweroff of the companion computer; refused while armed or mid-task"
+          onclick="cmdShutdown('${vid}')">⏻ Power off companion</button>
       </div>`;
     cards.appendChild(tile);
     // enable toggle

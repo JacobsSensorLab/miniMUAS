@@ -39,6 +39,11 @@ def vehicle_sensor_service(vehicle_id: str) -> str:
     return f"/muas/v2/{vehicle_id}/sensor/capture"
 
 
+def vehicle_system_service(vehicle_id: str, action: str) -> str:
+    """Companion-computer system control (e.g. authorized shutdown)."""
+    return f"/muas/v2/{vehicle_id}/system/{action}"
+
+
 def tasked_sensor_name(
     vehicle_id: str, sensor_id: str, kind: str, timestamp_ns: int, seq: int
 ) -> str:

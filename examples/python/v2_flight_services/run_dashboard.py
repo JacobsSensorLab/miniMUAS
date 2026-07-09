@@ -39,6 +39,8 @@ import asyncio
 import base64
 import json
 import math
+import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -66,6 +68,7 @@ from contracts import (
     vehicle_search_status_name,
     vehicle_sensor_event_name,
     vehicle_sensor_service,
+    vehicle_system_service,
     vehicle_telemetry_live_name,
     vehicle_telemetry_state_name,
     vehicle_video_live_name,
@@ -117,6 +120,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Local satellite tile cache served at /tiles/{z}/{x}/{y}",
     )
     parser.add_argument(
+        "--record-dir",
+        default="/var/lib/minimuas/replays",
+        help="Mission recorder: every dashboard broadcast (telemetry, "
+        "events, detections, sensor data — everything except binary "
+        "video) is appended to a timestamped JSONL here, replayable in "
+        "the UI via the Replay button. Unwritable directory disables "
+        "recording; empty string disables explicitly.",
+    )
+    parser.add_argument(
         "--tile-upstream",
         default=(
             "https://server.arcgisonline.com/ArcGIS/rest/services/"
@@ -162,6 +174,16 @@ class Dashboard:
         # — feeds the map's sensor-data layer and the playback modal
         self.sensor_data: list[dict] = []
         self.sensor_data_lock = threading.Lock()
+        # last decoded telemetry per vehicle (armed guard for shutdown)
+        self.last_sample: dict[str, dict] = {}
+        # mission recorder: every broadcast dict -> timestamped JSONL
+        self.record_dir: Path | None = (
+            Path(args.record_dir) if args.record_dir else None
+        )
+        self.record_lock = threading.Lock()
+        self.record_file = None
+        self.record_path: Path | None = None
+        self._record_synced = 0.0
         self.loop: asyncio.AbstractEventLoop | None = None
         self.executor = ThreadPoolExecutor(max_workers=8)
         self.clients: set = set()
@@ -179,7 +201,7 @@ class Dashboard:
             "search_done": False,
             "targets": [],      # {index, object_id, confidence, lat, lon,
                                 #  frame, status: queued|investigating|done|
-                                #  failed, artifacts: []}
+                                #  failed, artifacts: [], jobs: [...]}
         }
         self.targets_lock = threading.Lock()
         self.candidates: list[dict] = []  # pre-confirmation hits
@@ -200,6 +222,44 @@ class Dashboard:
         # than seconds-to-minutes). vid -> {last_ns, changed_mono}
         self.sample_state: dict[str, dict] = {}
 
+    # ---- mission recorder ----------------------------------------------------
+
+    def _record(self, payload: dict) -> None:
+        if self.record_dir is None:
+            return
+        try:
+            with self.record_lock:
+                if self.record_file is None:
+                    self.record_dir.mkdir(parents=True, exist_ok=True)
+                    self.record_path = self.record_dir / time.strftime(
+                        "dash-%Y%m%d-%H%M%S.jsonl"
+                    )
+                    self.record_file = open(self.record_path, "a")
+                    print_json("dash.record.started", path=str(self.record_path))
+                self.record_file.write(json.dumps(
+                    {"ts": time.time(), "m": payload},
+                    separators=(",", ":"),
+                ) + "\n")
+                # flush every line (survives a dashboard crash); fsync at
+                # most every 2 s (survives a GCS power pull, cheaply)
+                self.record_file.flush()
+                now = time.monotonic()
+                if now - self._record_synced > 2.0:
+                    os.fsync(self.record_file.fileno())
+                    self._record_synced = now
+        except Exception as exc:
+            print_json("dash.record.disabled", error=str(exc))
+            self.record_dir = None
+
+    def record_sync(self) -> None:
+        with self.record_lock:
+            if self.record_file is not None:
+                try:
+                    self.record_file.flush()
+                    os.fsync(self.record_file.fileno())
+                except Exception:
+                    pass
+
     # ---- WS plumbing ------------------------------------------------------
 
     def _send_loop(self, payload) -> None:
@@ -210,6 +270,8 @@ class Dashboard:
             )
 
     async def broadcast(self, payload) -> None:
+        if isinstance(payload, dict):
+            self._record(payload)
         message = json.dumps(payload) if isinstance(payload, dict) else payload
         dead = []
         for ws in self.clients:
@@ -334,10 +396,12 @@ class Dashboard:
             # clock skew, reported separately as a time-subsystem diagnostic
             skew_s = (gps_time_ns() - sample.gps_time_ns) / 1e9
             self.telemetry_age[vid] = now
+            sample_dict = json.loads(payload.decode())
+            self.last_sample[vid] = sample_dict
             self._send_loop({
                 "type": "telemetry",
                 "vehicle": vid,
-                "sample": json.loads(payload.decode()),
+                "sample": sample_dict,
                 "age_s": round(age_s, 1),
                 "skew_s": round(skew_s, 1),
             })
@@ -1121,7 +1185,55 @@ class Dashboard:
                     )
                 else:
                     self.request_sensor_capture(vid, message.get("params", {}))
+        elif kind == "system":
+            vid = message.get("vehicle", "")
+            if vid in self.vehicles and message.get("command") == "shutdown":
+                # double authorization: the UI already made the operator
+                # type the vehicle id; the agent re-verifies it AND its
+                # own armed/busy state before doing anything
+                if message.get("confirm", "") != vid:
+                    self.event(
+                        "system.rejected", vehicle=vid,
+                        reason="confirm phrase mismatch",
+                    )
+                elif self.last_sample.get(vid, {}).get("armed"):
+                    self.event(
+                        "system.rejected", vehicle=vid,
+                        reason="vehicle is armed",
+                    )
+                else:
+                    self._system_shutdown(vid)
         return None
+
+    def _system_shutdown(self, vid: str) -> None:
+        self.event("system.shutdown_sent", vehicle=vid)
+        self.record_sync()  # the recording should hold this moment
+
+        def on_response(response) -> None:
+            if not response.status:
+                self.event(
+                    "system.shutdown_failed", vehicle=vid,
+                    error=response.error,
+                )
+                return
+            from contracts import FlightCommandResult
+
+            result = FlightCommandResult.from_bytes(response.payload)
+            self.event(
+                "system.shutdown_result", vehicle=vid,
+                status=result.status, message=result.message,
+            )
+
+        def on_timeout(_request_id: str) -> None:
+            self.event("system.shutdown_timeout", vehicle=vid)
+
+        self.user.request_service_async(
+            vehicle_system_service(vid, "shutdown"),
+            json.dumps({"confirm": vid}).encode(),
+            on_response=on_response,
+            on_timeout=on_timeout,
+            timeout_ms=15000,
+        )
 
 
 async def run_web(dash: Dashboard, args) -> None:
@@ -1190,6 +1302,35 @@ async def run_web(dash: Dashboard, args) -> None:
                 pass  # offline / filtered: fall through to 404 -> grid
         return web.Response(status=404)
 
+    async def replays_index(_request):
+        items = []
+        if dash.record_dir is not None and dash.record_dir.exists():
+            for p in sorted(dash.record_dir.glob("*.jsonl"), reverse=True):
+                try:
+                    st = p.stat()
+                except OSError:
+                    continue
+                items.append({
+                    "name": p.name,
+                    "bytes": st.st_size,
+                    "mtime": st.st_mtime,
+                    "recording": p == dash.record_path,
+                })
+        return web.json_response({"replays": items})
+
+    async def replay_file(request):
+        name = request.match_info.get("name", "")
+        if not re.fullmatch(r"[A-Za-z0-9._-]+\.jsonl", name):
+            return web.Response(status=400, text="bad replay name")
+        if dash.record_dir is None:
+            return web.Response(status=404, text="recording disabled")
+        path = dash.record_dir / name
+        if not path.exists():
+            return web.Response(status=404, text="no such replay")
+        if path == dash.record_path:
+            dash.record_sync()  # replaying the live recording: complete it
+        return web.FileResponse(path)
+
     async def ws_handler(request):
         ws = web.WebSocketResponse(heartbeat=20)
         await ws.prepare(request)
@@ -1228,6 +1369,8 @@ async def run_web(dash: Dashboard, args) -> None:
     app.router.add_get("/", index)
     app.router.add_get("/artifact", artifact)
     app.router.add_get("/tiles/{z}/{x}/{y}", tile)
+    app.router.add_get("/replays", replays_index)
+    app.router.add_get("/replays/{name}", replay_file)
     app.router.add_get("/ws", ws_handler)
     runner = web.AppRunner(app)
     await runner.setup()
