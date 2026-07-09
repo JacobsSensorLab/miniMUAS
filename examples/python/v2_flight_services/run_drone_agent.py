@@ -356,6 +356,7 @@ class PeerGuard:
         envelope=None,
         on_event=None,
         min_airborne_agl_m: float = 2.0,
+        floor_agl_m: float = 3.5,
         grace_s: float = 2.5,
         tick_s: float = 0.1,
     ) -> None:
@@ -369,6 +370,11 @@ class PeerGuard:
         self.envelope = envelope or deconflict_module.DeconflictionEnvelope()
         self.on_event = on_event or (lambda **kw: None)
         self.min_airborne = min_airborne_agl_m
+        # fleet-wide flight floor: the cooperative plan never asks a
+        # descender to give altitude it doesn't have above this (the
+        # climber absorbs the shortfall). Must match the backends' goto
+        # floor and be the SAME on every vehicle.
+        self.floor_agl_m = floor_agl_m
         self.grace_s = grace_s
         self.tick_s = tick_s
         self._peers = {
@@ -510,7 +516,7 @@ class PeerGuard:
     def _on_conflict(self, peer: str, sample: dict, own) -> None:
         plan = self.dc.cooperative_plan(
             self.vehicle_id, own[2], peer, sample.get("agl_m", 0.0),
-            envelope=self.envelope,
+            envelope=self.envelope, floor_agl_m=self.floor_agl_m,
         )
         self._engage(
             peer, "coop-pending", plan.biases[self.vehicle_id],
@@ -530,7 +536,7 @@ class PeerGuard:
             plan = self.dc.cooperative_plan(
                 self.vehicle_id, own_pos[2],
                 peer, sample.get("agl_m", 0.0),
-                envelope=self.envelope,
+                envelope=self.envelope, floor_agl_m=self.floor_agl_m,
             )
             self._engage(
                 peer, "coop", plan.biases[self.vehicle_id],
@@ -1650,6 +1656,7 @@ def main() -> int:
                 vertical_sep_m=args.coord_vsep_m,
                 horizon_s=args.coord_horizon_s,
             ),
+            floor_agl_m=min_agl,  # same constant the goto floor enforces
             on_event=lambda **kw: print_json(
                 "agent." + str(kw.pop("kind")), **kw
             ),
