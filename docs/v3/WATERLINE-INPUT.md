@@ -102,6 +102,28 @@ during an active mission session, re-resolve allowed at mission boundaries or
 on explicit operator action.** Mission-mode = layout freeze is a concept the
 suite could own generically ("operational hold" on a RenderSession).
 
+## Provenance UX: association over hash (added 2026-07-10)
+
+A lesson from building our artifact lenses, offered for Sextant/Capstan's
+provenance surfaces: **content hashes assure the system but are semantically
+useless to a human**. The human-valuable provenance is the input→output
+association — "what set of settings produced this result?" Our practice,
+which we'd advocate as the suite default:
+
+- Every run/mission carries a typed **run-config record** (settings, link
+  profile, stack revs) and every downstream datum associates to it; the
+  *association* is the headline provenance ("coop 90% — grace 2.5 s,
+  ndr-good 1% loss"), rendered where the outcome is shown.
+- Hashes live one disclosure level down (hover, expandable drawer, audit
+  appendix) — present exactly where verification matters, never as body
+  clutter. "Walkable trust" should walk through *meaning* first and bytes
+  second.
+- Typed run records make **inter-run comparison** a first-class lens:
+  settings×outcomes tables with setting-deltas highlighted (unchanged
+  settings collapse so differences pop), overlaid track views color-keyed
+  to the distinguishing delta, spreadsheet/CSV export. Label these
+  "associated settings", not causes.
+
 ## What we need to ship miniMUAS panels as instruments
 
 The instruments model (separate process joins fabric over SHM face, publishes
