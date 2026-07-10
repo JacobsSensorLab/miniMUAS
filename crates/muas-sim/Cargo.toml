@@ -10,5 +10,36 @@ repository.workspace = true
 uas-flight = { workspace = true }
 muas-contracts = { workspace = true }
 tracing = { workspace = true }
-# ndn-sim (features mavlink+geometry) is added when the first scenario lands
-# (M3) — it pulls the full engine graph, so we keep scaffold builds fast.
+
+# Scenario embedding (M3/M5): the real agent + fleet coordination types,
+# pulled by explicit path (mirrors the workspace dep table — see
+# docs/v3/REPO-TOPOLOGY.md for the sibling-checkout layout).
+muas-agent = { path = "../muas-agent" }
+uas-fleet-node = { path = "../../../uas-fleet/crates/uas-fleet-node" }
+uas-fleet-data = { path = "../../../uas-fleet/crates/uas-fleet-data" }
+uas-mavlink = { workspace = true }
+
+# The ndn-lab simulator: real ForwarderEngines per node, lossy SimLinks,
+# UDP interop bridges at the fabric edge, OTLP export. No `mavlink` feature —
+# the scenarios here fly the kinematic sim backend, not SITL.
+ndn-sim = { path = "../../../ndn-workspace/ndn-sim/crates/ndn-sim" }
+
+# NDN stack pieces the measurement probes ride (same versions as the agent).
+ndn-engine = { workspace = true }
+ndn-app = { workspace = true }
+ndn-packet = { workspace = true }
+ndn-rpc = { workspace = true }
+ndn-service-core = { workspace = true }
+ndf-spark = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+bytes = { workspace = true }
+# Bernoulli loss + jitter in the spark-lane impairment relay (same rand
+# family ndn-sim's dev-deps use).
+fastrand = "2"
+
+[[example]]
+name = "radio_comparison"
