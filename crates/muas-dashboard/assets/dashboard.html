@@ -231,6 +231,67 @@ h3:first-child { margin-top: 0; }
   padding: var(--sp-02) var(--sp-05); font-size: 12px; font-weight: 600;
   display: none; z-index: 5;
 }
+
+/* ---- map follow / orientation cluster (top right, pictogram-first) ------- */
+#mapctl {
+  position: absolute; top: var(--sp-03); right: var(--sp-03); z-index: 5;
+  display: flex; flex-direction: column; align-items: flex-end;
+  gap: var(--sp-02); font-size: 12px;
+}
+.mapctl-row {
+  display: flex; background: var(--cds-layer-01);
+  border: 1px solid var(--cds-border-subtle);
+}
+.mapctl-row button {
+  height: 26px; padding: 0 var(--sp-03); border: none; border-radius: 0;
+  background: transparent; color: var(--cds-text-secondary); cursor: pointer;
+  font: 400 12px/1 var(--font-sans); letter-spacing: .16px;
+  border-right: 1px solid var(--cds-border-subtle);
+  display: inline-flex; align-items: center; gap: 4px;
+  transition: background 70ms cubic-bezier(0,0,.38,.9);
+}
+.mapctl-row button:last-child { border-right: none; }
+.mapctl-row button:hover:not(:disabled) { background: var(--cds-layer-02); }
+.mapctl-row button.on {
+  background: var(--cds-layer-selected-inverse); color: var(--cds-text-inverse);
+}
+.mapctl-row button:disabled { opacity: .4; cursor: not-allowed; }
+.mapctl-row button:focus-visible { outline: 2px solid var(--cds-focus); outline-offset: -2px; }
+.mapctl-row button .pic { font-size: 14px; line-height: 1; }
+#fixedPanel {
+  display: none; background: var(--cds-layer-01);
+  border: 1px solid var(--cds-border-subtle); padding: var(--sp-03);
+  width: 208px;
+}
+#fixedPanel .grid-2 { margin-bottom: var(--sp-02); }
+#fixedPanel input {
+  width: 100%; height: 24px; padding: 0 var(--sp-03);
+  background: var(--cds-field-01); color: var(--cds-text-primary);
+  border: none; border-bottom: 1px solid var(--cds-border-strong);
+  border-radius: 0; font: 400 11px var(--font-mono);
+}
+.pausedpill {
+  position: absolute; top: var(--sp-03); left: 50%; transform: translateX(-50%);
+  z-index: 5; display: none; cursor: pointer;
+  background: var(--cds-layer-01); border: 1px solid var(--cds-interactive);
+  color: var(--cds-link-primary); padding: var(--sp-02) var(--sp-04);
+  font-size: 12px; letter-spacing: .32px;
+}
+.pausedpill:hover { background: var(--cds-layer-02); }
+/* per-vehicle map controls in the tile head */
+.tilemap { display: inline-flex; align-items: center; gap: var(--sp-03); }
+.tilemap .follow-btn {
+  width: 24px; height: 24px; padding: 0; border: 1px solid transparent;
+  background: transparent; color: var(--cds-text-secondary); cursor: pointer;
+  font-size: 15px; line-height: 1; border-radius: 0;
+}
+.tilemap .follow-btn:hover { background: var(--cds-layer-02); color: var(--cds-text-primary); }
+.tilemap .follow-btn.on {
+  color: var(--cds-text-inverse); background: var(--cds-layer-selected-inverse);
+}
+.tilemap .follow-btn:focus-visible { outline: 2px solid var(--cds-focus); outline-offset: -2px; }
+.tilemap label { display: inline-flex; gap: 4px; align-items: center;
+  font-size: 11px; color: var(--cds-text-secondary); cursor: pointer; }
 #estimate { font: 400 12px var(--font-mono); color: var(--cds-text-secondary);
   display: block; margin: var(--sp-02) 0 0; }
 #thumb { width: 100%; margin-top: var(--sp-03); display: none; }
@@ -378,6 +439,40 @@ opportunistic: fire whenever the vehicle happens to pass within range.">
     <span><span class="k">targets</span><b id="mtargets">0</b></span>
   </div>
   <div class="pickhint" id="pickhint">click the map…</div>
+  <div id="mapctl">
+    <div class="mapctl-row" id="followSeg" role="group" aria-label="map follow mode">
+      <button data-fm="free" title="Free — pan and zoom by hand">
+        <span class="pic">✥</span>Free</button>
+      <button data-fm="fixed" title="Fixed — lock the map to an anchor point">
+        <span class="pic">◎</span>Fixed</button>
+      <button data-fm="follow" id="followBtn"
+        title="Follow one vehicle — arm with ⌖ on a vehicle tile">
+        <span class="pic">⌖</span><span id="followLbl">Follow</span></button>
+      <button data-fm="fleet"
+        title="Follow fleet — keep the selected vehicles framed (none selected = all)">
+        <span class="pic">⛶</span>Fleet</button>
+    </div>
+    <div class="mapctl-row" id="orientSeg" role="group" aria-label="map orientation">
+      <button data-or="north" class="on" title="North-up">N↑</button>
+      <button data-or="heading" id="hdgBtn"
+        title="Heading-up — rotate the map to the followed vehicle's heading">➤↑</button>
+    </div>
+    <div id="fixedPanel">
+      <div class="grid-2">
+        <input id="fxlat" type="number" step="0.000001" placeholder="lat"
+               title="anchor latitude">
+        <input id="fxlon" type="number" step="0.000001" placeholder="lon"
+               title="anchor longitude">
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="cds-btn cds-btn--ghost" id="fxSet"
+          style="height:24px;padding:0 8px;font-size:11px">Set anchor</button>
+        <button class="cds-btn cds-btn--ghost" id="fxHere"
+          style="height:24px;padding:0 8px;font-size:11px">Use map center</button>
+      </div>
+    </div>
+  </div>
+  <div class="pausedpill" id="pausedPill">following paused — resume</div>
 </div>
 
 <div id="right">
@@ -493,7 +588,11 @@ function cmdTakeoff(vid){
 
 // ---------- map (canvas, local ENU around view center, g100 palette) ----------
 const cv = document.getElementById("map"), ctx = cv.getContext("2d");
-let view = { lat: 35.1208, lon: -89.9347, mppx: 0.18 };
+// view.rot is the map rotation in radians: the world bearing that points
+// screen-up. North-up is rot=0; heading-up eases rot toward the followed
+// vehicle's smoothed heading. The preconfigured lat/lon is only the
+// pre-telemetry placeholder — the first fix auto-frames the fleet.
+let view = { lat: 35.1208, lon: -89.9347, mppx: 0.18, rot: 0 };
 let plan = null;
 let drones = {};
 let targets = [];   // mission targets: {index, object_id, confidence, lat,
@@ -503,12 +602,208 @@ let picking = null;
 function resize(){ const r = cv.parentElement.getBoundingClientRect();
   cv.width = r.width; cv.height = r.height; }
 window.addEventListener("resize", resize);
-function toPx(lat, lon){
+// One world→screen transform: local ENU about the view center, scaled by
+// mppx, then rotated by view.rot in screen space. Everything (vectors,
+// hit-tests, picks) goes through toPx/toLL; tiles draw through toPxBase
+// inside a ctx rotated by -view.rot, which is the same map by identity.
+function toPxBase(lat, lon){
   return [ cv.width/2 + (lon - view.lon) * mPerDegLon(view.lat) / view.mppx,
            cv.height/2 - (lat - view.lat) * M_PER_DEG_LAT / view.mppx ]; }
+function toPx(lat, lon){
+  const p = toPxBase(lat, lon);
+  if (!view.rot) return p;
+  const c = Math.cos(view.rot), s = Math.sin(view.rot);
+  const u = p[0] - cv.width/2, v = p[1] - cv.height/2;
+  return [ cv.width/2 + u*c + v*s, cv.height/2 - u*s + v*c ]; }
 function toLL(x, y){
+  if (view.rot){
+    const c = Math.cos(view.rot), s = Math.sin(view.rot);
+    const u = x - cv.width/2, v = y - cv.height/2;
+    x = cv.width/2 + u*c - v*s; y = cv.height/2 + u*s + v*c;
+  }
   return [ view.lat - (y - cv.height/2) * view.mppx / M_PER_DEG_LAT,
            view.lon + (x - cv.width/2) * view.mppx / mPerDegLon(view.lat) ]; }
+
+// ---------- follow / framing / orientation modes ----------
+// free   — manual pan/zoom (plus pre-interaction auto-framing, below)
+// fixed  — ease the center to a user-set anchor
+// follow — ease the center onto one vehicle; heading-up allowed here only
+// fleet  — continuous centroid centering + dynamic zoom that keeps the
+//          selected vehicles in frame with ~15 % edge padding
+// MAP.auto is the first-fix behavior: until the user touches the map or
+// picks a mode, the fleet is kept framed automatically, so a SITL far
+// from the preconfigured center shows up on screen by itself.
+const MAPCTL_KEY = "muas3.mapctl";
+const MAP = { mode:"free", followVid:null, selected:new Set(),
+              orient:"north", anchor:null, paused:false, auto:true,
+              tmppx:null };
+(function loadMapCtl(){
+  try {
+    const s = JSON.parse(localStorage.getItem(MAPCTL_KEY) || "{}");
+    if (["free","fixed","follow","fleet"].includes(s.mode)) MAP.mode = s.mode;
+    if (typeof s.followVid === "string") MAP.followVid = s.followVid;
+    if (Array.isArray(s.selected)) MAP.selected = new Set(s.selected);
+    if (s.orient === "heading") MAP.orient = "heading";
+    if (s.anchor && typeof s.anchor.lat === "number"
+                 && typeof s.anchor.lon === "number") MAP.anchor = s.anchor;
+  } catch (e) {}
+  if (MAP.mode === "follow" && !MAP.followVid) MAP.mode = "free";
+  if (MAP.orient === "heading" && MAP.mode !== "follow") MAP.orient = "north";
+  if (MAP.mode === "fixed" && MAP.anchor){
+    view.lat = MAP.anchor.lat; view.lon = MAP.anchor.lon; }
+  MAP.auto = MAP.mode === "free";
+})();
+function saveMapCtl(){
+  try { localStorage.setItem(MAPCTL_KEY, JSON.stringify({
+    mode: MAP.mode, followVid: MAP.followVid, selected: [...MAP.selected],
+    orient: MAP.orient, anchor: MAP.anchor })); } catch (e) {}
+}
+// a drone counts for framing once real telemetry arrived (tlat, not the
+// placeholder seeded at the view center) and isn't a pre-GPS 0,0 fix
+const hasFix = d => d && d.tlat !== undefined &&
+  !(Math.abs(d.tlat) < 0.5 && Math.abs(d.tlon) < 0.5);
+function fleetVids(){
+  const pool = MAP.mode === "fleet" && MAP.selected.size
+    ? [...MAP.selected] : Object.keys(drones);
+  return pool.filter(v => hasFix(drones[v]));
+}
+// centroid + the mppx that keeps every vid in frame with 15 % padding per
+// edge (70 % usable viewport), fitted about the centroid so the farthest
+// vehicle still clears the border; clamped to the wheel's zoom range
+function fleetFrame(vids){
+  let la = 0, lo = 0, laMin = 90, laMax = -90, loMin = 180, loMax = -180;
+  for (const v of vids){
+    const d = drones[v];
+    la += d.tlat; lo += d.tlon;
+    laMin = Math.min(laMin, d.tlat); laMax = Math.max(laMax, d.tlat);
+    loMin = Math.min(loMin, d.tlon); loMax = Math.max(loMax, d.tlon);
+  }
+  la /= vids.length; lo /= vids.length;
+  const em = 2 * Math.max(loMax - lo, lo - loMin) * mPerDegLon(la);
+  const nm = 2 * Math.max(laMax - la, la - laMin) * M_PER_DEG_LAT;
+  const need = Math.max(em / (cv.width * 0.7), nm / (cv.height * 0.7), 0.08);
+  return { lat: la, lon: lo, mppx: Math.min(4, Math.max(0.02, need)) };
+}
+function setMode(mode, opts){
+  MAP.auto = false; MAP.paused = false; MAP.mode = mode;
+  if (mode !== "follow" && MAP.orient === "heading") MAP.orient = "north";
+  if (mode === "fixed")
+    MAP.anchor = (opts && opts.anchor) || MAP.anchor
+      || { lat: view.lat, lon: view.lon };
+  if (mode === "follow"){
+    if (opts && opts.vid) MAP.followVid = opts.vid;
+    if (!MAP.followVid) MAP.followVid = VEHICLES[0];
+    const d = drones[MAP.followVid];
+    if (hasFix(d)){ view.lat = d.tlat; view.lon = d.tlon; }
+  }
+  if (mode === "fleet"){
+    MAP.tmppx = null;
+    const vids = fleetVids();
+    if (vids.length){
+      const f = fleetFrame(vids);
+      view.lat = f.lat; view.lon = f.lon; view.mppx = f.mppx;
+      MAP.tmppx = f.mppx;
+    }
+  }
+  saveMapCtl(); syncMapCtl();
+}
+function followVehicle(vid){ setMode("follow", {vid}); }
+function toggleFleetSel(vid, on){
+  if (on) MAP.selected.add(vid); else MAP.selected.delete(vid);
+  MAP.tmppx = null; saveMapCtl(); syncMapCtl();
+}
+function setOrient(o){
+  if (o === "heading" && MAP.mode !== "follow") return;
+  MAP.orient = o; saveMapCtl(); syncMapCtl();
+}
+// panning the map while following doesn't discard the armed mode — it
+// pauses it, and the pill offers the way back
+function pauseFollow(){
+  MAP.auto = false;
+  if (MAP.mode !== "free" && !MAP.paused){ MAP.paused = true; syncMapCtl(); }
+}
+function resumeFollow(){ MAP.paused = false; MAP.tmppx = null; syncMapCtl(); }
+function gotoLL(lat, lon){ pauseFollow(); view.lat = lat; view.lon = lon; }
+function syncMapCtl(){
+  followSeg.querySelectorAll("button").forEach(b =>
+    b.classList.toggle("on", b.dataset.fm === MAP.mode));
+  followLbl.textContent = MAP.followVid || "Follow";
+  orientSeg.querySelectorAll("button").forEach(b =>
+    b.classList.toggle("on", b.dataset.or === MAP.orient));
+  hdgBtn.disabled = MAP.mode !== "follow";
+  hdgBtn.title = MAP.mode === "follow"
+    ? "Heading-up — rotate the map to the followed vehicle's heading"
+    : "Heading-up needs a single followed vehicle — arm ⌖ on a tile first";
+  fixedPanel.style.display = MAP.mode === "fixed" ? "" : "none";
+  if (MAP.mode === "fixed" && MAP.anchor){
+    fxlat.value = MAP.anchor.lat.toFixed(6);
+    fxlon.value = MAP.anchor.lon.toFixed(6);
+  }
+  pausedPill.style.display =
+    MAP.paused && MAP.mode !== "free" ? "" : "none";
+  document.querySelectorAll(".follow-btn").forEach(b =>
+    b.classList.toggle("on",
+      MAP.mode === "follow" && b.dataset.vid === MAP.followVid));
+  document.querySelectorAll(".fsel").forEach(c =>
+    { c.checked = MAP.selected.has(c.dataset.vid); });
+}
+followSeg.querySelectorAll("button").forEach(b =>
+  b.onclick = () => setMode(b.dataset.fm));
+orientSeg.querySelectorAll("button").forEach(b =>
+  b.onclick = () => setOrient(b.dataset.or));
+fxSet.onclick = () => {
+  const lat = +fxlat.value, lon = +fxlon.value;
+  if (!isFinite(lat) || !isFinite(lon)) return;
+  MAP.anchor = { lat, lon }; MAP.paused = false; saveMapCtl(); syncMapCtl();
+};
+fxHere.onclick = () => {
+  MAP.anchor = { lat: view.lat, lon: view.lon };
+  MAP.paused = false; saveMapCtl(); syncMapCtl();
+};
+pausedPill.onclick = resumeFollow;
+// per-frame camera update, called from draw(): eases center (and, for
+// fleet, zoom with hysteresis; for heading-up, rotation) toward targets
+function applyFollow(dt){
+  const fd = drones[MAP.followVid];
+  // orientation: shortest-arc ease toward heading (follow) or north
+  const rotT = (!MAP.paused && MAP.mode === "follow" &&
+                MAP.orient === "heading" && fd && fd.heading !== undefined)
+    ? fd.heading * Math.PI / 180 : 0;
+  const dr = (((rotT - view.rot) % (2*Math.PI)) + 3*Math.PI) % (2*Math.PI)
+             - Math.PI;
+  view.rot += dr * (1 - Math.exp(-dt / 0.5));
+  if (rotT === 0 && Math.abs(view.rot) < 0.002) view.rot = 0;
+  if (MAP.paused) return;
+  let tgt = null;
+  if (MAP.mode === "follow" && hasFix(fd))
+    tgt = { lat: fd.tlat, lon: fd.tlon };
+  else if (MAP.mode === "fixed" && MAP.anchor) tgt = MAP.anchor;
+  else if (MAP.mode === "fleet" || (MAP.auto && MAP.mode === "free")){
+    const vids = fleetVids();
+    if (vids.length){
+      tgt = fleetFrame(vids);
+      // zoom hysteresis: widen almost immediately (keep everyone framed),
+      // tighten only once the fleet shrinks 25 % inside the deadband
+      if (MAP.tmppx === null || tgt.mppx > MAP.tmppx * 1.02 ||
+          tgt.mppx < MAP.tmppx * 0.75) MAP.tmppx = tgt.mppx;
+      const kz = 1 - Math.exp(-dt / 0.8);
+      view.mppx *= Math.exp(Math.log(MAP.tmppx / view.mppx) * kz);
+    }
+  }
+  if (!tgt) return;
+  // ease toward the target; snap when it's absurdly far (first fix after
+  // load — SITL can be a continent away from the placeholder center)
+  const dx = (tgt.lon - view.lon) * mPerDegLon(view.lat) / view.mppx;
+  const dy = (tgt.lat - view.lat) * M_PER_DEG_LAT / view.mppx;
+  if (Math.hypot(dx, dy) > 3 * Math.hypot(cv.width, cv.height)){
+    view.lat = tgt.lat; view.lon = tgt.lon;
+    if (tgt.mppx){ view.mppx = tgt.mppx; MAP.tmppx = tgt.mppx; }
+  } else {
+    const k = 1 - Math.exp(-dt / 0.35);
+    view.lat += (tgt.lat - view.lat) * k;
+    view.lon += (tgt.lon - view.lon) * k;
+  }
+}
 
 // ---------- satellite tile layer (Web Mercator, served by the GCS) ----------
 // Tiles come from /tiles/{z}/{x}/{y}: local cache on node 03, proxied from
@@ -625,6 +920,12 @@ function loadReplay(name){
     REPLAY.i = 0; REPLAY.cur = 0;
     REPLAY.active = true; REPLAY.playing = true;
     resetUIState();
+    // follow/framing/orientation run identically on replayed telemetry;
+    // a recording is a fresh context, so re-arm first-fix auto-framing
+    // (recordings are usually nowhere near the preconfigured center)
+    MAP.paused = false; MAP.tmppx = null;
+    MAP.auto = MAP.mode === "free";
+    syncMapCtl();
     rname.textContent = name;
     rslider.max = REPLAY.dur; rslider.value = 0;
     rplay.textContent = "⏸";
@@ -694,24 +995,41 @@ function drawTiles(){
   // (156543.03 m/px is the z=0 per-pixel ground resolution at the equator)
   const groundMpp = 156543.03392 * Math.cos(view.lat * Math.PI / 180);
   const z = Math.max(3, Math.min(19, Math.round(Math.log2(groundMpp / view.mppx))));
-  const [latN, lonW] = toLL(0, 0), [latS, lonE] = toLL(cv.width, cv.height);
+  // when the map is rotated the viewport's world footprint is the box
+  // around all four projected corners, not just NW/SE
+  const cs = [toLL(0, 0), toLL(cv.width, 0),
+              toLL(0, cv.height), toLL(cv.width, cv.height)];
+  const latN = Math.max(cs[0][0], cs[1][0], cs[2][0], cs[3][0]);
+  const latS = Math.min(cs[0][0], cs[1][0], cs[2][0], cs[3][0]);
+  const lonW = Math.min(cs[0][1], cs[1][1], cs[2][1], cs[3][1]);
+  const lonE = Math.max(cs[0][1], cs[1][1], cs[2][1], cs[3][1]);
   const x0 = Math.floor(lon2tx(lonW, z)), x1 = Math.floor(lon2tx(lonE, z));
   const y0 = Math.floor(lat2ty(latN, z)), y1 = Math.floor(lat2ty(latS, z));
-  if ((x1 - x0 + 1) * (y1 - y0 + 1) > 80) return false; // sanity bound
+  if ((x1 - x0 + 1) * (y1 - y0 + 1) > 160) return false; // sanity bound
   let drew = false;
+  ctx.save();
+  if (view.rot){
+    // tiles are axis-aligned bitmaps: draw them through the unrotated
+    // base projection inside a ctx rotated by -view.rot about the canvas
+    // center — identical to pushing every corner through toPx
+    ctx.translate(cv.width/2, cv.height/2);
+    ctx.rotate(-view.rot);
+    ctx.translate(-cv.width/2, -cv.height/2);
+  }
   for (let x = x0; x <= x1; x++){
     for (let y = y0; y <= y1; y++){
       const img = tileFor(z, x, y);
       if (!img.ok) continue;
       // project the tile's corner coordinates through the same transform
       // as every vector; sub-pixel mercator/ENU divergence at these extents
-      const pNW = toPx(ty2lat(y, z), tx2lon(x, z));
-      const pSE = toPx(ty2lat(y + 1, z), tx2lon(x + 1, z));
+      const pNW = toPxBase(ty2lat(y, z), tx2lon(x, z));
+      const pSE = toPxBase(ty2lat(y + 1, z), tx2lon(x + 1, z));
       ctx.drawImage(img, pNW[0], pNW[1],
                     pSE[0] - pNW[0] + 0.5, pSE[1] - pNW[1] + 0.5);
       drew = true;
     }
   }
+  ctx.restore();
   if (drew){
     // translucent veil keeps the Carbon vectors and labels readable
     ctx.fillStyle = "rgba(13,17,23,0.35)";
@@ -721,6 +1039,10 @@ function drawTiles(){
 }
 
 function draw(){
+  const now = performance.now();
+  const dt = Math.min((now - (draw.last || now)) / 1000, 0.25);
+  draw.last = now;
+  applyFollow(dt);
   ctx.fillStyle = "#161616"; ctx.fillRect(0,0,cv.width,cv.height);
   const tiled = drawTiles();
   const grid = 10 / view.mppx;
@@ -830,9 +1152,6 @@ function draw(){
   // ~3-4 Hz, frames at 60 — exponential smoothing (τ≈0.25 s) turns the
   // stepwise fixes into continuous motion without lying about position
   // by more than one sample interval
-  const now = performance.now();
-  const dt = Math.min((now - (draw.last || now)) / 1000, 0.25);
-  draw.last = now;
   const k = 1 - Math.exp(-dt / 0.25);
   for (const d of Object.values(drones)){
     if (d.tlat === undefined) continue;
@@ -853,15 +1172,36 @@ function draw(){
         i ? ctx.lineTo(p[0],p[1]) : ctx.moveTo(p[0],p[1]); });
       ctx.stroke();
     }
-    const p = toPx(d.lat, d.lon), hd = (d.heading||0) * Math.PI/180;
+    // markers counter-rotate against the map so the triangle keeps
+    // showing true heading on a rotated (heading-up) world
+    const p = toPx(d.lat, d.lon), hd = (d.heading||0) * Math.PI/180 - view.rot;
     ctx.save(); ctx.translate(p[0],p[1]); ctx.rotate(hd);
     ctx.fillStyle = d.stale ? "#525252" : col;
     ctx.beginPath(); ctx.moveTo(0,-9); ctx.lineTo(6,7); ctx.lineTo(-6,7);
     ctx.closePath(); ctx.fill(); ctx.restore();
+    if (MAP.selected.has(vid)){
+      // fleet-framing membership ring (toggled by tile checkbox/shift-click)
+      ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.arc(p[0], p[1], 12, 0, 7); ctx.stroke();
+      ctx.setLineDash([]);
+    }
     ctx.fillStyle = d.stale ? "#525252" : col;
     ctx.font = "12px 'IBM Plex Mono', monospace";
     ctx.fillText(`${vid} ${d.agl?.toFixed(1)??"–"}m${d.stale?" (stale)":""}`,
                  p[0]+10, p[1]+4);
+  }
+  if (view.rot){
+    // compass: which way is north while the map is heading-up
+    const cxp = cv.width - 36, cyp = cv.height - 36;
+    const nx = -Math.sin(view.rot), ny = -Math.cos(view.rot);
+    ctx.fillStyle = "rgba(22,22,22,0.8)";
+    ctx.beginPath(); ctx.arc(cxp, cyp, 16, 0, 7); ctx.fill();
+    ctx.strokeStyle = "#6f6f6f"; ctx.lineWidth = 1; ctx.stroke();
+    ctx.strokeStyle = "#fa4d56"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(cxp, cyp);
+    ctx.lineTo(cxp + nx*11, cyp + ny*11); ctx.stroke();
+    ctx.fillStyle = "#f4f4f4"; ctx.font = "10px 'IBM Plex Mono', monospace";
+    ctx.fillText("N", cxp + nx*11 - 3, cyp + ny*11 - 4);
   }
   requestAnimationFrame(draw);
 }
@@ -891,16 +1231,34 @@ cv.addEventListener("mousemove", e => {
     }
     return;
   }
-  view.lon -= (e.offsetX - drag.x) * view.mppx / mPerDegLon(view.lat);
-  view.lat += (e.offsetY - drag.y) * view.mppx / M_PER_DEG_LAT;
+  const dx = e.offsetX - drag.x, dy = e.offsetY - drag.y;
+  if (dx || dy) pauseFollow();   // a real pan suspends follow (pill resumes)
+  // screen delta → world delta through the inverse of the view rotation
+  const c = Math.cos(view.rot), s = Math.sin(view.rot);
+  view.lon -= (dx*c - dy*s) * view.mppx / mPerDegLon(view.lat);
+  view.lat += (dx*s + dy*c) * view.mppx / M_PER_DEG_LAT;
   drag = {x:e.offsetX, y:e.offsetY};
 });
 window.addEventListener("mouseup", () => drag = null);
 cv.addEventListener("wheel", e => {
   e.preventDefault();
+  MAP.auto = false;                       // manual zoom = map interaction
+  if (MAP.mode === "fleet") pauseFollow(); // fleet framing owns the zoom
   view.mppx = Math.min(4, Math.max(0.02, view.mppx * (e.deltaY>0 ? 1.15 : 0.87)));
 }, {passive:false});
 cv.addEventListener("click", e => {
+  if (e.shiftKey){
+    // shift-click a marker toggles its fleet-framing membership
+    let best = 400, hit = null;   // 20 px pick radius, squared
+    for (const [vid, d] of Object.entries(drones)){
+      if (!hasFix(d) || d.lat === undefined) continue;
+      const p = toPx(d.lat, d.lon);
+      const dist = (p[0]-e.offsetX)**2 + (p[1]-e.offsetY)**2;
+      if (dist < best){ best = dist; hit = vid; }
+    }
+    if (hit) toggleFleetSel(hit, !MAP.selected.has(hit));
+    return;
+  }
   if (!picking){
     // clicking a sensor-data point opens its playback/details modal
     if (!showData) return;
@@ -1031,7 +1389,12 @@ function onPreview(m){
   plan = m.plan;
   estimate.textContent =
     `${m.plan.legs.length} legs · ${m.plan.captures.length} captures · ~${Math.round(m.estimate_s)} s`;
-  view.lat = m.plan.center.lat; view.lon = m.plan.center.lon;
+  // recenter on the plan only when nothing owns the camera: never yank a
+  // followed/fixed/fleet view, and let first-fix auto-framing win once
+  // telemetry is flowing
+  if (MAP.mode === "free" && !(MAP.auto && fleetVids().length)){
+    view.lat = m.plan.center.lat; view.lon = m.plan.center.lon;
+  }
 }
 
 // the only confirmation in the UI, per spec
@@ -1069,7 +1432,13 @@ function onHello(m){
         <span class="cds-tag cds-tag--gray" id="link-${vid}">no link</span>
         <span class="cds-tag cds-tag--gray" id="caps-${vid}" style="display:none"
               title="sensors this vehicle advertises"></span>
-        <span class="cds-tag cds-tag--gray" id="gate-${vid}" style="display:none">disabled</span></div>
+        <span class="cds-tag cds-tag--gray" id="gate-${vid}" style="display:none">disabled</span>
+        <span class="tilemap">
+          <button class="follow-btn" id="follow-${vid}" data-vid="${vid}"
+            title="Center the map on ${vid} and follow it">⌖</button>
+          <label title="Include ${vid} in fleet framing (Fleet mode; shift-click its marker does the same)">
+            <input type="checkbox" class="fsel" id="fsel-${vid}" data-vid="${vid}"> fleet</label>
+        </span></div>
       <div class="kv">
         <span class="k">mode</span><span class="k">AGL</span><span class="k">battery</span>
         <span class="v" id="mode-${vid}">–</span>
@@ -1116,6 +1485,12 @@ function onHello(m){
     };
     en.onclick = flipEnabled;
     en.onkeydown = e => { if (e.key===" "||e.key==="Enter"){ e.preventDefault(); flipEnabled(); } };
+    // map controls: crosshair snaps + arms single-follow, checkbox edits
+    // the fleet-framing selection (state survives tile re-renders/replay)
+    document.getElementById(`follow-${vid}`).onclick = () => followVehicle(vid);
+    const fs = document.getElementById(`fsel-${vid}`);
+    fs.checked = MAP.selected.has(vid);
+    fs.onchange = () => toggleFleetSel(vid, fs.checked);
 
     const vp = document.createElement("div");
     vp.className = "cds-tile vidpanel";
@@ -1143,6 +1518,7 @@ function onHello(m){
   if (m.capabilities)
     Object.entries(m.capabilities).forEach(([v, sensors]) =>
       onCaps({vehicle:v, sensors}));
+  syncMapCtl();
 }
 function onTelemetry(m){
   const s = m.sample, vid = m.vehicle;
@@ -1308,7 +1684,7 @@ function onEvent(m){
   if (typeof m.lat === "number" && typeof m.lon === "number"){
     line.style.cursor = "pointer";
     line.title = "click to locate on map";
-    line.onclick = () => { view.lat = m.lat; view.lon = m.lon; };
+    line.onclick = () => gotoLL(m.lat, m.lon);  // pauses follow, pill resumes
   }
 
   const byIndex = i => targets.find(x => x.index === i);
@@ -1376,7 +1752,7 @@ function onEvent(m){
   }
 }
 
-resize(); connect(); draw();
+resize(); syncMapCtl(); connect(); draw();
 setTimeout(preview, 800);
 </script>
 </body>

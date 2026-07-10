@@ -44,6 +44,14 @@ async fn headless_backend_serves_ui_ws_and_fallbacks() {
     let body = http.get(&base).send().await.expect("GET /").text().await.unwrap();
     assert!(body.contains("Mission Console"), "embedded dashboard.html serves");
     assert!(body.contains("cds-header"), "Carbon g100 shell present");
+    assert!(
+        body.contains("id=\"mapctl\"") && body.contains("id=\"followSeg\""),
+        "map follow/orientation control cluster present"
+    );
+    assert!(
+        body.contains("function applyFollow") && body.contains("function fleetFrame"),
+        "follow-mode camera engine embedded"
+    );
 
     // 2 — WS hello with the v2 schema.
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws"))
