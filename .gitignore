@@ -11,3 +11,10 @@ __pycache__/
 *.py[cod]
 .DS_Store
 /test.jpg
+
+# Rust (v3)
+/target/
+
+# SITL artifacts
+mav.tlog*
+mav*.parm

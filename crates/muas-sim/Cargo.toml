@@ -1,0 +1,14 @@
+[package]
+name = "muas-sim"
+description = "ndn-sim + ArduPilot SITL co-simulation scenarios and verification harness for miniMUAS v3."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+muas-flight = { workspace = true }
+muas-contracts = { workspace = true }
+tracing = { workspace = true }
+# ndn-sim (features mavlink+geometry) is added when the first scenario lands
+# (M3) — it pulls the full engine graph, so we keep scaffold builds fast.

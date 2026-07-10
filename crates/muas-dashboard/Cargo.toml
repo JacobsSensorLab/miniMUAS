@@ -1,0 +1,13 @@
+[package]
+name = "muas-dashboard"
+description = "miniMUAS v3 GCS console: mission state machine, recorder/replay, manifest-driven UI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+muas-contracts = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

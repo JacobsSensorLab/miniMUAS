@@ -1,0 +1,14 @@
+[package]
+name = "muas-agent"
+description = "miniMUAS v3 per-drone agent: flight services, fleet coordination, journals, sensors."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+muas-flight = { workspace = true }
+muas-contracts = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
