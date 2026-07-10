@@ -31,6 +31,27 @@ Format:
   every op's Frame. Request: a `metadata: BTreeMap<String, Bytes>` (or one
   reserved appended frame field) on both types, uniform across carriers.
 
+## [2026-07-10] Wiring a real agent: Frame f64 gap, latest-wins primitive, UdpFace trap, ndnsf engine binding
+- **Project:** ndn-workspace (ndn-service-core/-macro, ndn-app, ndn-face, ndn-ndnsf)
+- **Type:** friction batch (from building muas-agent end-to-end)
+- **Detail:** (1) **`Frame` has no f64/f32 impl** — flight contracts are
+  number-heavy, forcing whole-struct JSON Frame impls and losing the
+  macro's per-field length-prefixed evolution story; an f64 impl or serde
+  fallback per field fixes it. (2) **No latest-wins producer primitive** —
+  "serve the freshest sample" requires discovering the freshness-0 +
+  MustBeFresh CS interaction from stages/cs.rs tests; a
+  `Node::serve_latest(watch::Receiver<Bytes>)` helper would remove a
+  failure class. (3) **`UdpFace::from_shared_socket` is a trap for
+  multi-peer nodes**: sibling faces on one socket steal-and-drop each
+  other's datagrams (recv filters by peer after consuming); nothing warns
+  against >1 face per socket. (4) **NdnsfCarrier has no engine binding** —
+  `SvsPubSub::join` takes raw channels so deployments hand-roll a datagram
+  pump; an `over_face(engine, group)` adapter would make rpc/ndnsf
+  comparisons apples-to-apples. (5) Carrier serve() loops lack a
+  cancellation leg — tasks must be aborted rather than drained.
+  (6) On our side: uas-fleet-node's non-Send callback boxes force PeerGuard
+  onto a dedicated OS thread; adding Send bounds would let it ride tokio.
+
 ## [2026-07-10] Keel matcher from an external consumer — verdicts all work, wants an explain() and per-manifest match
 - **Project:** flotilla (render-contract)
 - **Type:** friction + praise
