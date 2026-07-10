@@ -69,14 +69,19 @@ pub enum RtlCommand {
 }
 
 /// Adapter: the coordination layer's [`FlightControl`] over the agent's
-/// shared flight backend.
+/// shared flight backend (holding the whole [`AgentShared`] so `home()` can
+/// fall back to the agent-side capture from the lock-per-poll takeoff).
 pub struct BackendFlightControl {
     backend: SharedBackend,
+    shared: Arc<AgentShared>,
 }
 
 impl BackendFlightControl {
-    pub fn new(backend: SharedBackend) -> Self {
-        Self { backend }
+    pub fn new(shared: Arc<AgentShared>) -> Self {
+        Self {
+            backend: shared.backend.clone(),
+            shared,
+        }
     }
 }
 
@@ -101,7 +106,7 @@ impl FlightControl for BackendFlightControl {
     }
 
     fn home(&self) -> Option<(f64, f64)> {
-        lock(&self.backend).as_dyn_ref().home()
+        self.shared.home()
     }
 
     fn rtl(&mut self) -> bool {
@@ -270,7 +275,7 @@ fn coord_thread_main(
     )
     .with_on_event(on_guard_event);
 
-    let mut flight = BackendFlightControl::new(shared.backend.clone());
+    let mut flight = BackendFlightControl::new(shared.clone());
     let mut rtl: Option<SmartRtl> = None;
     let t0 = std::time::Instant::now();
 

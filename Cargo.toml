@@ -5,6 +5,7 @@ members = [
     "crates/muas-agent",
     "crates/muas-dashboard",
     "crates/muas-sim",
+    "crates/muas-artifacts",
 ]
 
 [workspace.package]
@@ -31,6 +32,7 @@ manifest = { path = "../ndn-workspace/flotilla/crates/core/manifest" }
 render-contract = { path = "../ndn-workspace/flotilla/crates/core/render-contract" }
 ndf-core = { path = "../ndf-rs/refounding/ndf-core" }
 ndf-apps = { path = "../ndf-rs/refounding/ndf-apps" }
+ndf-policy = { path = "../ndf-rs/refounding/ndf-policy" }
 ndf-spark = { path = "../ndf-rs/refounding/ndf-spark" }
 ndn-engine = { path = "../ndn-workspace/ndn-rs/crates/forwarding/ndn-engine" }
 ndn-app = { path = "../ndn-workspace/ndn-rs/crates/app/ndn-app" }

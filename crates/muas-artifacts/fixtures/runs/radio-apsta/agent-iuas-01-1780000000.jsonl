@@ -1,0 +1,23 @@
+{"config": {"carrier": "rpc", "coord": {"floor_agl_m": 3.5, "grace_s": 1.5, "horizon_s": 20.0, "hsep_m": 8.0, "rtl_base_agl_m": 8.0, "rtl_sep_m": 3.0, "vsep_m": 4.0}, "fleet_ids": ["iuas-01", "wuas-01"], "link_profile": {"bandwidth_mbps": 20.0, "delay_ms": 2.0, "jitter_ms": 0.5, "loss_pct": 0.1, "name": "apsta"}, "revs": {"minimuas": "dee5a6a", "ndf-rs": "refounding"}, "sitl": {"cruise_m_s": 6.0}, "telemetry_hz": 5.0}, "kind": "run.config", "run_id": "radio-apsta", "ts_ns": 1780000000000000000, "vehicle_id": "iuas-01"}
+{"carrier": "rpc", "fleet_ids": ["iuas-01", "wuas-01"], "kind": "agent.up", "run_id": "radio-apsta", "source": "sim", "ts_ns": 1780000000200000000, "vehicle_id": "iuas-01"}
+{"accepted": true, "code": "ok", "kind": "service.flight_takeoff", "request": {"agl_m": 6.0}, "rtt_ms": 11.23, "run_id": "radio-apsta", "ts_ns": 1780000002000000000, "vehicle_id": "iuas-01"}
+{"agl_m": 6.0, "airborne": true, "kind": "flight.takeoff.result", "run_id": "radio-apsta", "ts_ns": 1780000007000000000, "vehicle_id": "iuas-01"}
+{"bias_m": 2.0, "kind": "coord.coop", "peer": "wuas-01", "run_id": "radio-apsta", "ts_ns": 1780000015000000000, "vehicle_id": "iuas-01"}
+{"bias_m": 2.0, "kind": "coord.coop", "peer": "wuas-01", "run_id": "radio-apsta", "ts_ns": 1780000024000000000, "vehicle_id": "iuas-01"}
+{"bias_m": 2.0, "kind": "coord.coop", "peer": "wuas-01", "run_id": "radio-apsta", "ts_ns": 1780000033000000000, "vehicle_id": "iuas-01"}
+{"bias_m": 2.0, "kind": "coord.coop", "peer": "wuas-01", "run_id": "radio-apsta", "ts_ns": 1780000042000000000, "vehicle_id": "iuas-01"}
+{"bias_m": 2.0, "kind": "coord.coop", "peer": "wuas-01", "run_id": "radio-apsta", "ts_ns": 1780000051000000000, "vehicle_id": "iuas-01"}
+{"bias_m": 2.0, "kind": "coord.coop", "peer": "wuas-01", "run_id": "radio-apsta", "ts_ns": 1780000060000000000, "vehicle_id": "iuas-01"}
+{"bias_m": 2.0, "kind": "coord.coop", "peer": "wuas-01", "run_id": "radio-apsta", "ts_ns": 1780000069000000000, "vehicle_id": "iuas-01"}
+{"bias_m": 2.0, "kind": "coord.coop", "peer": "wuas-01", "run_id": "radio-apsta", "ts_ns": 1780000078000000000, "vehicle_id": "iuas-01"}
+{"bias_m": 2.0, "kind": "coord.coop", "peer": "wuas-01", "run_id": "radio-apsta", "ts_ns": 1780000087000000000, "vehicle_id": "iuas-01"}
+{"accepted": true, "code": "ok", "kind": "service.goto", "request": {"east_m": 20.207234677944484, "north_m": -23.23606812267336}, "rtt_ms": 14.806, "run_id": "radio-apsta", "ts_ns": 1780000020000000000, "vehicle_id": "iuas-01"}
+{"accepted": true, "code": "ok", "kind": "service.goto", "request": {"east_m": -17.345014044558937, "north_m": -7.392003927054603}, "rtt_ms": 10.907, "run_id": "radio-apsta", "ts_ns": 1780000035000000000, "vehicle_id": "iuas-01"}
+{"accepted": true, "code": "ok", "kind": "service.goto", "request": {"east_m": 34.98076556714567, "north_m": -39.93618566495361}, "rtt_ms": 15.945, "run_id": "radio-apsta", "ts_ns": 1780000050000000000, "vehicle_id": "iuas-01"}
+{"accepted": true, "code": "ok", "kind": "service.goto", "request": {"east_m": 39.19465673261462, "north_m": -39.5206210926314}, "rtt_ms": 16.085, "run_id": "radio-apsta", "ts_ns": 1780000065000000000, "vehicle_id": "iuas-01"}
+{"accepted": true, "code": "ok", "kind": "service.goto", "request": {"east_m": -18.118879817890612, "north_m": -9.514017601169353}, "rtt_ms": 13.418, "run_id": "radio-apsta", "ts_ns": 1780000080000000000, "vehicle_id": "iuas-01"}
+{"accepted": true, "code": "ok", "kind": "service.goto", "request": {"east_m": -35.42470253989005, "north_m": 28.05401315208546}, "rtt_ms": 11.469, "run_id": "radio-apsta", "ts_ns": 1780000095000000000, "vehicle_id": "iuas-01"}
+{"frame_loss_pct": 0.2, "kind": "spark.stats", "received": 838, "run_id": "radio-apsta", "seq_span": 840, "ts_ns": 1780000110000000000, "vehicle_id": "iuas-01"}
+{"kind": "rtl.engaged", "run_id": "radio-apsta", "slot_agl_m": 8.0, "ts_ns": 1780000112000000000, "vehicle_id": "iuas-01"}
+{"kind": "rtl.done", "outcome": "landed", "run_id": "radio-apsta", "ts_ns": 1780000118000000000, "vehicle_id": "iuas-01"}
+{"kind": "agent.shutdown", "run_id": "radio-apsta", "ts_ns": 1780000119000000000, "vehicle_id": "iuas-01"}

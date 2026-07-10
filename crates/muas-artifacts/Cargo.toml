@@ -1,0 +1,41 @@
+[package]
+name = "muas-artifacts"
+description = "NDF no-data-silos artifact generator: operator report, stakeholder deck, replayable demo, and inter-run comparison — four lenses over one named, content-addressed mission dataset."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "muas_artifacts"
+path = "src/lib.rs"
+
+[[bin]]
+name = "muas-artifacts"
+path = "src/main.rs"
+
+[dependencies]
+muas-contracts = { workspace = true }
+
+# The console binding loop (match → authorize → instantiate) + manifest
+# authoring, same stack the dashboard dogfoods.
+uas-console = { workspace = true }
+uas-fleet-data = { workspace = true }
+manifest = { workspace = true }
+
+# NDF: chains are the mission-data transport AND its identity layer.
+ndf-apps = { workspace = true }
+ndf-core = { workspace = true }
+ndf-policy = { workspace = true }
+
+# NDN: engine + UDP faces for the live resolver.
+ndn-engine = { workspace = true }
+ndn-face = { workspace = true }
+
+ed25519-dalek = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

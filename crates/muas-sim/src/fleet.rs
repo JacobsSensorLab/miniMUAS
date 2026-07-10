@@ -75,6 +75,9 @@ pub struct FleetSim {
     pub nodes: Vec<NodeId>,
     /// Blackhole node (all links to it drop 100%), when built with one.
     pub sink: Option<NodeId>,
+    /// Console/GCS node (routes every vehicle prefix), when built with one
+    /// — see [`FleetSim::bridge_client`].
+    pub console: Option<NodeId>,
     pub agents: Vec<AgentHandle>,
     pub vehicle_ids: Vec<String>,
 }
@@ -88,6 +91,31 @@ impl FleetSim {
         specs: &[VehicleSpec],
         link: LinkConfig,
         with_sink: bool,
+        seed: u64,
+        configure: impl Fn(usize, &mut AgentConfig),
+    ) -> Result<Self, String> {
+        Self::build(specs, link, with_sink, false, seed, configure).await
+    }
+
+    /// [`FleetSim::start`] plus a **console node**: an extra fabric node
+    /// linked (same profile) to every vehicle node and routing every
+    /// vehicle's prefix — the attachment point for a dashboard/GCS engine
+    /// (bridge one with [`FleetSim::bridge_client`]). Dashboard↔vehicle
+    /// traffic then crosses the same lossy SimLinks as fleet traffic.
+    pub async fn start_with_console(
+        specs: &[VehicleSpec],
+        link: LinkConfig,
+        seed: u64,
+        configure: impl Fn(usize, &mut AgentConfig),
+    ) -> Result<Self, String> {
+        Self::build(specs, link, false, true, seed, configure).await
+    }
+
+    async fn build(
+        specs: &[VehicleSpec],
+        link: LinkConfig,
+        with_sink: bool,
+        with_console: bool,
         seed: u64,
         configure: impl Fn(usize, &mut AgentConfig),
     ) -> Result<Self, String> {
@@ -128,6 +156,16 @@ impl FleetSim {
                 }
             }
         }
+        let console = if with_console {
+            let console = sim.add_node(EngineConfig::default());
+            for (i, spec) in specs.iter().enumerate() {
+                sim.link(console, nodes[i], link.clone());
+                sim.add_route(console, &names::vehicle_prefix(&spec.vehicle_id), nodes[i]);
+            }
+            Some(console)
+        } else {
+            None
+        };
         let fabric = sim.start().await.map_err(|e| format!("fabric start: {e}"))?;
 
         // -- bridges (fabric edge, lossless loopback UDP) ----------------------
@@ -185,9 +223,34 @@ impl FleetSim {
             fabric,
             nodes,
             sink,
+            console,
             agents,
             vehicle_ids,
         })
+    }
+
+    /// Bridge an external NDN engine (dashboard/GCS) onto the console node.
+    /// Returns `(client_local, bridge_remote)`: the caller binds a UDP face
+    /// at `client_local` toward `bridge_remote` and routes `/muas/v3` out of
+    /// it; every fetch/call then crosses the fabric's SimLinks.
+    pub async fn bridge_client(&self) -> Result<(SocketAddr, SocketAddr), String> {
+        let console = self
+            .console
+            .ok_or("fleet built without a console node (use start_with_console)")?;
+        let client_port = reserve_udp_port()?;
+        let client_addr: SocketAddr = format!("127.0.0.1:{client_port}")
+            .parse()
+            .map_err(|e| format!("client addr: {e}"))?;
+        let bridge_socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| format!("console bridge socket: {e}"))?;
+        let bridge_addr = bridge_socket
+            .local_addr()
+            .map_err(|e| format!("console bridge addr: {e}"))?;
+        self.fabric
+            .bridge_udp_socket(console, bridge_socket, client_addr)
+            .map_err(|e| format!("console bridge: {e}"))?;
+        Ok((client_addr, bridge_addr))
     }
 
     /// Blackhole `target`'s `coord/status` name as seen from `viewer`'s

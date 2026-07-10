@@ -10,18 +10,22 @@ repository.workspace = true
 uas-flight = { workspace = true }
 muas-contracts = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 # Scenario embedding (M3/M5): the real agent + fleet coordination types,
 # pulled by explicit path (mirrors the workspace dep table — see
 # docs/v3/REPO-TOPOLOGY.md for the sibling-checkout layout).
 muas-agent = { path = "../muas-agent" }
+# The virtual deployment embeds the GCS dashboard in-process (lib start).
+muas-dashboard = { path = "../muas-dashboard" }
 uas-fleet-node = { path = "../../../uas-fleet/crates/uas-fleet-node" }
 uas-fleet-data = { path = "../../../uas-fleet/crates/uas-fleet-data" }
 uas-mavlink = { workspace = true }
 
 # The ndn-lab simulator: real ForwarderEngines per node, lossy SimLinks,
-# UDP interop bridges at the fabric edge, OTLP export. No `mavlink` feature —
-# the scenarios here fly the kinematic sim backend, not SITL.
+# UDP interop bridges at the fabric edge, OTLP export. The scripted
+# regression scenarios fly the kinematic sim backend; the virtual
+# deployment binary connects the agents to ArduCopter SITL over MAVLink.
 ndn-sim = { path = "../../../ndn-workspace/ndn-sim/crates/ndn-sim" }
 
 # NDN stack pieces the measurement probes ride (same versions as the agent).
@@ -34,12 +38,22 @@ ndf-spark = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
+# `process` + `net`/`io-util`/`fs`: the virtual deployment spawns SITL
+# children, tails their logs, and writes the run-config record.
+tokio = { workspace = true, features = ["process", "net", "io-util", "fs"] }
 tokio-util = { workspace = true }
 bytes = { workspace = true }
 # Bernoulli loss + jitter in the spark-lane impairment relay (same rand
 # family ndn-sim's dev-deps use).
 fastrand = "2"
+# --verify drives the dashboard's own WS API as a real WebSocket client
+# (same version the dashboard's own smoke tests use).
+tokio-tungstenite = "0.26"
+futures-util = "0.3"
 
 [[example]]
 name = "radio_comparison"
+
+[[bin]]
+name = "virtual_deployment"
+path = "src/bin/virtual_deployment.rs"

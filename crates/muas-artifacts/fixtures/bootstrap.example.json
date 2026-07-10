@@ -1,0 +1,36 @@
+{
+  "_comment": "Live-mode bootstrap: the ONLY file the live resolver reads. Mission data itself arrives as named Blocks over NDN. writer_key_hex is the chain writer's pinned Ed25519 public key (trust = the pin); key_seed_hex is THIS reader's 32-byte signing seed.",
+  "identity": {
+    "principal": "/muas/v3/gcs",
+    "device": "artifacts",
+    "key_seed_hex": "0909090909090909090909090909090909090909090909090909090909090909"
+  },
+  "links": [
+    { "local": "0.0.0.0:47401", "remote": "192.168.144.11:47101" },
+    { "local": "0.0.0.0:47402", "remote": "192.168.144.12:47101" }
+  ],
+  "chains": [
+    {
+      "role": "vehicle-journal",
+      "root": "/muas/v3/iuas-01/journal/companion",
+      "writer": "/muas/v3/iuas-01/companion",
+      "writer_key_hex": "<64 hex chars: iuas-01 companion public key>"
+    },
+    {
+      "role": "vehicle-journal",
+      "root": "/muas/v3/wuas-01/journal/companion",
+      "writer": "/muas/v3/wuas-01/companion",
+      "writer_key_hex": "<64 hex chars: wuas-01 companion public key>"
+    },
+    {
+      "role": "dashboard-recording",
+      "root": "/muas/v3/gcs/recording/dash",
+      "writer": "/muas/v3/gcs/dash",
+      "writer_key_hex": "<64 hex chars: dashboard recorder public key>"
+    }
+  ],
+  "settle_ms": 300,
+  "max_rounds": 240,
+  "quiet_rounds": 3,
+  "step_timeout_ms": 1000
+}

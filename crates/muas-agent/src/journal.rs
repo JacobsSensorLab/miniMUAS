@@ -71,6 +71,9 @@ const CHAIN_BATCH_WINDOW: std::time::Duration = std::time::Duration::from_secs(2
 struct Writer {
     file: Option<std::fs::File>,
     vehicle_id: String,
+    /// Deployment run id stamped onto every line (associates the journal
+    /// with the deployment's `run-config` record); `None` = standalone run.
+    run_id: Option<String>,
     chain: Option<ChainMirror>,
     batch: Vec<u8>,
 }
@@ -80,6 +83,9 @@ impl Writer {
         if let Some(map) = value.as_object_mut() {
             map.entry("vehicle_id")
                 .or_insert_with(|| serde_json::json!(self.vehicle_id));
+            if let Some(run_id) = &self.run_id {
+                map.entry("run_id").or_insert_with(|| serde_json::json!(run_id));
+            }
         }
         let line = match serde_json::to_vec(&value) {
             Ok(line) => line,
@@ -134,10 +140,13 @@ impl Writer {
 }
 
 /// Spawn the journal task. `log_dir = None` disables the JSONL file (events
-/// still reach tracing and the optional chain mirror).
+/// still reach tracing and the optional chain mirror). `run_id` (when set)
+/// is stamped onto every line so downstream tooling can associate the whole
+/// journal with the deployment `run-config` record that opened the run.
 pub fn spawn(
     vehicle_id: &str,
     log_dir: Option<PathBuf>,
+    run_id: Option<String>,
     chain: Option<ChainMirror>,
 ) -> (JournalHandle, tokio::task::JoinHandle<()>) {
     let file = log_dir.and_then(|dir| {
@@ -166,6 +175,7 @@ pub fn spawn(
     let mut writer = Writer {
         file,
         vehicle_id: vehicle_id.to_string(),
+        run_id,
         chain,
         batch: Vec::new(),
     };
@@ -200,7 +210,7 @@ mod tests {
     async fn journal_lines_are_durable_and_tagged() {
         let dir = std::env::temp_dir().join(format!("muas-journal-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let (journal, task) = spawn("iuas-01", Some(dir.clone()), None);
+        let (journal, task) = spawn("iuas-01", Some(dir.clone()), Some("run-42".into()), None);
         journal.event("service.flight_takeoff", serde_json::json!({"agl_m": 5.0}));
         journal.event("coord.coop", serde_json::json!({"peer": "wuas-01"}));
         journal.sync().await;
@@ -221,6 +231,9 @@ mod tests {
         assert_eq!(lines[0]["agl_m"], 5.0);
         assert!(lines[0]["ts_ns"].as_u64().unwrap() > 0);
         assert_eq!(lines[1]["kind"], "coord.coop");
+        // Every line carries the deployment run id (run-config association).
+        assert_eq!(lines[0]["run_id"], "run-42");
+        assert_eq!(lines[1]["run_id"], "run-42");
 
         drop(journal);
         task.await.unwrap();
@@ -229,7 +242,7 @@ mod tests {
 
     #[tokio::test]
     async fn journal_without_file_never_errors() {
-        let (journal, task) = spawn("iuas-01", None, None);
+        let (journal, task) = spawn("iuas-01", None, None, None);
         journal.event("noop", serde_json::json!({}));
         journal.sync().await;
         drop(journal);

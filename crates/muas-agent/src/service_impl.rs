@@ -2,13 +2,13 @@
 //!
 //! Every handler is the v2 ack callback, typed: gate with
 //! `muas_contracts::policy`, set the busy state, drive the backend, journal
-//! the decision, return the [`Ack`]. Long-running flight execution for
-//! `raster_search` / `investigate` / `sensor_capture` / `video_control` is
-//! **stubbed at M3** — the ops ack (or reject) with full v2 policy semantics
-//! and are journaled as accepted tasks, but no survey/orbit is flown yet
-//! (flight-execution parity is a later increment; see the module-level STUB
-//! markers).
+//! the decision, return the [`Ack`]. `raster_search` / `investigate` accept
+//! at ack and FLY on a spawned mission task (`crate::mission` — the v2
+//! fly_raster / fly_orbit loops); `sensor_capture` / `video_control` remain
+//! **stubbed** (no camera/audio hardware in this build — accepted +
+//! journaled, no capture executes; see the STUB markers).
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use muas_contracts::policy;
@@ -16,9 +16,7 @@ use muas_contracts::services::{
     sensor_mode, Ack, InvestigateRequest, RasterRequest, SensorRequest, TakeoffRequest,
     VehicleService, VideoRequest,
 };
-use tracing::{info, warn};
-
-use crate::{lock, AgentCommand, AgentShared, BackendExt};
+use crate::{lock, mission, AgentCommand, AgentShared, BackendExt};
 
 /// The agent's vehicle-service provider.
 pub struct VehicleServiceImpl {
@@ -51,19 +49,35 @@ impl VehicleServiceImpl {
 
     /// Snapshot (home, position, armed) without holding the backend lock.
     fn flight_snapshot(&self) -> FlightSnapshot {
-        let backend = lock(&self.shared.backend);
-        let b = backend.as_dyn_ref();
+        let (home, position, armed) = {
+            let backend = lock(&self.shared.backend);
+            let b = backend.as_dyn_ref();
+            (b.home(), b.position(), b.telemetry().armed)
+        };
         FlightSnapshot {
-            home: b.home(),
-            position: b.position(),
-            armed: b.telemetry().armed,
+            // Fall back to the agent-side home capture (lock-per-poll
+            // takeoff records it there for the MAVLink backend).
+            home: home.or(*lock(&self.shared.fallback_home)),
+            position,
+            armed,
         }
     }
 
-    /// Abort ladder entry: clear any running task and cancel smart RTL.
+    /// Abort ladder entry: raise the abort flag (running mission loops
+    /// terminate within one control cycle), clear the busy label, cancel
+    /// smart RTL.
     fn abort_running_task(&self) {
+        self.shared.abort.store(true, Ordering::Relaxed);
         lock(&self.shared.busy).clear();
         let _ = self.shared.commands.send(AgentCommand::AbortRtl);
+    }
+
+    /// Occupy the vehicle for a freshly accepted task: set the busy label
+    /// and clear any stale abort so the new task isn't instantly cancelled
+    /// (v2 `set_busy` + `abort.clear()`).
+    fn occupy(&self, label: &str) {
+        *lock(&self.shared.busy) = label.to_string();
+        self.shared.abort.store(false, Ordering::Relaxed);
     }
 }
 
@@ -71,7 +85,8 @@ impl VehicleService for VehicleServiceImpl {
     async fn flight_rtl(&self) -> Ack {
         let _span = tracing::info_span!("service-invocation", op = "flight_rtl").entered();
         // RTL is the abort ladder — never busy-gated; the running task
-        // terminates within one cycle (its busy label is cleared here).
+        // terminates within one cycle (abort flag raised, label cleared).
+        self.shared.abort.store(true, Ordering::Relaxed);
         lock(&self.shared.busy).clear();
         let ack = if self.shared.smart_rtl {
             *lock(&self.shared.busy) = "rtl".to_string();
@@ -117,27 +132,10 @@ impl VehicleService for VehicleServiceImpl {
         let ack = match gate {
             Err(rejection) => Ack::reject(&rejection),
             Ok(()) => {
-                // Occupy the vehicle for the climb; the blocking worker
-                // releases it when ensure_airborne settles.
-                *lock(&self.shared.busy) = "takeoff".to_string();
-                let shared = self.shared.clone();
-                let agl_m = req.agl_m;
-                tokio::task::spawn_blocking(move || {
-                    let airborne = lock(&shared.backend).as_dyn().ensure_airborne(agl_m);
-                    if airborne {
-                        info!(agl_m, "takeoff complete");
-                    } else {
-                        warn!(agl_m, "takeoff failed (not airborne)");
-                    }
-                    shared.journal.event(
-                        "flight.takeoff.result",
-                        serde_json::json!({ "agl_m": agl_m, "airborne": airborne }),
-                    );
-                    let mut busy = lock(&shared.busy);
-                    if *busy == "takeoff" {
-                        busy.clear();
-                    }
-                });
+                // Occupy the vehicle for the climb; the mission task
+                // releases it when the (lock-per-poll) climb settles.
+                self.occupy("takeoff");
+                tokio::spawn(mission::takeoff_task(self.shared.clone(), req.agl_m));
                 Ack::ok_detail("takeoff started")
             }
         };
@@ -157,14 +155,21 @@ impl VehicleService for VehicleServiceImpl {
             .and_then(|()| policy::range_guard(home, &req.corners, self.shared.max_range_m));
         let ack = match gate {
             Err(rejection) => Ack::reject(&rejection),
-            Ok(()) => {
-                *lock(&self.shared.busy) = "raster-search".to_string();
-                // STUB (M3): the raster survey itself (transit to leg START,
-                // along-track captures, 2 s target re-sends) is not flown yet
-                // — the task is accepted, journaled, and occupies the vehicle
-                // until RTL/Land/Hold aborts it.
-                Ack::ok_detail("accepted; raster execution stubbed at M3 (task journaled)")
-            }
+            // Geometry is validated at ack, exactly the v2 "empty raster"
+            // rejection; a good plan flies on the mission task.
+            Ok(()) => match mission::plan_raster(&req) {
+                Err(err) => Ack::refuse("bad-raster", err),
+                Ok(plan) => {
+                    self.occupy("raster-search");
+                    let detail = format!(
+                        "raster accepted: {} legs, {} captures",
+                        plan.legs.len(),
+                        plan.capture_count()
+                    );
+                    tokio::spawn(mission::run_raster(self.shared.clone(), req.clone(), plan));
+                    Ack::ok_detail(detail)
+                }
+            },
         };
         self.journal_ack(
             "raster_search",
@@ -184,11 +189,15 @@ impl VehicleService for VehicleServiceImpl {
             });
         let ack = match gate {
             Err(rejection) => Ack::reject(&rejection),
+            // v2 geometry gate: a non-positive radius or turn count is
+            // rejected at ack, not discovered mid-flight.
+            Ok(()) if req.radius_m <= 0.0 => {
+                Ack::refuse("bad-orbit", "invalid request geometry (radius_m <= 0)")
+            }
             Ok(()) => {
-                *lock(&self.shared.busy) = "investigate".to_string();
-                // STUB (M3): the continuous carrot-chasing orbit (v2
-                // `fly_orbit`) is not flown yet — accepted + journaled only.
-                Ack::ok_detail("accepted; orbit execution stubbed at M3 (task journaled)")
+                self.occupy("investigate");
+                tokio::spawn(mission::run_investigate(self.shared.clone(), req.clone()));
+                Ack::ok_detail("carrot-orbit accepted")
             }
         };
         self.journal_ack(

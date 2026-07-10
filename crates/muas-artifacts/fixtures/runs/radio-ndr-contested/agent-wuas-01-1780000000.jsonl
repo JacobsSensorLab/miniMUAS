@@ -1,0 +1,16 @@
+{"config": {"carrier": "rpc", "coord": {"floor_agl_m": 3.5, "grace_s": 1.5, "horizon_s": 20.0, "hsep_m": 8.0, "rtl_base_agl_m": 8.0, "rtl_sep_m": 3.0, "vsep_m": 4.0}, "fleet_ids": ["iuas-01", "wuas-01"], "link_profile": {"bandwidth_mbps": 2.0, "delay_ms": 15.0, "jitter_ms": 8.0, "loss_pct": 8.0, "name": "ndr-contested"}, "revs": {"minimuas": "dee5a6a", "ndf-rs": "refounding"}, "sitl": {"cruise_m_s": 6.0}, "telemetry_hz": 5.0}, "kind": "run.config", "run_id": "radio-ndr-contested", "ts_ns": 1780000000000000000, "vehicle_id": "wuas-01"}
+{"carrier": "rpc", "fleet_ids": ["iuas-01", "wuas-01"], "kind": "agent.up", "run_id": "radio-ndr-contested", "source": "sim", "ts_ns": 1780000000200000000, "vehicle_id": "wuas-01"}
+{"accepted": true, "code": "ok", "kind": "service.flight_takeoff", "request": {"agl_m": 8.0}, "rtt_ms": 41.334, "run_id": "radio-ndr-contested", "ts_ns": 1780000002000000000, "vehicle_id": "wuas-01"}
+{"agl_m": 8.0, "airborne": true, "kind": "flight.takeoff.result", "run_id": "radio-ndr-contested", "ts_ns": 1780000008000000000, "vehicle_id": "wuas-01"}
+{"bias_m": -2.0, "kind": "coord.coop", "peer": "iuas-01", "run_id": "radio-ndr-contested", "ts_ns": 1780000015300000000, "vehicle_id": "wuas-01"}
+{"bias_m": -2.0, "kind": "coord.coop", "peer": "iuas-01", "run_id": "radio-ndr-contested", "ts_ns": 1780000024300000000, "vehicle_id": "wuas-01"}
+{"bias_m": -2.0, "kind": "coord.coop", "peer": "iuas-01", "run_id": "radio-ndr-contested", "ts_ns": 1780000033299999999, "vehicle_id": "wuas-01"}
+{"accepted": true, "code": "ok", "kind": "service.goto", "request": {"east_m": 1.1889066727279314, "north_m": 25.824885074561593}, "rtt_ms": 56.622, "run_id": "radio-ndr-contested", "ts_ns": 1780000020700000000, "vehicle_id": "wuas-01"}
+{"accepted": true, "code": "ok", "kind": "service.goto", "request": {"east_m": -26.87722592638691, "north_m": 11.134630374157908}, "rtt_ms": 58.425, "run_id": "radio-ndr-contested", "ts_ns": 1780000035700000000, "vehicle_id": "wuas-01"}
+{"accepted": true, "code": "ok", "kind": "service.goto", "request": {"east_m": 6.757641352708113, "north_m": -11.632485644690426}, "rtt_ms": 62.017, "run_id": "radio-ndr-contested", "ts_ns": 1780000050700000000, "vehicle_id": "wuas-01"}
+{"accepted": true, "code": "ok", "kind": "service.goto", "request": {"east_m": -0.24580878252493932, "north_m": 27.156193803966758}, "rtt_ms": 41.663, "run_id": "radio-ndr-contested", "ts_ns": 1780000065700000000, "vehicle_id": "wuas-01"}
+{"accepted": true, "code": "ok", "kind": "service.goto", "request": {"east_m": -34.04976884635522, "north_m": 34.71398933500541}, "rtt_ms": 57.701, "run_id": "radio-ndr-contested", "ts_ns": 1780000080700000000, "vehicle_id": "wuas-01"}
+{"accepted": true, "code": "ok", "kind": "service.goto", "request": {"east_m": -29.692356831682616, "north_m": -31.376002502850675}, "rtt_ms": 62.95, "run_id": "radio-ndr-contested", "ts_ns": 1780000095700000000, "vehicle_id": "wuas-01"}
+{"kind": "rtl.engaged", "run_id": "radio-ndr-contested", "slot_agl_m": 11.0, "ts_ns": 1780000112000000000, "vehicle_id": "wuas-01"}
+{"kind": "rtl.done", "outcome": "landed", "run_id": "radio-ndr-contested", "ts_ns": 1780000118000000000, "vehicle_id": "wuas-01"}
+{"kind": "agent.shutdown", "run_id": "radio-ndr-contested", "ts_ns": 1780000119000000000, "vehicle_id": "wuas-01"}

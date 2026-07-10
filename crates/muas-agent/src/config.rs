@@ -45,6 +45,12 @@ pub struct AgentConfig {
     pub endpoint: Endpoint,
     /// Telemetry publish rate, Hz (v2 published at 4 Hz).
     pub telemetry_hz: f64,
+    /// Capability extras advertised on `telemetry/state` (v2
+    /// CapabilityProfile extras: `"orbit"`, `"camera"`, `"audio"`, ...).
+    pub extras: Vec<String>,
+    /// Deployment run id stamped onto every journal line (associates all
+    /// journal output with the deployment's `run-config` record).
+    pub run_id: Option<String>,
     pub carrier: CarrierKind,
     /// Point-to-point UDP faces toward peers / forwarders / clients.
     pub links: Vec<UdpLink>,
@@ -91,6 +97,8 @@ impl Default for AgentConfig {
                 lon_deg: -90.0,
             },
             telemetry_hz: 4.0,
+            extras: Vec::new(),
+            run_id: None,
             carrier: CarrierKind::Rpc,
             links: Vec::new(),
             max_range_m: DEFAULT_MAX_RANGE_M,
@@ -143,6 +151,9 @@ VEHICLE:
                                e.g. mavlink:udpin:0.0.0.0:14550
     --sim-origin <LAT,LON>     sim start position (default 35.0,-90.0)
     --telemetry-hz <HZ>        telemetry/live publish rate (default 4)
+    --extras <A,B,..>          capability extras advertised on telemetry/state
+                               (v2 CapabilityProfile: orbit, camera, audio)
+    --run-id <ID>              deployment run id stamped onto every journal line
 
 NETWORK (point-to-point UDP faces; repeatable):
     --peer <VID=LOCAL,REMOTE>  face to fleet peer VID; routes /muas/v3/<VID>
@@ -248,6 +259,14 @@ pub fn parse_args(args: &[String]) -> Result<ParseOutcome, String> {
                 sim_origin = Some((parse_f64(lat, arg)?, parse_f64(lon, arg)?));
             }
             "--telemetry-hz" => config.telemetry_hz = parse_f64(&next(arg, &mut it)?, arg)?,
+            "--extras" => {
+                config.extras = next(arg, &mut it)?
+                    .split(',')
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect();
+            }
+            "--run-id" => config.run_id = Some(next(arg, &mut it)?),
             "--carrier" => {
                 config.carrier = match next(arg, &mut it)?.as_str() {
                     "rpc" => CarrierKind::Rpc,

@@ -42,8 +42,10 @@
 
 pub mod fleet;
 pub mod metrics;
+pub mod run_config;
 pub mod verdict;
 
 pub use fleet::{FleetSim, VehicleSpec};
 pub use metrics::{Summary, summarize};
+pub use run_config::RunConfig;
 pub use verdict::Verdict;

@@ -21,6 +21,7 @@
 pub mod config;
 pub mod coord;
 pub mod journal;
+pub mod mission;
 pub mod service_impl;
 pub mod telemetry;
 
@@ -61,22 +62,99 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 // Flight backend seam
 // ---------------------------------------------------------------------------
 
+/// How a non-blocking takeoff initiation went (see
+/// [`TickableBackend::takeoff_begin`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TakeoffStart {
+    /// The vehicle refused to launch (mode/arm/NAV_TAKEOFF refused, ground
+    /// check failed, no position fix). The reason is journaled.
+    Refused(&'static str),
+    /// Already airborne (idempotent), or the climb settled synchronously
+    /// (the sim's ensure_airborne is instant in wall time).
+    Airborne,
+    /// The climb was commanded and is in progress; poll telemetry to watch
+    /// it settle. `home` is the launch position captured at the ground arm
+    /// (smart-RTL home — stored agent-side because the trait-level backend
+    /// only records it on its own blocking takeoff path).
+    Climbing { home: Option<(f64, f64)> },
+}
+
 /// The agent's backend seam: the uas-fleet-node [`FlightBackend`] surface
 /// plus the sim's caller-driven motion tick ([`SimFlightBackend::advance`] is
 /// inherent, not on the trait; MAVLink advances itself from the autopilot's
-/// telemetry stream, so its tick is a no-op).
+/// telemetry stream, so its tick is a no-op) and a NON-BLOCKING takeoff
+/// initiation so the agent can watch the climb lock-per-poll instead of
+/// holding the backend mutex for its duration (KNOWN-ISSUES #4).
 pub trait TickableBackend: FlightBackend + Send {
     /// Advance the (sim) motion model by `dt` seconds.
     fn advance(&mut self, _dt: f64) {}
+
+    /// Begin a takeoff WITHOUT blocking on the climb: force GUIDED, run the
+    /// ground/altitude sanity checks, arm, command NAV_TAKEOFF, return.
+    /// The caller (see [`mission::ensure_airborne`]) then polls telemetry
+    /// with short locks, keeping the v2 climb-stall and settle ladder.
+    fn takeoff_begin(&mut self, agl_m: f64) -> TakeoffStart;
 }
 
 impl TickableBackend for SimFlightBackend {
     fn advance(&mut self, dt: f64) {
         SimFlightBackend::advance(self, dt);
     }
+
+    fn takeoff_begin(&mut self, agl_m: f64) -> TakeoffStart {
+        // The sim's ensure_airborne advances SIMULATED time internally and
+        // returns immediately in wall time — safe under one short lock.
+        if FlightBackend::ensure_airborne(self, agl_m) {
+            TakeoffStart::Airborne
+        } else {
+            TakeoffStart::Refused("sim climb did not settle")
+        }
+    }
 }
 
-impl TickableBackend for MavlinkFlightBackend {}
+impl TickableBackend for MavlinkFlightBackend {
+    fn takeoff_begin(&mut self, agl_m: f64) -> TakeoffStart {
+        // Lock-per-poll restructure of uas-mavlink's `ensure_airborne`
+        // command phase (its inherent version blocks through the climb with
+        // `&mut self` held). Constants mirror the uas-mavlink ladder.
+        const ALREADY_AIRBORNE_AGL_M: f64 = 3.0;
+        const GROUND_AGL_TOLERANCE_M: f64 = 1.5;
+
+        let armed = self.link().is_armed();
+        // About to launch from here: THIS is home for smart RTL.
+        let home = if armed {
+            None
+        } else {
+            MavlinkFlightBackend::position(self).map(|(lat, lon, _)| (lat, lon))
+        };
+        // GUIDED up front (no-op when already there): a vehicle that
+        // finished a previous flight sits in RTL/LAND, where ArduCopter
+        // rejects arming and ignores guided targets.
+        if !matches!(self.link().set_mode(uas_mavlink::CopterMode::Guided), Ok(true)) {
+            return TakeoffStart::Refused("mode change to GUIDED refused");
+        }
+        let Some((_, _, agl)) = MavlinkFlightBackend::position(self) else {
+            return TakeoffStart::Refused("no position telemetry");
+        };
+        if armed && agl >= ALREADY_AIRBORNE_AGL_M {
+            return TakeoffStart::Airborne; // already flying; idempotent
+        }
+        if !armed {
+            // A DISARMED vehicle is on the ground by definition; a nonzero
+            // AGL means the altitude estimate is lying (2026-06-15 rail).
+            if agl.abs() > GROUND_AGL_TOLERANCE_M {
+                return TakeoffStart::Refused("altitude sensor disagrees with ground");
+            }
+            if !matches!(self.link().arm(), Ok(true)) {
+                return TakeoffStart::Refused("arm refused (prearm checks?)");
+            }
+        }
+        if !matches!(self.link().takeoff(agl_m), Ok(true)) {
+            return TakeoffStart::Refused("NAV_TAKEOFF refused");
+        }
+        TakeoffStart::Climbing { home }
+    }
+}
 
 /// Trait-object helpers so callers can hold the box and still use the
 /// `FlightBackend` surface uniformly.
@@ -119,6 +197,9 @@ pub struct AgentShared {
     pub backend: SharedBackend,
     /// Active long-running task label; empty = idle (the v2 busy guard).
     pub busy: Mutex<String>,
+    /// The v2 abort flag: raised by rtl/land/hold, cleared when a new task
+    /// starts; every mission loop honors it within one control cycle.
+    pub abort: std::sync::atomic::AtomicBool,
     pub agl_bounds: AglBounds,
     pub max_range_m: f64,
     pub audio_range_m: f64,
@@ -128,8 +209,27 @@ pub struct AgentShared {
     pub latest_telemetry: Mutex<Option<Bytes>>,
     /// Freshest coord entries (served under `coord/status`).
     pub latest_coord: Mutex<Bytes>,
+    /// Freshest raster progress (served under `search/status`); `None`
+    /// until the first raster runs.
+    pub latest_search: Mutex<Option<Bytes>>,
+    /// CapabilityProfile served under `telemetry/state` (static per boot).
+    pub latest_state: Mutex<Option<Bytes>>,
+    /// Smart-RTL home captured by the agent's lock-per-poll takeoff (the
+    /// MAVLink backend only records home on its own blocking takeoff path).
+    pub fallback_home: Mutex<Option<(f64, f64)>>,
     pub journal: JournalHandle,
     pub commands: mpsc::UnboundedSender<AgentCommand>,
+}
+
+impl AgentShared {
+    /// Smart-RTL home: the backend's own capture, or the agent-side capture
+    /// from [`mission::ensure_airborne`].
+    pub fn home(&self) -> Option<(f64, f64)> {
+        lock(&self.backend)
+            .as_dyn_ref()
+            .home()
+            .or(*lock(&self.fallback_home))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -250,8 +350,12 @@ impl Agent {
         } else {
             None
         };
-        let (journal, journal_task) =
-            journal::spawn(&config.vehicle_id, config.log_dir.clone(), chain);
+        let (journal, journal_task) = journal::spawn(
+            &config.vehicle_id,
+            config.log_dir.clone(),
+            config.run_id.clone(),
+            chain,
+        );
         tasks.push(journal_task);
 
         // -- shared state ----------------------------------------------------
@@ -260,12 +364,16 @@ impl Agent {
             vehicle_id: config.vehicle_id.clone(),
             backend: backend.clone(),
             busy: Mutex::new(String::new()),
+            abort: std::sync::atomic::AtomicBool::new(false),
             agl_bounds: config.agl_bounds,
             max_range_m: config.max_range_m,
             audio_range_m: config.audio_range_m,
             smart_rtl: config.smart_rtl_available() && !config.peer_ids().is_empty(),
             latest_telemetry: Mutex::new(None),
             latest_coord: Mutex::new(Bytes::from_static(b"[]")),
+            latest_search: Mutex::new(None),
+            latest_state: Mutex::new(None),
+            fallback_home: Mutex::new(None),
             journal: journal.clone(),
             commands: cmd_tx,
         });
@@ -278,12 +386,33 @@ impl Agent {
             }),
         );
 
-        // -- latest-wins serving (telemetry/live, coord/status) ---------------
+        // -- latest-wins serving (telemetry/live|state, search/status,
+        //    coord/status) ----------------------------------------------------
+        // telemetry/state is the (static) v2 CapabilityProfile: which
+        // investigation extras this vehicle advertises for dispatch.
+        let capability_bytes: Bytes = {
+            let profile = uas_fleet_data::kinds::CapabilityProfile {
+                extras: config.extras.clone(),
+                gimbal: false,
+                gps_time_ns: telemetry::gps_time_ns(),
+                mode_control: true,
+                obstacle_map: false,
+                position: true,
+                signal_sensor: false,
+                vehicle_id: config.vehicle_id.clone(),
+                velocity: false,
+                yaw_control: true,
+            };
+            Bytes::from(serde_json::to_vec(&profile).map_err(|e| format!("profile encode: {e}"))?)
+        };
+        *lock(&shared.latest_state) = Some(capability_bytes);
         let node = engine.app_node(cancel.child_token());
         let mut serve_guards = Vec::new();
         type ReadLatest = fn(&AgentShared) -> Option<Bytes>;
-        let streams: [(&str, ReadLatest); 2] = [
+        let streams: [(&str, ReadLatest); 4] = [
             ("telemetry/live", |s| lock(&s.latest_telemetry).clone()),
+            ("telemetry/state", |s| lock(&s.latest_state).clone()),
+            ("search/status", |s| lock(&s.latest_search).clone()),
             ("coord/status", |s| Some(lock(&s.latest_coord).clone())),
         ];
         for (stream, read) in streams {
