@@ -31,6 +31,20 @@ Format:
   every op's Frame. Request: a `metadata: BTreeMap<String, Bytes>` (or one
   reserved appended frame field) on both types, uniform across carriers.
 
+## [2026-07-10] ndn-sim: foreign UDP flows and virtual time for external forwarders
+- **Project:** ndn-workspace (ndn-sim)
+- **Type:** missing-feature
+- **Context:** M3/M5 co-sim embeds unmodified muas-agents via the UDP
+  interop bridges (which worked well — same code path as deployment).
+- **Detail:** (1) there is no way to carry a *foreign* (non-NDN) UDP flow
+  over a SimLink — our ndf-spark telemetry lane needed a hand-rolled
+  impairment relay duplicating LinkConfig semantics; a generic
+  `bridge_udp_flow(link_profile)` would serve any app with side-channel
+  traffic. (2) Bridges are wall-clock-only, so VirtualKernel is unusable
+  for external forwarders — scenarios run realtime with compressed
+  parameters. A bridge that participates in virtual time (even
+  coarse-grained) would make external-app regression suites much faster.
+
 ## [2026-07-10] Wiring a real agent: Frame f64 gap, latest-wins primitive, UdpFace trap, ndnsf engine binding
 - **Project:** ndn-workspace (ndn-service-core/-macro, ndn-app, ndn-face, ndn-ndnsf)
 - **Type:** friction batch (from building muas-agent end-to-end)

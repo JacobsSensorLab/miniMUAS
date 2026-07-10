@@ -236,16 +236,25 @@ unit/property tests:
   FlightCommandLink impl; 40 unit tests; 8/8 SITL checkride checks green
   (record: uas-flight `crates/uas-mavlink/CHECKRIDE.md` — pins the 3.5 m
   goto floor, bias lead cap, ensure_airborne ladder).
-- **M3**: uas-fleet-data/-node + muas-contracts + muas-agent on ndn-service
-  (rpc carrier), telemetry/coord as Sparks, journals as chains, coordination
-  parity in ndn-sim co-sim; NDNSF carrier comparison.
-- **M4**: uas-console + muas-dashboard parity (audited against
-  surveys/minimuas-v2.md), manifests + render-contract binding,
-  replay-from-chain, OTLP end-to-end.
-- **M-deploy**: per-repo flakes; config-repo v3 branch composing them.
-- **M5**: named-data-radio bearer + AP/STA comparison harness (sim → field).
-- **M6**: uas-rc RC subsumption (bench → SITL → field).
-- **M7**: CYD + field QoL; waterline instrument polish.
+- **M3** (done 2026-07-10): fleet plane complete — coordination port,
+  backend seam, data kinds + manifests, agent on ndn-service (rpc default,
+  ndnsf comparison flag), Spark telemetry lane, chain journals; parity
+  verdicts green in ndn-sim co-sim (protocol findings → KNOWN-ISSUES.md).
+- **M4** (done 2026-07-10): console framework (Keel matcher binding,
+  33 tests) + dashboard parity (25 tests, full v2 feature checklist,
+  verified live against a running agent). Replay-from-chain + OTLP
+  end-to-end remain follow-ups.
+- **M-deploy** (flakes done 2026-07-10; config-repo v3 branch pending
+  GitHub remotes): per-repo flakes build real binaries on this machine;
+  composition plan in MDEPLOY-PLAN.md.
+- **M5** (sim side done 2026-07-10 — docs/v3/radio-comparison.md; field
+  side hardware-gated): link-profile matrix quantified coop/telemetry/RTT
+  degradation; real monitor-wifi bearer wiring awaits the rtl8812eu rigs.
+- **M6** (bench done 2026-07-10: 26-byte frames, ~1 ms loopback,
+  failsafe ladder verified; SITL/field halves gated on a USB controller).
+- **M7** (software done 2026-07-10: uas-cyd repo with host-tested core +
+  xtensa-checked firmware shell, DESIGN.md, FIELD-QOL.md; hardware bring-up
+  B1-B5 gated on the CYD unit).
 
 Every milestone feeds FEEDBACK.md (framework friction) and WATERLINE-INPUT.md
 (UI/UX evidence from real fleet ops).
