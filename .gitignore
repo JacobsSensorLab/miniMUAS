@@ -18,3 +18,9 @@ __pycache__/
 # SITL artifacts
 mav.tlog*
 mav*.parm
+
+# runtime artifacts (never commit)
+/deployment-run/
+/artifacts/
+verify-trace.log
+checkride-trace.log

@@ -50,7 +50,7 @@ use uas_fleet_node::flight_backend::{FlightBackend, SimFlightBackend, SIM_TICK_S
 use uas_flight::deconflict::DeconflictionEnvelope;
 use uas_mavlink::MavlinkFlightBackend;
 
-pub use config::{AgentConfig, CarrierKind, Endpoint, ParseOutcome, UdpLink, HELP};
+pub use config::{AgentConfig, CarrierKind, Endpoint, IdlePolicy, ParseOutcome, UdpLink, HELP};
 pub use journal::JournalHandle;
 pub use sensor::{SensorFeed, SensorFeedConfig, SensorPose, SyntheticFeed};
 
@@ -196,6 +196,10 @@ pub enum AgentCommand {
 /// State shared between service handlers, loops, and the coord thread.
 pub struct AgentShared {
     pub vehicle_id: String,
+    /// Capability extras advertised on `telemetry/state` (v2
+    /// CapabilityProfile: `"orbit"`, `"camera"`, `"audio"`, ...) — the
+    /// investigate path selects its flight pattern from these.
+    pub extras: Vec<String>,
     pub backend: SharedBackend,
     /// Active long-running task label; empty = idle (the v2 busy guard).
     pub busy: Mutex<String>,
@@ -207,6 +211,16 @@ pub struct AgentShared {
     pub audio_range_m: f64,
     /// Smart RTL available (vehicle holds a slot in `--fleet-ids`).
     pub smart_rtl: bool,
+    /// Post-task idle policy (`--idle-policy`; see [`IdlePolicy`]).
+    pub idle_policy: IdlePolicy,
+    /// This vehicle's deterministic smart-RTL altitude slot (AGL metres);
+    /// `None` without a fleet. `slot-hold` idles here.
+    pub slot_agl_m: Option<f64>,
+    /// A sensor-override detour is flying (fly to point → capture → resume):
+    /// mission runners freeze their state machines (no target commands,
+    /// mission clock paused) while this is set, and resume by re-issuing
+    /// their current target when it clears.
+    pub detour: std::sync::atomic::AtomicBool,
     /// Freshest published telemetry sample (served under `telemetry/live`).
     pub latest_telemetry: Mutex<Option<Bytes>>,
     /// Freshest coord entries (served under `coord/status`).
@@ -246,6 +260,45 @@ impl AgentShared {
             .as_dyn_ref()
             .home()
             .or(*lock(&self.fallback_home))
+    }
+
+    /// Bench construction around an existing backend: idle vehicle, no
+    /// sensors, no coordination — the shape agent unit tests and embedding
+    /// harnesses (muas-sim) start from. Adjust public fields before
+    /// wrapping in an `Arc` where a scenario needs different rails.
+    pub fn bench(
+        vehicle_id: &str,
+        backend: SharedBackend,
+        journal: JournalHandle,
+        commands: mpsc::UnboundedSender<AgentCommand>,
+    ) -> Self {
+        Self {
+            vehicle_id: vehicle_id.to_string(),
+            extras: Vec::new(),
+            backend,
+            busy: Mutex::new(String::new()),
+            abort: std::sync::atomic::AtomicBool::new(false),
+            agl_bounds: AglBounds::default(),
+            max_range_m: muas_contracts::policy::DEFAULT_MAX_RANGE_M,
+            audio_range_m: 30.0,
+            smart_rtl: false,
+            idle_policy: IdlePolicy::Hold,
+            slot_agl_m: None,
+            detour: std::sync::atomic::AtomicBool::new(false),
+            latest_telemetry: Mutex::new(None),
+            latest_coord: Mutex::new(Bytes::from_static(b"[]")),
+            latest_search: Mutex::new(None),
+            latest_state: Mutex::new(None),
+            fallback_home: Mutex::new(None),
+            latest_video: Mutex::new(None),
+            latest_sensor: Mutex::new(None),
+            sensor_feed: None,
+            frames: None,
+            video_session: Mutex::new(None),
+            cancel: CancellationToken::new(),
+            journal,
+            commands,
+        }
     }
 }
 
@@ -408,6 +461,7 @@ impl Agent {
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
         let shared = Arc::new(AgentShared {
             vehicle_id: config.vehicle_id.clone(),
+            extras: config.extras.clone(),
             backend: backend.clone(),
             busy: Mutex::new(String::new()),
             abort: std::sync::atomic::AtomicBool::new(false),
@@ -415,6 +469,15 @@ impl Agent {
             max_range_m: config.max_range_m,
             audio_range_m: config.audio_range_m,
             smart_rtl: config.smart_rtl_available() && !config.peer_ids().is_empty(),
+            idle_policy: config.idle_policy,
+            slot_agl_m: config.smart_rtl_available().then(|| {
+                uas_flight::deconflict::rtl_altitude_slots(
+                    config.fleet_ids.iter().cloned(),
+                    config.rtl_base_agl_m,
+                    config.rtl_sep_m,
+                )[&config.vehicle_id]
+            }),
+            detour: std::sync::atomic::AtomicBool::new(false),
             latest_telemetry: Mutex::new(None),
             latest_coord: Mutex::new(Bytes::from_static(b"[]")),
             latest_search: Mutex::new(None),

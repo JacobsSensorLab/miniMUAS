@@ -55,6 +55,15 @@ macro_rules! json_frame {
 /// Service acknowledgement: v2's `AckDecision`, typed. `accepted == false`
 /// carries the policy rejection `code` (see
 /// [`PolicyRejection::code`]) and a human-readable `detail`.
+///
+/// # `detail` is not an error (ROUND-3 command.result semantics)
+///
+/// `detail` is the provider's free-form note in BOTH directions: on an
+/// accepted ack it says what will happen ("flying to point, ~8 s, resuming
+/// raster leg 3 after"); on a rejection it is the reason. Consumers must
+/// never surface an accepted ack's `detail` under an `error` label — an
+/// error exists only when `accepted == false` (then `code` is the
+/// machine-readable discriminator and `detail` the human text).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Ack {
     pub accepted: bool,
@@ -153,26 +162,45 @@ pub struct RasterRequest {
     pub mission_id: String,
 }
 
-/// `investigate` (IUAS): continuous carrot-chasing orbit around the target.
+/// Investigation flight patterns (additive `pattern` field on
+/// [`InvestigateRequest`]; absent/empty means [`AUTO`](investigate_pattern::AUTO)).
+pub mod investigate_pattern {
+    /// Provider selects by requested sensor + capability: audio-only jobs
+    /// fly the acoustic flyover, everything else the carrot orbit.
+    pub const AUTO: &str = "auto";
+    /// Force the continuous carrot-chasing orbit.
+    pub const ORBIT: &str = "orbit";
+    /// Force the acoustic flyover (transit → dip over target → climb out).
+    pub const FLYOVER: &str = "flyover";
+}
+
+/// `investigate` (IUAS): close inspection of a target point — a continuous
+/// carrot-chasing orbit (camera) or an acoustic flyover (audio), selected by
+/// `pattern`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct InvestigateRequest {
     /// Target latitude, degrees.
     pub lat_deg: f64,
     /// Target longitude, degrees.
     pub lon_deg: f64,
-    /// Orbit altitude AGL, metres.
+    /// Orbit/cruise altitude AGL, metres.
     pub agl_m: f64,
-    /// Orbit radius, metres.
+    /// Orbit radius (or flyover dip radius), metres.
     pub radius_m: f64,
-    /// Number of turns to fly.
+    /// Number of turns to fly (flyover: number of passes).
     #[serde(default)]
     pub turns: f64,
-    /// Sensors to run during the orbit (`"camera"`, `"audio"`).
+    /// Sensors to run during the inspection (`"camera"`, `"audio"`).
     #[serde(default)]
     pub sensors: Vec<String>,
     /// Mission id the artifacts publish under.
     #[serde(default)]
     pub mission_id: String,
+    /// Flight pattern: see [`investigate_pattern`]. Additive — absent or
+    /// empty on the wire means `auto` (older callers keep orbit behavior
+    /// for camera jobs).
+    #[serde(default)]
+    pub pattern: String,
 }
 
 /// `sensor_capture` modes, byte-for-byte with v2.
@@ -336,5 +364,45 @@ mod tests {
         assert_eq!(req.sensor, "camera");
         assert_eq!(req.mode, sensor_mode::NOW);
         assert_eq!(req.duration_s, 0.0);
+    }
+
+    #[test]
+    fn investigate_pattern_is_additive_and_defaults_to_auto_semantics() {
+        // Pre-pattern callers send no `pattern`: decodes to empty, which
+        // providers must treat as `auto`.
+        let old: InvestigateRequest = serde_json::from_str(
+            r#"{"lat_deg":35.0,"lon_deg":-90.0,"agl_m":8.0,"radius_m":6.0}"#,
+        )
+        .unwrap();
+        assert_eq!(old.pattern, "");
+
+        let new = InvestigateRequest {
+            pattern: investigate_pattern::FLYOVER.to_string(),
+            sensors: vec!["audio".into()],
+            ..InvestigateRequest::default()
+        };
+        let decoded = InvestigateRequest::decode(&new.encode()).unwrap();
+        assert_eq!(decoded, new);
+        assert_eq!(decoded.pattern, "flyover");
+    }
+
+    /// The command.result contract (ROUND-3): success notes ride `detail`,
+    /// never an `error`-named field — the wire shape has exactly the three
+    /// documented keys in both directions.
+    #[test]
+    fn ack_wire_shape_has_no_error_field() {
+        for ack in [
+            Ack::ok_detail("flying to point, ~8s, resuming raster leg 3 after"),
+            Ack::refuse("busy", "vehicle busy with task 'investigate'"),
+        ] {
+            let value: serde_json::Value = serde_json::from_slice(&ack.encode()).unwrap();
+            let mut keys: Vec<&str> =
+                value.as_object().unwrap().keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            assert_eq!(keys, vec!["accepted", "code", "detail"]);
+            assert!(value.get("error").is_none());
+        }
+        // Accepted acks never carry a rejection code.
+        assert!(Ack::ok_detail("note").code.is_empty());
     }
 }

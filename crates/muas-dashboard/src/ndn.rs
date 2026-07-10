@@ -197,6 +197,11 @@ impl Commander for NdnCommander {
                         turns: order.turns,
                         sensors: order.sensors,
                         mission_id: order.mission_id,
+                        // Pattern selection is the provider's call (round-3
+                        // agent wave): auto = orbit for camera jobs, the
+                        // acoustic flyover for audio-only jobs.
+                        pattern: muas_contracts::services::investigate_pattern::AUTO
+                            .to_string(),
                     })
                     .await,
             )
@@ -310,6 +315,16 @@ async fn telemetry_poller(
                 let skew_s = (now_ns as i128 - sample.gps_time_ns as i128) as f64 / 1e9;
                 dash.set_last_sample(&vehicle, sample_value.clone());
                 dash.lens.on_sample(&vehicle, &sample, now_ns);
+                // Busy truth for the dispatcher: the mission machine skips
+                // hinted-busy vehicles and pumps the job queue on the
+                // busy→idle transition (the second-target fix's live input).
+                let busy = match sample_value.get("busy") {
+                    Some(Value::String(s)) => !s.is_empty(),
+                    Some(Value::Bool(b)) => *b,
+                    _ => false,
+                };
+                let actions = dash.with_mission(|m| m.set_vehicle_busy(&vehicle, busy));
+                dash.apply_actions(actions);
                 dash.hub.broadcast(&json!({
                     "type": "telemetry",
                     "vehicle": vehicle,

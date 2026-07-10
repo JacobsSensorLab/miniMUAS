@@ -50,7 +50,10 @@ body {
   background: var(--cds-background); color: var(--cds-text-primary);
   font: 400 14px/1.29 var(--font-sans); letter-spacing: .16px;
   display: grid; grid-template-rows: 48px 1fr;
-  grid-template-columns: 336px 1fr 288px;
+  /* side panels are resizable (drag grips) and fully collapsible (edge
+     tabs); the vars are set by the panel controller and persisted */
+  --side-w: 336px; --right-w: 288px;
+  grid-template-columns: var(--side-w) 1fr var(--right-w);
   grid-template-areas: "header header header" "side map right";
   overflow: hidden;
 }
@@ -300,6 +303,83 @@ h3:first-child { margin-top: 0; }
 #detCard .mono { font-family: var(--font-mono); font-size: 12px; }
 ::-webkit-scrollbar { width: 8px; }
 ::-webkit-scrollbar-thumb { background: var(--cds-layer-02); }
+
+/* ---- collapsible tool sections (h3 = section header w/ chevron) ---------- */
+h3.sech { cursor: pointer; user-select: none; }
+h3.sech:hover { color: var(--cds-text-primary); }
+h3.sech .chev { display: inline-block; width: 14px; color: var(--cds-text-helper);
+  font-size: 10px; }
+
+/* ---- resizable / collapsible side panels ---------------------------------- */
+.grip {
+  position: fixed; top: 48px; bottom: 0; width: 7px; z-index: 40;
+  cursor: col-resize; background: transparent;
+}
+.grip:hover, .grip.dragging { background: var(--cds-interactive); opacity: .5; }
+#sideGrip { left: calc(var(--side-w) - 3px); }
+#rightGrip { right: calc(var(--right-w) - 3px); }
+.edgetab {
+  position: fixed; top: 50%; transform: translateY(-50%); z-index: 41;
+  width: 16px; height: 64px; padding: 0; border: 1px solid var(--cds-border-subtle);
+  background: var(--cds-layer-01); color: var(--cds-text-secondary);
+  cursor: pointer; font-size: 11px; border-radius: 0;
+}
+.edgetab:hover { background: var(--cds-layer-02); color: var(--cds-text-primary); }
+#sideTab { left: var(--side-w); border-left: none; }
+#rightTab { right: var(--right-w); border-right: none; }
+
+/* ---- map legend overlay ---------------------------------------------------- */
+#legend {
+  position: absolute; bottom: var(--sp-05); left: var(--sp-03); z-index: 6;
+  background: rgba(22,22,22,0.92); border: 1px solid var(--cds-border-subtle);
+  padding: var(--sp-04); font-size: 11px; letter-spacing: .32px;
+  max-width: 280px; max-height: 60%; overflow-y: auto; display: none;
+}
+#legend h4 { font-size: 11px; font-weight: 600; margin: var(--sp-03) 0 var(--sp-02);
+  color: var(--cds-text-secondary); }
+#legend h4:first-child { margin-top: 0; }
+#legend .li { display: flex; gap: 6px; align-items: center; margin-bottom: 2px;
+  color: var(--cds-text-secondary); }
+#legend .sw { flex: none; width: 14px; height: 10px; display: inline-block; }
+
+/* ---- command lifecycle: toasts + mini-log ---------------------------------- */
+#toasts {
+  position: absolute; top: 44px; left: 50%; transform: translateX(-50%);
+  z-index: 30; display: flex; flex-direction: column; gap: 4px;
+  align-items: center; pointer-events: none;
+}
+.toast {
+  background: var(--cds-layer-01); border-left: 3px solid var(--cds-support-info);
+  color: var(--cds-text-primary); padding: 6px 12px; font-size: 12px;
+  letter-spacing: .32px; box-shadow: 0 2px 6px rgba(0,0,0,.5);
+  opacity: 1; transition: opacity .3s;
+  max-width: 480px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.toast.ok { border-left-color: var(--cds-support-success); }
+.toast.err { border-left-color: var(--cds-support-error); }
+.toast.warn { border-left-color: var(--cds-support-warning); }
+.toast.out { opacity: 0; }
+#cmdlog { max-height: 180px; overflow-y: auto; }
+#cmdlog .n {
+  background: var(--cds-layer-01); border-left: 3px solid var(--cds-support-info);
+  padding: var(--sp-02) var(--sp-03); margin-bottom: 2px;
+  font: 400 11px/1.5 var(--font-mono);
+}
+#cmdlog .n .t { color: var(--cds-text-helper); margin-right: var(--sp-03); }
+#cmdlog .n.ok { border-left-color: var(--cds-support-success); }
+#cmdlog .n.err { border-left-color: var(--cds-support-error); }
+#cmdlog .n.warn { border-left-color: var(--cds-support-warning); }
+#cmdlog .st { font-weight: 600; }
+
+/* ---- display (viz config) panel -------------------------------------------- */
+#dispPanel .row { display: grid; grid-template-columns: 1fr 76px 34px;
+  gap: var(--sp-03); align-items: center; margin-bottom: 6px; }
+#dispPanel .row label { font-size: 11px; letter-spacing: .32px;
+  color: var(--cds-text-secondary); }
+#dispPanel .row output { font: 400 11px var(--font-mono);
+  color: var(--cds-text-primary); text-align: right; }
+#dispPanel input[type=range] { width: 100%; accent-color: var(--cds-interactive); }
+#estimate .statline { display: block; }
 </style>
 </head>
 <body>
@@ -308,11 +388,15 @@ h3:first-child { margin-top: 0; }
   <span class="name"><b>miniMUAS</b>v3 Mission Console</span>
   <span class="cds-tag cds-tag--gray" id="mstate">idle</span>
   <span class="spacer"></span>
+  <button class="cds-btn cds-btn--ghost" id="recBtn"
+    title="Arm/stop a recording session. Recording also arms automatically at mission start and finalizes at mission end / RTL-all. Recordings are UI replay artifacts; the vehicle journals remain the durable record.">● Record</button>
   <button class="cds-btn cds-btn--ghost" id="replayBtn">Replay</button>
+  <button class="cds-btn cds-btn--ghost" id="legendBtn"
+    title="Toggle the map legend (explains the symbology of the layers currently on)">Legend</button>
   <button class="cds-btn cds-btn--ghost" id="dataBtn">Data on</button>
   <button class="cds-btn cds-btn--ghost" id="eventsBtn">Events on</button>
   <button class="cds-btn cds-btn--ghost" id="sensorsBtn"
-    title="Camera FoV footprints, DRI rings, and audio reach, rendered from each vehicle's advertised sensor_meta">Sensors on</button>
+    title="Sensor coverage from each vehicle's advertised sensor_meta: nadir cameras show the ground footprint quad, forward cameras a FoV cone with shaded D/R/I bands, microphones their reach">Sensors on</button>
   <button class="cds-btn cds-btn--ghost" id="netBtn"
     title="Fabric links between nodes: active link profile, live flow rates, drops (1 Hz from the deployment)">Network off</button>
   <button class="cds-btn cds-btn--ghost" id="imageryBtn">Imagery on</button>
@@ -499,6 +583,8 @@ opportunistic: fire whenever the vehicle happens to pass within range.">
     </div>
   </div>
   <div class="pausedpill" id="pausedPill">following paused — resume</div>
+  <div id="legend"></div>
+  <div id="toasts"></div>
 </div>
 
 <div id="right">
@@ -506,7 +592,17 @@ opportunistic: fire whenever the vehicle happens to pass within range.">
   <div id="cards"></div>
   <h3>Video</h3>
   <div id="videos"></div>
+  <h3>Commands</h3>
+  <div id="cmdlog"></div>
+  <h3>Display</h3>
+  <div id="dispPanel"></div>
 </div>
+
+<!-- panel resize grips + collapse edge tabs -->
+<div class="grip" id="sideGrip" title="drag to resize — the tab collapses"></div>
+<div class="grip" id="rightGrip" title="drag to resize — the tab collapses"></div>
+<button class="edgetab" id="sideTab" title="collapse/expand the left panel">◂</button>
+<button class="edgetab" id="rightTab" title="collapse/expand the right panel">▸</button>
 
 <!-- replay transport (hidden until a recording is loaded) -->
 <div id="replaybar" style="display:none;position:fixed;left:0;right:0;bottom:0;
@@ -552,6 +648,37 @@ const mPerDegLon = lat => M_PER_DEG_LAT * Math.max(Math.cos(lat*Math.PI/180), 1e
 const PALETTE = ["#78a9ff", "#be95ff", "#08bdba", "#ff7eb6"];
 const COLORS = {};
 let VEHICLES = ["wuas-01","iuas-01"];
+
+// ---------- display (viz) config: persisted rendering knobs ----------
+// Per-layer opacity, imagery veil (background dimming), icon size and line
+// weight multipliers. Defaults reproduce the classic look; everything is
+// operator-tunable from the right panel's Display section.
+const DISP_KEY = "muas3.display";
+const DISP = {
+  veil: 0.35,        // imagery dimming veil alpha
+  iconMul: 1,        // icon size multiplier (markers/glyphs)
+  lineMul: 1,        // line weight multiplier
+  op: { sensors: 1, net: 1, events: 0.9, data: 1, trails: 1,
+        plan: 1, coverage: 0.4 },
+};
+(function loadDisp(){
+  try {
+    const s = JSON.parse(localStorage.getItem(DISP_KEY) || "{}");
+    for (const k of ["veil","iconMul","lineMul"])
+      if (typeof s[k] === "number") DISP[k] = s[k];
+    if (s.op) for (const k of Object.keys(DISP.op))
+      if (typeof s.op[k] === "number") DISP.op[k] = s.op[k];
+  } catch (e) {}
+})();
+function saveDisp(){
+  try { localStorage.setItem(DISP_KEY, JSON.stringify(DISP)); } catch (e) {}
+}
+// line weight / icon sizing helpers: icons scale with zoom as a nominal
+// ground size in metres, clamped to a legible pixel range (no more
+// fixed-px icons floating over a zoomed-out world)
+const lw = x => x * DISP.lineMul;
+const iconPx = (m, lo, hi) =>
+  Math.max(lo, Math.min(hi, m / view.mppx)) * DISP.iconMul;
 
 // ---------- websocket ----------
 let ws, wsOK = false;
@@ -859,7 +986,7 @@ let showData = true;
 let sensorData = [];          // {vehicle,sensor,kind,name,lat,lon,t,source,label}
 let CAPS = {};                // vid -> ["camera","audio"]
 const SENSOR_COLOR = { camera:"#78a9ff", audio:"#ff832b" };
-// ---------- sensor viz layer: FoV quads + DRI rings + audio reach ----------
+// ---------- sensor viz layer: ground quads / FoV cones + audio reach ----------
 // Rendered from each vehicle's ADVERTISED sensor_meta (capability profile,
 // additive key) — sensors are dynamic; nothing airframe-specific lives here.
 let showSensors = true;
@@ -917,26 +1044,54 @@ function resetUIState(){
   drones = {}; targets = []; mapEvents = []; sensorData = [];
   hoverEvt = null; plan = null;
   SMETA = {}; NET = null; simAnoms = [];
+  covTrack = []; gcsHome = null;
+  CMDS.list = []; CMDS.byId = {}; renderCmdLog();
   log.innerHTML = "";
   mframes.textContent = "0"; mleg.textContent = "–";
   mdet.textContent = "0/0"; mtargets.textContent = "0";
   renderTargets();
 }
+// Session names are `<run>-<mission>-<t>.jsonl` (recordings arm at mission
+// start / Record and finalize at mission end); the picker groups by run.
+// Pre-round-3 `dash-<t>.jsonl` recordings still load, under "earlier".
+function parseRecName(name){
+  const m = name.match(/^(.+?)-((?:mission-\d+)|manual)-(\d{8})-(\d{6})(-\d+)?\.jsonl$/);
+  if (m) return {
+    run: m[1],
+    label: `${m[2] === "manual" ? "manual record" : m[2]} · ` +
+      `${m[3].slice(0,4)}-${m[3].slice(4,6)}-${m[3].slice(6)} ` +
+      `${m[4].slice(0,2)}:${m[4].slice(2,4)}:${m[4].slice(4)}${m[5] || ""}`,
+  };
+  return { run: "earlier recordings", label: name.replace(/\.jsonl$/, "") };
+}
 function openReplayPicker(){
   fetch("/replays").then(r => r.json()).then(j => {
-    const rows = (j.replays || []).map(r => `
-      <div style="display:flex;justify-content:space-between;align-items:center;
-                  margin-bottom:8px">
-        <a href="#" onclick="loadReplay('${r.name}');return false"
-           class="mono">${r.name}</a>
-        <span style="color:#a8a8a8;font-size:12px">
-          ${(r.bytes/1024).toFixed(0)} kB
-          ${r.recording ? ' · <b style="color:#8a3ffc">recording now</b>' : ""}
-        </span>
+    const groups = new Map();      // run -> rows[] (server order = newest first)
+    for (const r of (j.replays || [])){
+      const p = parseRecName(r.name);
+      if (!groups.has(p.run)) groups.set(p.run, []);
+      groups.get(p.run).push(`
+        <div style="display:flex;justify-content:space-between;align-items:center;
+                    margin:0 0 8px 12px">
+          <a href="#" onclick="loadReplay('${r.name}');return false"
+             class="mono" title="${r.name}">${p.label}</a>
+          <span style="color:#a8a8a8;font-size:12px">
+            ${(r.bytes/1024).toFixed(0)} kB
+            ${r.recording ? ' · <b style="color:#8a3ffc">recording now</b>' : ""}
+          </span>
+        </div>`);
+    }
+    const rows = [...groups.entries()].map(([run, items]) => `
+      <div style="margin-bottom:12px">
+        <div style="font-size:12px;color:#c6c6c6;border-bottom:1px solid #393939;
+                    padding-bottom:4px;margin-bottom:8px"><b>${run}</b>
+          <span style="color:#6f6f6f"> · ${items.length} recording${items.length > 1 ? "s" : ""}</span>
+        </div>${items.join("")}
       </div>`).join("");
     openModalHTML("Mission replays",
-      rows || "<span style='color:#a8a8a8'>no recordings yet — the GCS " +
-              "records every session to --record-dir</span>");
+      rows || "<span style='color:#a8a8a8'>no recordings yet — a recording " +
+              "starts at mission start (or ● Record) and ends at mission " +
+              "end/RTL-all; idle sessions record nothing</span>");
   }).catch(() => openModalHTML("Mission replays",
     "<span style='color:#fa4d56'>could not list recordings</span>"));
 }
@@ -998,10 +1153,12 @@ function replaySeek(t){
   REPLAY.cur = Math.max(0, Math.min(t, REPLAY.dur));
   resetUIState();
   REPLAY.i = 0;
+  REPLAY.seeking = true;    // suppress transient toasts while re-dispatching
   while (REPLAY.i < REPLAY.msgs.length &&
          REPLAY.msgs[REPLAY.i].ts - REPLAY.t0 <= REPLAY.cur){
     dispatch(REPLAY.msgs[REPLAY.i].m); REPLAY.i++;
   }
+  REPLAY.seeking = false;
   rtime.textContent = `${fmtClock(REPLAY.cur)} / ${fmtClock(REPLAY.dur)}`;
 }
 const tileImgs = new Map();   // "z/x/y" -> Image (img.ok set on load)
@@ -1073,12 +1230,55 @@ function drawTiles(){
     }
   }
   ctx.restore();
-  if (drew){
+  if (drew && DISP.veil > 0){
     // translucent veil keeps the Carbon vectors and labels readable
-    ctx.fillStyle = "rgba(13,17,23,0.35)";
+    // (strength operator-tunable: Display → background dim)
+    ctx.fillStyle = `rgba(13,17,23,${DISP.veil})`;
     ctx.fillRect(0, 0, cv.width, cv.height);
   }
   return drew;
+}
+
+// ---------- coverage layer: planned + live sensor ground footprint ----------
+// Planned: the searcher's nadir footprint swept along the preview legs at
+// the planned AGL (from the WUAS's advertised hfov). Live: the same
+// footprint swept along the actual telemetry track while the raster runs;
+// cleared at each mission start; drawn on its own layer.
+let covTrack = [];            // searcher track during the running raster
+function wuasCam(){ return (SMETA[VEHICLES[0]] || {}).camera || null; }
+function footprintM(){
+  const cam = wuasCam();
+  if (!cam || !(cam.hfov_deg > 0)) return 0;
+  return 2 * (+agl.value || 0) * Math.tan(cam.hfov_deg * Math.PI / 360);
+}
+function drawCoverage(){
+  if (DISP.op.coverage <= 0) return;
+  const fw = footprintM();
+  if (!(fw > 0)) return;
+  const wpx = Math.max(fw / view.mppx, 1);
+  ctx.save();
+  ctx.lineWidth = wpx; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  if (plan && DISP.op.plan > 0){
+    // planned coverage: what the sweep WOULD see
+    ctx.globalAlpha = DISP.op.coverage * 0.45;
+    ctx.strokeStyle = "#4589ff";
+    for (const leg of plan.legs){
+      const a = toPx(leg[0].lat, leg[0].lon), b = toPx(leg[1].lat, leg[1].lon);
+      ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+    }
+  }
+  if (covTrack.length > 1){
+    // live coverage: what the raster HAS seen so far
+    ctx.globalAlpha = DISP.op.coverage;
+    ctx.strokeStyle = "#42be65";
+    ctx.beginPath();
+    covTrack.forEach((t, i) => {
+      const p = toPx(t[0], t[1]);
+      i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]);
+    });
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 // ---------- layer renderers: sensors / network / sim ground truth ----------
@@ -1089,8 +1289,137 @@ const mToPxr = m => m / view.mppx;
 // world bearing (deg cw from north) -> canvas arc angle (rad, +x axis,
 // clockwise because y is down), honoring the map rotation
 const bearingToCanvas = deg => (deg - 90) * Math.PI / 180 - view.rot;
+// Round-3 sensor semantics (ROUND-3.md §1):
+//  · forward-facing vision → a CONE/SECTOR from the vehicle (top-down
+//    projection of the FoV volume) with shaded D/R/I bands INSIDE it;
+//  · ground-facing (nadir) vision → the ground QUAD only: a rectangle when
+//    level, skewing to a trapezoid with roll/pitch/yaw. Attitude is not in
+//    TelemetrySample yet (agent wave); until roll_deg/pitch_deg ride the
+//    sample this renders the heading-only COARSE projection — the fine
+//    per-corner ray path below is live and gates purely on field presence.
+//  · the freestanding D/R/I rings are GONE (they read as duplicate range
+//    claims against the quad).
+// Extended sensor_meta consumption (all optional, degrade to today's
+// synthetic feed: down-facing, centered, fixed mount):
+//  · camera.facing        "forward" | "down"          (default "down")
+//  · camera.mount_offset_m  [fwd_m, right_m] or {forward_m, right_m}
+//  · camera.gimbal        "fixed" | "single_axis" | "multi_axis" —
+//                         multi_axis stabilizes the footprint (level quad
+//                         even with attitude), single_axis cancels roll
+//  · camera.pose (or meta.pose)  "coarse" | "fine" pose fidelity — coarse
+//                         forces the heading-only projection
+function mountOffsetNE(cam, hd){
+  // mount position relative to drone center, rotated into world N/E metres
+  let fwd = 0, right = 0;
+  const mo = cam.mount_offset_m;
+  if (Array.isArray(mo)){ fwd = +mo[0] || 0; right = +mo[1] || 0; }
+  else if (mo && typeof mo === "object"){
+    fwd = +mo.forward_m || 0; right = +mo.right_m || 0;
+  }
+  return [ Math.cos(hd)*fwd - Math.sin(hd)*right,
+           Math.sin(hd)*fwd + Math.cos(hd)*right ];
+}
+// D/R/I ranges near→far with their band labels (identify is the shortest).
+function driBands(cam){
+  const rr = (cam.dri_m || []).filter(x => x > 0).slice(0, 3)
+    .sort((a, b) => a - b);
+  const names = rr.length === 3 ? ["I","R","D"]
+    : rr.length === 2 ? ["R","D"] : rr.length === 1 ? ["D"] : [];
+  return rr.map((r, i) => [r, names[i]]);
+}
+function drawForwardCone(d, cam, oLat, oLon, col){
+  const p = toPx(oLat, oLon);
+  const half = Math.min(cam.hfov_deg, 350) * Math.PI / 360;
+  const c = bearingToCanvas(d.heading || 0);
+  let bands = driBands(cam);
+  if (!bands.length) bands = [[25, ""]];   // uncharacterized: plain sector
+  const maxR = bands[bands.length - 1][0];
+  // shaded, legible D/R/I bands: strongest fill nearest (identify), each
+  // band an annular sector inside the cone; edges + labels on top
+  const alphas = ["4d", "33", "1f"];
+  let inner = 0;
+  bands.forEach(([rng, label], i) => {
+    const r0 = mToPxr(inner), r1 = mToPxr(rng);
+    if (r1 < 2 || r1 > 6000){ inner = rng; return; }
+    ctx.fillStyle = col + (alphas[i] || "1f");
+    ctx.beginPath();
+    ctx.arc(p[0], p[1], r1, c - half, c + half);
+    if (r0 > 0) ctx.arc(p[0], p[1], r0, c + half, c - half, true);
+    else ctx.lineTo(p[0], p[1]);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = col + "88"; ctx.lineWidth = lw(1);
+    ctx.beginPath(); ctx.arc(p[0], p[1], r1, c - half, c + half); ctx.stroke();
+    if (label){
+      const rm = (r0 + r1) / 2;
+      ctx.fillStyle = "#f4f4f4"; ctx.font = "10px 'IBM Plex Mono', monospace";
+      ctx.fillText(label, p[0] + Math.cos(c)*rm - 3, p[1] + Math.sin(c)*rm + 3);
+    }
+    inner = rng;
+  });
+  // cone edge rays
+  const rp = mToPxr(maxR);
+  if (rp >= 2 && rp <= 6000){
+    ctx.strokeStyle = col; ctx.lineWidth = lw(1.2);
+    ctx.beginPath();
+    ctx.moveTo(p[0] + Math.cos(c - half)*rp, p[1] + Math.sin(c - half)*rp);
+    ctx.lineTo(p[0], p[1]);
+    ctx.lineTo(p[0] + Math.cos(c + half)*rp, p[1] + Math.sin(c + half)*rp);
+    ctx.stroke();
+  }
+}
+function drawGroundQuad(d, cam, oLat, oLon, col, metaPose){
+  const wpxN = cam.width_px || 320, hpxN = cam.height_px || 240;
+  const tanH = Math.tan(cam.hfov_deg * Math.PI / 360);
+  const tanV = tanH * hpxN / wpxN;
+  const yaw = (d.heading || 0) * Math.PI / 180;
+  const pose = cam.pose || metaPose || "";
+  const gimbal = cam.gimbal || "fixed";
+  // FINE path: gated on attitude presence in the telemetry sample (the
+  // agent wave adds roll_deg/pitch_deg; nothing to change here when it
+  // lands). A multi-axis gimbal stabilizes the footprint level; a
+  // single-axis gimbal cancels roll only.
+  const haveAtt = d.roll !== undefined && d.pitch !== undefined;
+  const fine = haveAtt && pose !== "coarse" && gimbal !== "multi_axis";
+  let corners = null;                       // [dN, dE] per corner, metres
+  if (fine){
+    const roll = (gimbal === "single_axis" ? 0 : d.roll) * Math.PI / 180;
+    const pitch = d.pitch * Math.PI / 180;
+    const cr = Math.cos(roll), sr = Math.sin(roll);
+    const cp = Math.cos(pitch), sp = Math.sin(pitch);
+    const cy = Math.cos(yaw), sy = Math.sin(yaw);
+    corners = [];
+    // corner rays of the nadir frustum (body: x fwd, y right, z down;
+    // image width spans y via hfov), rotated body→NED by Rz(yaw)Ry(pitch)
+    // Rx(roll), intersected with the ground plane at AGL — the trapezoid
+    for (const [sv, sh] of [[1,1],[1,-1],[-1,-1],[-1,1]]){
+      const bx = sv*tanV, by = sh*tanH, bz = 1;
+      const n = cy*cp*bx + (cy*sp*sr - sy*cr)*by + (cy*sp*cr + sy*sr)*bz;
+      const e = sy*cp*bx + (sy*sp*sr + cy*cr)*by + (sy*sp*cr - cy*sr)*bz;
+      const dn = -sp*bx + cp*sr*by + cp*cr*bz;
+      if (dn < 0.05){ corners = null; break; }  // ray near-horizontal
+      corners.push([n*d.agl/dn, e*d.agl/dn]);
+    }
+  }
+  if (!corners){
+    // COARSE: heading-only nadir rectangle
+    const wm = 2 * d.agl * tanH, hm = wm * hpxN / wpxN;
+    const f = [Math.cos(yaw), Math.sin(yaw)], r = [-Math.sin(yaw), Math.cos(yaw)];
+    corners = [[hm/2, wm/2], [hm/2, -wm/2], [-hm/2, -wm/2], [-hm/2, wm/2]]
+      .map(c => [f[0]*c[0] + r[0]*c[1], f[1]*c[0] + r[1]*c[1]]);
+  }
+  ctx.fillStyle = col + "1a";
+  ctx.strokeStyle = col; ctx.lineWidth = lw(1.2); ctx.setLineDash([4,3]);
+  ctx.beginPath();
+  corners.forEach((c, i) => {
+    const q = toPx(oLat + c[0] / M_PER_DEG_LAT,
+                   oLon + c[1] / mPerDegLon(oLat));
+    i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]);
+  });
+  ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.setLineDash([]);
+}
 function drawSensors(){
-  if (!showSensors) return;
+  if (!showSensors || DISP.op.sensors <= 0) return;
+  ctx.save(); ctx.globalAlpha = DISP.op.sensors;
   for (const [vid, d] of Object.entries(drones)){
     if (!hasFix(d) || d.lat === undefined) continue;
     const meta = SMETA[vid];
@@ -1099,40 +1428,16 @@ function drawSensors(){
     const p = toPx(d.lat, d.lon);
     const cam = meta.camera;
     if (cam && cam.hfov_deg > 0 && d.agl > 0.5){
-      // Ground footprint quad from pose + hfov + AGL. With no attitude in
-      // telemetry this is the nadir box (pitch/roll would skew it into the
-      // trapezoid; the corner math is per-vertex, so attitude plugs in
-      // here when the sample carries it).
-      const wm = 2 * d.agl * Math.tan(cam.hfov_deg * Math.PI / 360);
-      const hm = wm * ((cam.height_px || 240) / (cam.width_px || 320));
       const hd = (d.heading || 0) * Math.PI / 180;
-      const f = [Math.cos(hd), Math.sin(hd)];        // forward (N,E)
-      const r = [-Math.sin(hd), Math.cos(hd)];       // right (N,E)
-      const corners = [[hm/2, wm/2], [hm/2, -wm/2], [-hm/2, -wm/2], [-hm/2, wm/2]];
-      ctx.strokeStyle = col; ctx.lineWidth = 1.2; ctx.setLineDash([4,3]);
-      ctx.beginPath();
-      corners.forEach((c, i) => {
-        const dn = f[0]*c[0] + r[0]*c[1], de = f[1]*c[0] + r[1]*c[1];
-        const q = toPx(d.lat + dn / M_PER_DEG_LAT,
-                       d.lon + de / mPerDegLon(d.lat));
-        i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]);
-      });
-      ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
-      // DRI rings from the advertised ranges [detect, recognize, identify]
-      const labels = ["D", "R", "I"];
-      (cam.dri_m || []).slice(0, 3).forEach((rng, i) => {
-        const rp = mToPxr(rng);
-        if (!(rng > 0) || rp < 8 || rp > 4000) return;
-        ctx.strokeStyle = col + "55"; ctx.lineWidth = 1; ctx.setLineDash([2,5]);
-        ctx.beginPath(); ctx.arc(p[0], p[1], rp, 0, 7); ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.fillStyle = col + "cc"; ctx.font = "10px 'IBM Plex Mono', monospace";
-        ctx.fillText(labels[i], p[0] + rp * 0.707 + 2, p[1] - rp * 0.707 - 2);
-      });
+      const [moN, moE] = mountOffsetNE(cam, hd);
+      const oLat = d.lat + moN / M_PER_DEG_LAT;
+      const oLon = d.lon + moE / mPerDegLon(d.lat);
+      if (cam.facing === "forward") drawForwardCone(d, cam, oLat, oLon, col);
+      else drawGroundQuad(d, cam, oLat, oLon, col, meta.pose);
     }
     const aud = meta.audio;
     if (aud){
-      ctx.strokeStyle = "#ff832b"; ctx.lineWidth = 1.2;
+      ctx.strokeStyle = "#ff832b"; ctx.lineWidth = lw(1.2);
       if (aud.lobes && aud.lobes.length){
         // beamforming lobes: filled wedges relative to the vehicle nose
         ctx.fillStyle = "#ff832b22";
@@ -1156,6 +1461,7 @@ function drawSensors(){
       }
     }
   }
+  ctx.restore();
 }
 // telemetry link age for a network node ("gcs" = this process = fresh)
 const ageOf = id => {
@@ -1164,8 +1470,21 @@ const ageOf = id => {
   if (!d || d.stale || !d.seen) return null;
   return (Date.now() - d.seen) / 1000;
 };
+// GCS world anchor (round-3 fix: the GCS node used to be screen-anchored
+// and "moved" whenever the map panned — it must pan/zoom/rotate with the
+// world like every other geo entity). Position source, in preference
+// order: an explicit NET.gcs {lat, lon} if the deployment ever exports
+// one, else the first good telemetry fix seen (the fleet launches beside
+// the GCS, so home ≈ the GCS position). Captured once, then fixed.
+let gcsHome = null;
+const gcsLL = () => {
+  if (NET && NET.gcs && typeof NET.gcs.lat === "number"
+      && typeof NET.gcs.lon === "number") return [NET.gcs.lat, NET.gcs.lon];
+  return gcsHome;
+};
 function drawNet(){
-  if (!showNet || !NET) return;
+  if (!showNet || !NET || DISP.op.net <= 0) return;
+  ctx.save(); ctx.globalAlpha = DISP.op.net;
   // Aggregate the deployment's DIRECTED per-face counters into one line
   // per node pair; activity = both directions summed.
   const pairs = {};
@@ -1177,8 +1496,9 @@ function drawNet(){
     e.ihz += l.rate_out_interests_hz || 0;
     e.drops += l.out_drops || 0;
   }
+  const gll = gcsLL();
   const posOf = id => {
-    if (id === "gcs") return [30, cv.height - 30];   // screen-anchored GCS
+    if (id === "gcs") return gll ? toPx(gll[0], gll[1]) : null;
     const d = drones[id];
     return (d && hasFix(d) && d.lat !== undefined) ? toPx(d.lat, d.lon) : null;
   };
@@ -1191,7 +1511,7 @@ function drawNet(){
     const col = age === null ? "#6f6f6f"
       : age < 4 ? "#42be65" : age < 10 ? "#f1c21b" : "#fa4d56";
     ctx.strokeStyle = col + "99";
-    ctx.lineWidth = 1 + Math.min(3.5, Math.log10(1 + e.bps / 1000));
+    ctx.lineWidth = lw(1 + Math.min(3.5, Math.log10(1 + e.bps / 1000)));
     if (e.bps > 200){
       // data-trace: dashes march along the link while traffic flows
       ctx.setLineDash([7,5]);
@@ -1205,9 +1525,18 @@ function drawNet(){
     ctx.fillText(`${kb} · ${e.ihz.toFixed(0)} i/s${e.drops ? ` · ${e.drops} drop` : ""}`,
       (pa[0] + pb[0]) / 2 + 5, (pa[1] + pb[1]) / 2 - 5);
   }
-  // GCS node + the ACTIVE link profile legend (from run-config)
-  ctx.fillStyle = "#78a9ff"; ctx.fillRect(22, cv.height - 38, 16, 16);
-  ctx.fillStyle = "#f4f4f4"; ctx.fillText("GCS", 20, cv.height - 44);
+  // GCS node marker, world-anchored (zoom-scaled like every icon)
+  if (gll){
+    const g = toPx(gll[0], gll[1]);
+    const s = iconPx(1.2, 5, 16);
+    ctx.fillStyle = "#78a9ff";
+    ctx.fillRect(g[0] - s/2, g[1] - s/2, s, s);
+    ctx.strokeStyle = "#161616"; ctx.lineWidth = 1;
+    ctx.strokeRect(g[0] - s/2, g[1] - s/2, s, s);
+    ctx.fillStyle = "#f4f4f4";
+    ctx.fillText("GCS", g[0] + s/2 + 3, g[1] + 3);
+  }
+  // ACTIVE link profile legend (screen chrome, not a geo entity)
   const pr = NET.profile || {};
   if (pr.name){
     const text = `link ${pr.name} · ${pr.delay_ms} ms ±${pr.jitter_ms}` +
@@ -1215,12 +1544,13 @@ function drawNet(){
       ` · ${(pr.bandwidth_bps / 1e6).toFixed(0)} Mb/s`;
     const w = ctx.measureText(text).width;
     ctx.fillStyle = "rgba(22,22,22,0.85)";
-    ctx.fillRect(46, cv.height - 40, w + 12, 18);
+    ctx.fillRect(12, cv.height - 40, w + 12, 18);
     ctx.strokeStyle = "#393939"; ctx.lineWidth = 1;
-    ctx.strokeRect(46, cv.height - 40, w + 12, 18);
+    ctx.strokeRect(12, cv.height - 40, w + 12, 18);
     ctx.fillStyle = "#c6c6c6";
-    ctx.fillText(text, 52, cv.height - 27);
+    ctx.fillText(text, 18, cv.height - 27);
   }
+  ctx.restore();
 }
 const SIG_COLOR = { red:"#fa4d56", orange:"#ff832b", blue:"#4589ff",
                     yellow:"#f1c21b", magenta:"#ee5396" };
@@ -1234,11 +1564,12 @@ function drawSimAnoms(){
     if (a.kind === "visual"){
       const col = SIG_COLOR[a.signature] || "#fa4d56";
       const rp = Math.max(3, mToPxr((a.size_m || 1) / 2));
-      ctx.strokeStyle = col; ctx.lineWidth = 1.5;
+      const xs = iconPx(0.4, 2.5, 8);
+      ctx.strokeStyle = col; ctx.lineWidth = lw(1.5);
       ctx.beginPath(); ctx.arc(p[0], p[1], rp, 0, 7); ctx.stroke();
       ctx.beginPath();
-      ctx.moveTo(p[0] - 3, p[1] - 3); ctx.lineTo(p[0] + 3, p[1] + 3);
-      ctx.moveTo(p[0] + 3, p[1] - 3); ctx.lineTo(p[0] - 3, p[1] + 3);
+      ctx.moveTo(p[0] - xs, p[1] - xs); ctx.lineTo(p[0] + xs, p[1] + xs);
+      ctx.moveTo(p[0] + xs, p[1] - xs); ctx.lineTo(p[0] - xs, p[1] + xs);
       ctx.stroke();
       ctx.fillStyle = col;
     } else {
@@ -1272,8 +1603,10 @@ function draw(){
     ctx.fillStyle = "#6f6f6f"; ctx.font = "11px 'IBM Plex Mono', monospace";
     ctx.fillText("grid 10 m", 12, cv.height - 12);
   }
-  if (plan){
-    ctx.strokeStyle = "#f1c21b99"; ctx.lineWidth = 1.5; ctx.beginPath();
+  drawCoverage();
+  if (plan && DISP.op.plan > 0){
+    ctx.save(); ctx.globalAlpha = DISP.op.plan;
+    ctx.strokeStyle = "#f1c21b99"; ctx.lineWidth = lw(1.5); ctx.beginPath();
     plan.corners.forEach((c,i) => { const p = toPx(c.lat, c.lon);
       i ? ctx.lineTo(p[0],p[1]) : ctx.moveTo(p[0],p[1]); });
     ctx.closePath(); ctx.stroke();
@@ -1285,43 +1618,49 @@ function draw(){
       ctx.lineTo(b[0],b[1]); prev = b; });
     ctx.stroke();
     ctx.fillStyle = "#78a9ff";
+    const cs = iconPx(0.3, 1.5, 5);
     plan.captures.forEach(c => { const p = toPx(c.lat, c.lon);
-      ctx.fillRect(p[0]-1.5, p[1]-1.5, 3, 3); });
+      ctx.fillRect(p[0]-cs/2, p[1]-cs/2, cs, cs); });
+    ctx.restore();
   }
-  if (showData){
+  if (showData && DISP.op.data > 0){
     // captured data: squares = camera frames, circles = audio clips;
     // hollow = mission evidence, filled = operator-tasked
+    ctx.save(); ctx.globalAlpha = DISP.op.data;
+    const ds = iconPx(0.9, 4, 13);
     for (const d of sensorData){
       const p = toPx(d.lat, d.lon);
       if (p[0] < -20 || p[0] > cv.width+20 || p[1] < -20 || p[1] > cv.height+20)
         continue;
       const col = SENSOR_COLOR[d.sensor] || "#a8a8a8";
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = lw(1.5);
       if (d.sensor === "audio"){
-        ctx.beginPath(); ctx.arc(p[0], p[1], 4, 0, 7);
+        ctx.beginPath(); ctx.arc(p[0], p[1], ds * 0.55, 0, 7);
         if (d.source === "tasked"){ ctx.fillStyle = col; ctx.fill(); }
         else { ctx.strokeStyle = col; ctx.stroke(); }
       } else {
         if (d.source === "tasked"){ ctx.fillStyle = col;
-          ctx.fillRect(p[0]-3.5, p[1]-3.5, 7, 7); }
+          ctx.fillRect(p[0]-ds/2, p[1]-ds/2, ds, ds); }
         else { ctx.strokeStyle = col;
-          ctx.strokeRect(p[0]-3.5, p[1]-3.5, 7, 7); }
+          ctx.strokeRect(p[0]-ds/2, p[1]-ds/2, ds, ds); }
       }
     }
+    ctx.restore();
   }
-  if (showEvents){
+  if (showEvents && DISP.op.events > 0){
     // diamonds, oldest faintest — a spatial replay of the event log
     const tNow = Date.now()/1000;
+    const es = iconPx(0.55, 2.5, 9);
     for (const e of mapEvents){
       const p = toPx(e.lat, e.lon);
       if (p[0] < -20 || p[0] > cv.width+20 || p[1] < -20 || p[1] > cv.height+20)
         continue;
       const age = Math.min((tNow - e.t) / 600, 1);   // fades over 10 min
-      ctx.globalAlpha = 0.9 - 0.55 * age;
-      ctx.strokeStyle = EVT_STYLE(e.kind); ctx.lineWidth = 1.5;
+      ctx.globalAlpha = (0.9 - 0.55 * age) * DISP.op.events;
+      ctx.strokeStyle = EVT_STYLE(e.kind); ctx.lineWidth = lw(1.5);
       ctx.beginPath();
-      ctx.moveTo(p[0], p[1]-4); ctx.lineTo(p[0]+4, p[1]);
-      ctx.lineTo(p[0], p[1]+4); ctx.lineTo(p[0]-4, p[1]);
+      ctx.moveTo(p[0], p[1]-es); ctx.lineTo(p[0]+es, p[1]);
+      ctx.lineTo(p[0], p[1]+es); ctx.lineTo(p[0]-es, p[1]);
       ctx.closePath(); ctx.stroke();
       ctx.globalAlpha = 1;
     }
@@ -1351,19 +1690,20 @@ function draw(){
   // targets: yellow=queued, pulsing blue=investigating, green=done, red=failed
   const TGT = { queued:"#f1c21b", investigating:"#4589ff",
                 done:"#42be65", failed:"#fa4d56" };
+  const tr = iconPx(0.7, 3, 11);
   for (const t of targets){
     const p = toPx(t.lat, t.lon);
     const col = TGT[t.status] || "#f4f4f4";
     if (t.status === "investigating"){
-      const pulse = 8 + 4*Math.sin(Date.now()/300);
-      ctx.strokeStyle = col; ctx.lineWidth = 2;
+      const pulse = tr * 2 + tr * Math.sin(Date.now()/300);
+      ctx.strokeStyle = col; ctx.lineWidth = lw(2);
       ctx.beginPath(); ctx.arc(p[0],p[1],pulse,0,7); ctx.stroke();
     }
     ctx.fillStyle = col;
-    ctx.beginPath(); ctx.arc(p[0],p[1],4,0,7); ctx.fill();
+    ctx.beginPath(); ctx.arc(p[0],p[1],tr,0,7); ctx.fill();
     ctx.font = "12px 'IBM Plex Sans', sans-serif";
     ctx.fillText(`#${t.index} ${t.object_id} ${(t.confidence*100).toFixed(0)}%`,
-                 p[0]+12, p[1]-8);
+                 p[0]+tr+8, p[1]-8);
   }
   // ease each marker toward its latest telemetry fix: samples arrive at
   // ~3-4 Hz, frames at 60 — exponential smoothing (τ≈0.25 s) turns the
@@ -1384,32 +1724,36 @@ function draw(){
   drawSimAnoms();
   drawSensors();
   drawNet();
+  // vehicle markers scale with zoom between legible clamps (~1.5 m body)
+  const vs = iconPx(1.5, 6, 24);
   for (const [vid, d] of Object.entries(drones)){
     const col = COLORS[vid] || "#f4f4f4";
     if (d.lat === undefined) continue;
-    if (d.trail && d.trail.length > 1){
-      ctx.strokeStyle = col + "55"; ctx.lineWidth = 1.5; ctx.beginPath();
+    if (d.trail && d.trail.length > 1 && DISP.op.trails > 0){
+      ctx.save(); ctx.globalAlpha = DISP.op.trails;
+      ctx.strokeStyle = col + "55"; ctx.lineWidth = lw(1.5); ctx.beginPath();
       d.trail.forEach((t,i) => { const p = toPx(t[0],t[1]);
         i ? ctx.lineTo(p[0],p[1]) : ctx.moveTo(p[0],p[1]); });
-      ctx.stroke();
+      ctx.stroke(); ctx.restore();
     }
     // markers counter-rotate against the map so the triangle keeps
     // showing true heading on a rotated (heading-up) world
     const p = toPx(d.lat, d.lon), hd = (d.heading||0) * Math.PI/180 - view.rot;
     ctx.save(); ctx.translate(p[0],p[1]); ctx.rotate(hd);
     ctx.fillStyle = d.stale ? "#525252" : col;
-    ctx.beginPath(); ctx.moveTo(0,-9); ctx.lineTo(6,7); ctx.lineTo(-6,7);
+    ctx.beginPath(); ctx.moveTo(0,-vs); ctx.lineTo(vs*0.67,vs*0.78);
+    ctx.lineTo(-vs*0.67,vs*0.78);
     ctx.closePath(); ctx.fill(); ctx.restore();
     if (MAP.selected.has(vid)){
       // fleet-framing membership ring (toggled by tile checkbox/shift-click)
       ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.setLineDash([3,3]);
-      ctx.beginPath(); ctx.arc(p[0], p[1], 12, 0, 7); ctx.stroke();
+      ctx.beginPath(); ctx.arc(p[0], p[1], vs + 4, 0, 7); ctx.stroke();
       ctx.setLineDash([]);
     }
     ctx.fillStyle = d.stale ? "#525252" : col;
     ctx.font = "12px 'IBM Plex Mono', monospace";
     ctx.fillText(`${vid} ${d.agl?.toFixed(1)??"–"}m${d.stale?" (stale)":""}`,
-                 p[0]+10, p[1]+4);
+                 p[0]+vs+3, p[1]+4);
   }
   if (view.rot){
     // compass: which way is north while the map is heading-up
@@ -1533,19 +1877,23 @@ eventsBtn.onclick = () => {
   showEvents = !showEvents;
   if (!showEvents) hoverEvt = null;
   eventsBtn.textContent = showEvents ? "Events on" : "Events off";
+  renderLegend();
 };
 dataBtn.onclick = () => {
   showData = !showData;
   if (!showData) hoverEvt = null;
   dataBtn.textContent = showData ? "Data on" : "Data off";
+  renderLegend();
 };
 sensorsBtn.onclick = () => {
   showSensors = !showSensors;
   sensorsBtn.textContent = showSensors ? "Sensors on" : "Sensors off";
+  renderLegend();
 };
 netBtn.onclick = () => {
   showNet = !showNet;
   netBtn.textContent = showNet ? "Network on" : "Network off";
+  renderLegend();
 };
 // simulation panel: signature choices follow the anomaly kind, and the
 // size/loudness field swaps with it
@@ -1638,13 +1986,40 @@ function preview(){
       capture_every_m:+capm.value, speed_m_s:+speed.value }) })
     .then(r => r.json()).then(m => dispatch(m)).catch(() => {});
 }
-["clat","clon","wm","hm","ca","cb","spacing","capm","speed"].forEach(id =>
+// agl rides the list: the coverage footprint + GSD stats depend on it
+["clat","clon","wm","hm","ca","cb","agl","spacing","capm","speed"].forEach(id =>
   document.getElementById(id).addEventListener("change", preview));
 previewBtn.onclick = preview;
+// Derived sweep-quality stats from the searcher's advertised sensor_meta
+// (hfov + resolution) at the planned AGL: ground footprint, GSD, leg
+// overlap, expected frames, coverage vs the requested area.
+function planStats(m){
+  const cam = wuasCam();
+  if (!cam || !(cam.hfov_deg > 0)) return "";
+  const fw = footprintM();
+  if (!(fw > 0)) return "";
+  const gsdCm = fw / (cam.width_px || 320) * 100;
+  const sp = +spacing.value || 0;
+  const overlap = fw > 0 ? (1 - sp / fw) * 100 : 0;
+  const ovTxt = overlap >= 0
+    ? `overlap ${overlap.toFixed(0)}%`
+    : `<b style="color:var(--cds-support-warning)">gap ${(sp - fw).toFixed(1)} m between legs</b>`;
+  const area = m.plan.width_m * m.plan.height_m;
+  const legLen = Math.max(m.plan.width_m, m.plan.height_m);
+  const covered = Math.min(m.plan.legs.length * legLen * fw, area);
+  const pct = area > 0 ? covered / area * 100 : 0;
+  return `<span class="statline">footprint ${fw.toFixed(1)} m · ` +
+    `GSD ${gsdCm.toFixed(1)} cm/px · ${ovTxt}</span>` +
+    `<span class="statline">~${m.plan.captures.length} frames · ` +
+    `coverage ~${Math.min(100, pct).toFixed(0)}% of ` +
+    `${area.toFixed(0)} m²</span>`;
+}
 function onPreview(m){
   plan = m.plan;
-  estimate.textContent =
-    `${m.plan.legs.length} legs · ${m.plan.captures.length} captures · ~${Math.round(m.estimate_s)} s`;
+  estimate.innerHTML =
+    `<span class="statline">${m.plan.legs.length} legs · ` +
+    `${m.plan.captures.length} captures · ~${Math.round(m.estimate_s)} s</span>` +
+    planStats(m);
   // recenter on the plan only when nothing owns the camera: never yank a
   // followed/fixed/fleet view, and let first-fix auto-framing win once
   // telemetry is flowing
@@ -1779,6 +2154,8 @@ function onHello(m){
   if (m.capabilities)
     Object.entries(m.capabilities).forEach(([v, sensors]) =>
       onCaps({vehicle:v, sensors, sensor_meta: SMETA[v]}));
+  setRecUI(!!m.recording);
+  renderLegend();
   syncMapCtl();
 }
 function onTelemetry(m){
@@ -1786,6 +2163,24 @@ function onTelemetry(m){
   const d = drones[vid] = drones[vid] || {trail:[]};
   Object.assign(d, { tlat:s.lat_deg, tlon:s.lon_deg, agl:s.agl_m,
     thead:s.heading_deg, stale:false, seen:Date.now() });
+  // Attitude for the FINE ground-quad projection. TelemetrySample does not
+  // carry roll/pitch yet (agent wave); the moment roll_deg/pitch_deg ride
+  // the sample, the trapezoid skew lights up with no change here.
+  d.roll = typeof s.roll_deg === "number" ? s.roll_deg : undefined;
+  d.pitch = typeof s.pitch_deg === "number" ? s.pitch_deg : undefined;
+  const goodFix = !(Math.abs(s.lat_deg) < 0.5 && Math.abs(s.lon_deg) < 0.5);
+  // first good fix ≈ launch site ≈ the GCS position (network-layer anchor)
+  if (goodFix && !gcsHome) gcsHome = [s.lat_deg, s.lon_deg];
+  // live coverage sweep: the searcher's track while the raster runs
+  if (goodFix && vid === VEHICLES[0] && mstate.textContent === "searching"){
+    const lastc = covTrack[covTrack.length-1];
+    if (!lastc ||
+        Math.hypot((s.lat_deg-lastc[0]) * M_PER_DEG_LAT,
+                   (s.lon_deg-lastc[1]) * mPerDegLon(s.lat_deg)) > 0.4){
+      covTrack.push([s.lat_deg, s.lon_deg]);
+      if (covTrack.length > 6000) covTrack.shift();
+    }
+  }
   const tail = d.trail[d.trail.length-1];
   if (!tail || tail[0] !== s.lat_deg || tail[1] !== s.lon_deg){
     d.trail.push([s.lat_deg, s.lon_deg]);
@@ -1865,10 +2260,131 @@ function onCaps(m){
   el.onclick = () =>
     openModal(`${m.vehicle} captured data`,
       sensorData.filter(d => d.vehicle === m.vehicle).slice().reverse());
+  renderLegend();     // symbology can change with advertised sensors
 }
 function onVideoStats(m){
   const el = document.getElementById(`vstats-${m.vehicle}`);
   if (el) el.textContent = `${m.fps} fps · ${m.kbps} kbps · #${m.seq}`;
+}
+
+// ---------- command lifecycle: toasts + the Commands mini-log ----------
+// Every operator command gets a visible lifecycle — sent → acked/refused
+// (with the provider's reason) → outcome — surfaced as transient toasts
+// and a compact per-command log, not just event-log lines.
+const CMDS = { list: [], byId: {} };   // newest first, capped
+function toast(text, cls){
+  if (REPLAY.seeking) return;          // seeks fast-dispatch history
+  const el = document.createElement("div");
+  el.className = "toast" + (cls ? " " + cls : "");
+  el.textContent = text;
+  toasts.appendChild(el);
+  while (toasts.children.length > 5) toasts.firstChild.remove();
+  setTimeout(() => { el.classList.add("out");
+    setTimeout(() => el.remove(), 350); }, 4000);
+}
+function renderCmdLog(){
+  cmdlog.innerHTML = CMDS.list.map(c => {
+    const cls = c.state === "refused" || c.state === "failed" ? "err"
+      : c.state === "timeout" ? "warn"
+      : c.state === "acked" || c.state === "done" ? "ok" : "";
+    const when = new Date(c.t * 1000).toLocaleTimeString();
+    return `<div class="n ${cls}"><span class="t">${when}</span>` +
+      `${c.vehicle || ""} ${c.command} <span class="st">${c.state}</span>` +
+      `${c.detail ? " — " + c.detail : ""}</div>`;
+  }).join("") || "<span style='color:#6f6f6f;font-size:12px'>no commands yet</span>";
+}
+function cmdUpsert(id, fields){
+  let c = CMDS.byId[id];
+  if (!c){
+    c = { id, vehicle: "", command: "", state: "sent", detail: "", t: 0 };
+    CMDS.byId[id] = c;
+    CMDS.list.unshift(c);
+    if (CMDS.list.length > 40){
+      const gone = CMDS.list.pop();
+      delete CMDS.byId[gone.id];
+    }
+  }
+  Object.assign(c, fields);
+  renderCmdLog();
+  return c;
+}
+// Lifecycle taps for command/sensor/system event kinds. `command.result`
+// semantics (round 3): ok=true is an ACK even when `detail` carries a note
+// like "smart rtl engaged (slot-layered)" — detail must NEVER render as an
+// error; `error` appears only on refusals/transport failures.
+function cmdLifecycle(m){
+  const idOf = () => m.id || m.request ||
+    `${m.vehicle || "?"}/${m.command || m.sensor || "?"}`;
+  switch (m.kind){
+    case "command.sent":
+      cmdUpsert(idOf(), { vehicle:m.vehicle, command:m.command,
+        state:"sent", t:m.t });
+      break;
+    case "command.result": {
+      const c = cmdUpsert(idOf(), { vehicle:m.vehicle, command:m.command,
+        state: m.ok ? "acked" : "refused", detail: m.detail || "", t:m.t });
+      toast(`${c.vehicle} ${c.command} ${m.ok ? "acked" : "refused"}` +
+        (c.detail ? ` — ${c.detail}` : ""), m.ok ? "ok" : "err");
+      break; }
+    case "command.timeout": {
+      const c = cmdUpsert(idOf(), { vehicle:m.vehicle, command:m.command,
+        state:"timeout", t:m.t });
+      toast(`${c.vehicle} ${c.command} timed out`, "warn");
+      break; }
+    case "command.rejected":
+      cmdUpsert(idOf(), { vehicle:m.vehicle, command:m.command,
+        state:"refused", detail:m.reason || "", t:m.t });
+      toast(`${m.vehicle} ${m.command} refused — ${m.reason || ""}`, "err");
+      break;
+    case "sensor.request":
+      cmdUpsert(idOf(), { vehicle:m.vehicle,
+        command:`sensor ${m.sensor || ""} ${m.mode || ""}`.trim(),
+        state:"sent", t:m.t });
+      break;
+    case "sensor.result": {
+      const st = m.status === "captured" ? "done"
+        : m.status === "accepted" ? "acked"
+        : m.status === "rejected" ? "refused" : (m.status || "done");
+      const fields = { vehicle:m.vehicle, state:st,
+        detail: m.message || "", t:m.t };
+      const existing = CMDS.byId[idOf()];
+      if (!existing || !existing.command)
+        fields.command = `sensor ${m.sensor || ""}`.trim();
+      const c = cmdUpsert(idOf(), fields);
+      toast(`${c.vehicle} ${c.command} ${st}` +
+        (c.detail ? ` — ${c.detail}` : ""),
+        st === "refused" ? "err" : "ok");
+      break; }
+    case "sensor.timeout":
+      cmdUpsert(idOf(), { vehicle:m.vehicle, state:"timeout", t:m.t });
+      toast(`${m.vehicle} sensor request timed out`, "warn");
+      break;
+    case "sensor.failed":
+    case "sensor.rejected":
+      cmdUpsert(idOf(), { vehicle:m.vehicle, state:"failed",
+        detail: m.error || m.reason || "", t:m.t });
+      toast(`${m.vehicle} sensor request failed — ${m.error || m.reason || ""}`, "err");
+      break;
+    case "system.shutdown_sent":
+      cmdUpsert(`sys/${m.vehicle}`, { vehicle:m.vehicle, command:"shutdown",
+        state:"sent", t:m.t });
+      break;
+    case "system.shutdown_result": {
+      const ok = m.status === "accepted";
+      cmdUpsert(`sys/${m.vehicle}`, { vehicle:m.vehicle, command:"shutdown",
+        state: ok ? "acked" : "refused", detail: m.message || "", t:m.t });
+      toast(`${m.vehicle} shutdown ${m.status}` +
+        (m.message ? ` — ${m.message}` : ""), ok ? "ok" : "err");
+      break; }
+    case "system.shutdown_timeout":
+    case "system.shutdown_failed":
+    case "system.rejected":
+      cmdUpsert(`sys/${m.vehicle}`, { vehicle:m.vehicle, command:"shutdown",
+        state: m.kind.endsWith("timeout") ? "timeout" : "failed",
+        detail: m.error || m.reason || "", t:m.t });
+      toast(`${m.vehicle} shutdown ${m.kind.split(".")[1]}`, "err");
+      break;
+  }
 }
 
 // ---------- events / mission state ----------
@@ -1925,7 +2441,14 @@ function onEvent(m){
   line.innerHTML = `<span class="t">${t}</span>${m.kind} ${tag}${extra}`;
   if (m.kind.includes("hit") || m.kind.includes("target_found") ||
       m.kind.includes("completed")) line.classList.add("hit");
-  if (m.kind.includes("fail") || m.kind.includes("timeout")) line.classList.add("err");
+  // ok=true NEVER renders as an error — an accepted ack's `detail` note
+  // (e.g. "smart rtl engaged (slot-layered)") shows neutrally; error
+  // styling is reserved for refusals, failures, and timeouts.
+  if (m.ok === true) line.classList.remove("err");
+  else if (m.kind.includes("fail") || m.kind.includes("timeout") ||
+           m.kind.includes("rejected") || m.ok === false)
+    line.classList.add("err");
+  cmdLifecycle(m);
   // detect responses complete out of capture order (each frame's round
   // trip varies); slot each detect line above the first detect line with
   // a LOWER frame number so the log reads in frame order
@@ -1955,7 +2478,14 @@ function onEvent(m){
   switch (m.kind){
     case "mission.started":
       setState("searching"); targets = []; mapEvents = []; hoverEvt = null;
+      covTrack = [];             // live coverage shading restarts per mission
       renderTargets(); break;
+    case "record.started":
+      setRecUI(true);
+      toast(`recording ${m.name || "session"} started`, "ok"); break;
+    case "record.stopped":
+      setRecUI(false);
+      toast(`recording ${m.name || "session"} saved`, "ok"); break;
     case "mission.target_found":
       targets.push({ index:m.index, object_id:m.object_id,
         confidence:m.confidence, lat:m.lat, lon:m.lon, frame:m.frame,
@@ -2014,6 +2544,211 @@ function onEvent(m){
   }
 }
 
+// ---------- recording control (session-scoped; see Replay semantics) ----------
+let recOn = false;
+function setRecUI(on){
+  recOn = on;
+  recBtn.textContent = on ? "■ Recording" : "● Record";
+  recBtn.style.color = on ? "var(--cds-support-error)" : "";
+}
+recBtn.onclick = () =>
+  send({ cmd: "record", action: recOn ? "stop" : "start" });
+
+// ---------- toggleable map legend (adapts to the layers that are ON) ----------
+const LEGEND_KEY = "muas3.legend";
+let legendOn = false;
+try { legendOn = localStorage.getItem(LEGEND_KEY) === "1"; } catch (e) {}
+const sw = (style, extra) =>
+  `<span class="sw" style="${style}${extra || ""}"></span>`;
+function renderLegend(){
+  legendBtn.textContent = legendOn ? "Legend on" : "Legend";
+  legend.style.display = legendOn ? "" : "none";
+  if (!legendOn) return;
+  const parts = [];
+  parts.push(`<h4>Vehicles</h4>
+    <div class="li">${sw("background:#78a9ff;clip-path:polygon(50% 0,100% 100%,0 100%)")}
+      marker points true heading; label = id + AGL; gray = stale link</div>
+    <div class="li">${sw("border:1px dashed #78a9ff")} dashed ring = in fleet framing</div>
+    <div class="li">${sw("background:#78a9ff22;border:1px solid #78a9ff55")}
+      trail = recent track</div>`);
+  if (showSensors){
+    const anyForward = Object.values(SMETA).some(s =>
+      s && s.camera && s.camera.facing === "forward");
+    parts.push(`<h4>Sensors (advertised sensor_meta)</h4>` +
+      (anyForward ? `<div class="li">${sw("background:conic-gradient(from 45deg,#78a9ff88,#78a9ff22 90deg,transparent 90deg)")}
+        forward camera: FoV cone, shaded D/R/I bands (identify nearest/strongest)</div>` : "") +
+      `<div class="li">${sw("border:1px dashed #78a9ff;background:#78a9ff1a")}
+        nadir camera: ground footprint quad (skews with attitude when telemetry carries it)</div>
+      <div class="li">${sw("border:1px dashed #ff832b;border-radius:50%")}
+        audio reach: omni circle or beam lobes</div>`);
+  }
+  if (showNet) parts.push(`<h4>Network (fabric links)</h4>
+    <div class="li">${sw("background:#42be65")} link fresh &lt;4 s
+      ${sw("background:#f1c21b;margin-left:6px")} &lt;10 s
+      ${sw("background:#fa4d56;margin-left:6px")} stale</div>
+    <div class="li">${sw("background:repeating-linear-gradient(90deg,#42be65 0 5px,transparent 5px 9px)")}
+      marching dashes = traffic flowing; width ∝ throughput</div>
+    <div class="li">${sw("background:#78a9ff")} GCS node (world-anchored at the GCS position)</div>`);
+  if (showEvents) parts.push(`<h4>Events (diamonds fade with age)</h4>
+    <div class="li">${sw("background:#42be65")} detect.hit
+      ${sw("background:#f1c21b;margin-left:6px")} candidate
+      ${sw("background:#fa4d56;margin-left:6px")} target found
+      ${sw("background:#4589ff;margin-left:6px")} target.*</div>`);
+  if (showData) parts.push(`<h4>Captured data</h4>
+    <div class="li">${sw("background:#78a9ff")} square = camera frame ·
+      ${sw("border:1px solid #ff832b;border-radius:50%;margin-left:6px")}
+      circle = audio clip</div>
+    <div class="li">filled = operator-tasked · hollow = mission evidence · click to play</div>`);
+  parts.push(`<h4>Targets</h4>
+    <div class="li">${sw("background:#f1c21b;border-radius:50%")} queued
+      ${sw("background:#4589ff;border-radius:50%;margin-left:6px")} investigating (pulses)
+      ${sw("background:#42be65;border-radius:50%;margin-left:6px")} done
+      ${sw("background:#fa4d56;border-radius:50%;margin-left:6px")} failed</div>`);
+  if (plan || covTrack.length) parts.push(`<h4>Coverage</h4>
+    <div class="li">${sw("background:#4589ff44")} planned sweep footprint (hfov @ planned AGL)</div>
+    <div class="li">${sw("background:#42be6566")} live footprint swept so far this mission</div>`);
+  legend.innerHTML = parts.join("");
+}
+legendBtn.onclick = () => {
+  legendOn = !legendOn;
+  try { localStorage.setItem(LEGEND_KEY, legendOn ? "1" : "0"); } catch (e) {}
+  renderLegend();
+};
+
+// ---------- Display panel: per-layer opacity, veil, icon/line scaling ----------
+(function buildDispPanel(){
+  const rows = [
+    ["Background dim", 0, 0.85, 0.05, () => DISP.veil, v => DISP.veil = v],
+    ["Icon size ×", 0.5, 2, 0.1, () => DISP.iconMul, v => DISP.iconMul = v],
+    ["Line weight ×", 0.5, 2.5, 0.1, () => DISP.lineMul, v => DISP.lineMul = v],
+    ["Sensors opacity", 0, 1, 0.05, () => DISP.op.sensors, v => DISP.op.sensors = v],
+    ["Network opacity", 0, 1, 0.05, () => DISP.op.net, v => DISP.op.net = v],
+    ["Events opacity", 0, 1, 0.05, () => DISP.op.events, v => DISP.op.events = v],
+    ["Data opacity", 0, 1, 0.05, () => DISP.op.data, v => DISP.op.data = v],
+    ["Trails opacity", 0, 1, 0.05, () => DISP.op.trails, v => DISP.op.trails = v],
+    ["Plan opacity", 0, 1, 0.05, () => DISP.op.plan, v => DISP.op.plan = v],
+    ["Coverage opacity", 0, 1, 0.05, () => DISP.op.coverage, v => DISP.op.coverage = v],
+  ];
+  const outs = [];
+  for (const [label, lo, hi, step, get, set] of rows){
+    const row = document.createElement("div");
+    row.className = "row";
+    const lab = document.createElement("label");
+    lab.textContent = label;
+    const inp = document.createElement("input");
+    inp.type = "range"; inp.min = lo; inp.max = hi; inp.step = step;
+    inp.value = get();
+    const out = document.createElement("output");
+    const show = () => { out.value = (+get()).toFixed(2).replace(/0$/, ""); };
+    show(); outs.push([inp, get, show]);
+    inp.oninput = () => { set(+inp.value); show(); saveDisp(); };
+    row.append(lab, inp, out);
+    dispPanel.appendChild(row);
+  }
+  const reset = document.createElement("button");
+  reset.className = "cds-btn cds-btn--ghost";
+  reset.style.cssText = "height:24px;padding:0 8px;font-size:12px";
+  reset.textContent = "Reset defaults";
+  reset.onclick = () => {
+    Object.assign(DISP, { veil: 0.35, iconMul: 1, lineMul: 1 });
+    Object.assign(DISP.op, { sensors: 1, net: 1, events: 0.9, data: 1,
+      trails: 1, plan: 1, coverage: 0.4 });
+    for (const [inp, get, show] of outs){ inp.value = get(); show(); }
+    saveDisp();
+  };
+  dispPanel.appendChild(reset);
+})();
+
+// ---------- collapsible tool sections (state persists per header) ----------
+function makeCollapsible(panel, panelKey){
+  let body = null;
+  for (const el of [...panel.children]){
+    if (el.tagName === "H3"){
+      body = document.createElement("div");
+      body.className = "secbody";
+      el.after(body);
+      el.classList.add("sech");
+      const chev = document.createElement("span");
+      chev.className = "chev";
+      el.prepend(chev);
+      const key = `muas3.sec.${panelKey}.${el.textContent.trim()}`;
+      const bodyEl = body;
+      let open = true;
+      try { open = localStorage.getItem(key) !== "0"; } catch (e) {}
+      const apply = () => {
+        bodyEl.style.display = open ? "" : "none";
+        chev.textContent = open ? "▾ " : "▸ ";
+      };
+      apply();
+      el.onclick = () => {
+        open = !open; apply();
+        try { localStorage.setItem(key, open ? "1" : "0"); } catch (e) {}
+      };
+    } else if (body) body.appendChild(el);
+  }
+}
+makeCollapsible(sidebar, "side");
+makeCollapsible(right, "right");
+
+// ---------- resizable / collapsible side panels ------------------------------
+const PANEL_KEY = "muas3.panels";
+const PANELS = { side: { w: 336, open: true }, right: { w: 288, open: true } };
+(function loadPanels(){
+  try {
+    const s = JSON.parse(localStorage.getItem(PANEL_KEY) || "{}");
+    for (const k of ["side", "right"]){
+      if (s[k]){
+        if (typeof s[k].w === "number") PANELS[k].w = s[k].w;
+        if (typeof s[k].open === "boolean") PANELS[k].open = s[k].open;
+      }
+    }
+  } catch (e) {}
+})();
+function savePanels(){
+  try { localStorage.setItem(PANEL_KEY, JSON.stringify(PANELS)); } catch (e) {}
+}
+const clampW = w => Math.max(220, Math.min(560, w));
+function applyPanels(){
+  const b = document.body.style;
+  b.setProperty("--side-w", PANELS.side.open ? `${clampW(PANELS.side.w)}px` : "0px");
+  b.setProperty("--right-w", PANELS.right.open ? `${clampW(PANELS.right.w)}px` : "0px");
+  sidebar.style.display = PANELS.side.open ? "" : "none";
+  right.style.display = PANELS.right.open ? "" : "none";
+  sideGrip.style.display = PANELS.side.open ? "" : "none";
+  rightGrip.style.display = PANELS.right.open ? "" : "none";
+  sideTab.textContent = PANELS.side.open ? "◂" : "▸";
+  rightTab.textContent = PANELS.right.open ? "▸" : "◂";
+  resize();          // the map canvas absorbs the width change
+}
+sideTab.onclick = () => { PANELS.side.open = !PANELS.side.open;
+  savePanels(); applyPanels(); };
+rightTab.onclick = () => { PANELS.right.open = !PANELS.right.open;
+  savePanels(); applyPanels(); };
+function gripDrag(grip, which){
+  grip.addEventListener("mousedown", e => {
+    e.preventDefault();
+    grip.classList.add("dragging");
+    const move = ev => {
+      PANELS[which].w = clampW(which === "side"
+        ? ev.clientX : window.innerWidth - ev.clientX);
+      applyPanels();
+    };
+    const up = () => {
+      grip.classList.remove("dragging");
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      savePanels();
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  });
+}
+gripDrag(sideGrip, "side");
+gripDrag(rightGrip, "right");
+applyPanels();
+
+renderCmdLog();
+renderLegend();
 resize(); syncMapCtl(); connect(); draw();
 setTimeout(preview, 800);
 </script>

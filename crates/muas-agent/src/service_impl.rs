@@ -4,9 +4,16 @@
 //! `muas_contracts::policy`, set the busy state, drive the backend, journal
 //! the decision, return the [`Ack`]. `raster_search` / `investigate` accept
 //! at ack and FLY on a spawned mission task (`crate::mission` — the v2
-//! fly_raster / fly_orbit loops); `sensor_capture` / `video_control` remain
-//! **stubbed** (no camera/audio hardware in this build — accepted +
-//! journaled, no capture executes; see the STUB markers).
+//! fly_raster / fly_orbit / flyover loops). With a sensor feed fitted,
+//! `sensor_capture` executes all three v2 modes (`now` captures here,
+//! `override` flies-captures-resumes, `opportunistic` arms a watchpoint)
+//! and `video_control` drives a live renderer session; without a feed both
+//! remain the documented no-hardware stubs.
+//!
+//! Ack semantics (ROUND-3 command.result): an accepted ack's `detail` says
+//! what WILL happen ("flying to point (~8 s), capturing camera, resuming
+//! raster leg 3 after") — it is never an error; rejections carry the
+//! policy `code` plus the human reason in `detail`.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -78,6 +85,25 @@ impl VehicleServiceImpl {
     fn occupy(&self, label: &str) {
         *lock(&self.shared.busy) = label.to_string();
         self.shared.abort.store(false, Ordering::Relaxed);
+    }
+
+    /// What an override detour resumes afterwards, for the ack detail
+    /// ("resuming raster leg 3" / "holding here"). The raster leg comes off
+    /// the vehicle's own `search/status` sample.
+    fn override_resume_note(&self, busy: &str) -> String {
+        if busy != "raster-search" {
+            return "holding here".to_string();
+        }
+        let leg = lock(&self.shared.latest_search)
+            .as_ref()
+            .and_then(|bytes| {
+                serde_json::from_slice::<uas_fleet_data::kinds::SearchStatus>(bytes).ok()
+            })
+            .map(|status| status.leg);
+        match leg {
+            Some(leg) => format!("resuming raster leg {leg}"),
+            None => "resuming raster".to_string(),
+        }
     }
 }
 
@@ -195,9 +221,20 @@ impl VehicleService for VehicleServiceImpl {
                 Ack::refuse("bad-orbit", "invalid request geometry (radius_m <= 0)")
             }
             Ok(()) => {
+                // Pattern by requested sensor + capability (ROUND-3):
+                // audio-only jobs fly the acoustic flyover, camera keeps
+                // the carrot orbit; the ack names the selected pattern.
+                let pattern = mission::select_investigate_pattern(
+                    &req,
+                    self.shared.extras.iter().any(|e| e == "audio"),
+                );
                 self.occupy("investigate");
                 tokio::spawn(mission::run_investigate(self.shared.clone(), req.clone()));
-                Ack::ok_detail("carrot-orbit accepted")
+                if pattern == muas_contracts::services::investigate_pattern::FLYOVER {
+                    Ack::ok_detail("acoustic flyover accepted")
+                } else {
+                    Ack::ok_detail("carrot-orbit accepted")
+                }
             }
         };
         self.journal_ack(
@@ -210,18 +247,36 @@ impl VehicleService for VehicleServiceImpl {
 
     async fn sensor_capture(&self, req: SensorRequest) -> Ack {
         let _span = tracing::info_span!("service-invocation", op = "sensor_capture").entered();
-        let position = self.flight_snapshot().position;
+        let snapshot = self.flight_snapshot();
         let busy = lock(&self.shared.busy).clone();
         let gate = (|| {
-            // v2: override (fly-capture-resume) is rejected mid-investigation;
-            // other modes ride alongside the running task.
-            if req.mode == sensor_mode::OVERRIDE && busy == "investigate" {
-                return Err(policy::PolicyRejection::Busy { task: busy.clone() });
+            if req.mode == sensor_mode::OVERRIDE {
+                // v2: override (fly-capture-resume) is rejected
+                // mid-investigation; it may pre-empt a raster (which
+                // suspends and resumes) or an idle vehicle. Anything else
+                // owning the vehicle — rtl, a climb, another override —
+                // refuses too: a detour must never fight those.
+                if busy == "investigate"
+                    || busy == "rtl"
+                    || busy == "takeoff"
+                    || busy == "sensor-override"
+                    || self.shared.detour.load(Ordering::Relaxed)
+                {
+                    let task = if busy.is_empty() { "sensor-override".to_string() } else { busy.clone() };
+                    return Err(policy::PolicyRejection::Busy { task });
+                }
+                // The detour flies to the point: the range rail applies.
+                policy::range_guard(
+                    snapshot.home,
+                    &[(req.lat_deg, req.lon_deg)],
+                    self.shared.max_range_m,
+                )?;
             }
             // Audio is short-range: gate tasked capture points on mic reach
             // (mode `now` captures wherever the vehicle already is).
             if req.sensor == "audio" && req.mode != sensor_mode::NOW {
-                let vehicle = position
+                let vehicle = snapshot
+                    .position
                     .map(|(lat, lon, _)| (lat, lon))
                     .unwrap_or((req.lat_deg, req.lon_deg));
                 policy::audio_range_guard(
@@ -234,20 +289,68 @@ impl VehicleService for VehicleServiceImpl {
         })();
         let ack = match gate {
             Err(rejection) => Ack::reject(&rejection),
-            // With a sensor feed fitted, mode `now` executes: capture at
-            // the current pose, publish the artifact over the data plane,
-            // surface the result on `sensor/last` (the GCS poller's name).
-            Ok(()) if self.shared.sensor_feed.is_some() && req.mode == sensor_mode::NOW => {
-                tokio::spawn(crate::sensor::capture_now_task(self.shared.clone(), req.clone()));
-                Ack::ok_detail("accepted; capture executing (sensor feed)")
-            }
-            // STUB (documented): override fly-capture-resume and
-            // opportunistic watchpoints are a later increment.
-            Ok(()) if self.shared.sensor_feed.is_some() => {
-                Ack::ok_detail("accepted; override/opportunistic scheduling stubbed (journaled)")
-            }
             // No sensor feed fitted: the pre-v3.1 stub behavior.
-            Ok(()) => Ack::ok_detail("accepted; capture execution stubbed (no sensor feed)"),
+            Ok(()) if self.shared.sensor_feed.is_none() => {
+                Ack::ok_detail("accepted; capture execution stubbed (no sensor feed)")
+            }
+            // Mode `now`: capture at the current pose, publish the artifact
+            // over the data plane, surface the result on `sensor/last`.
+            Ok(()) if req.mode == sensor_mode::NOW => {
+                tokio::spawn(crate::sensor::capture_now_task(self.shared.clone(), req.clone()));
+                Ack::ok_detail(format!("capturing {} here now", req.sensor))
+            }
+            // Mode `override` (v2 fly-capture-resume): fly to the point,
+            // capture there, then resume the pre-empted task by re-issuing
+            // its target — the ack says exactly what will happen.
+            Ok(()) if req.mode == sensor_mode::OVERRIDE => {
+                let airborne = snapshot.armed
+                    && snapshot.position.is_some_and(|(_, _, agl)| agl >= 1.0);
+                if !airborne {
+                    Ack::refuse("not-airborne", "override capture needs an airborne vehicle")
+                } else {
+                    let here = snapshot
+                        .position
+                        .map(|(lat, lon, _)| (lat, lon))
+                        .unwrap_or((req.lat_deg, req.lon_deg));
+                    let eta_s = policy::dist_m(here, (req.lat_deg, req.lon_deg))
+                        / crate::sensor::OVERRIDE_SPEED_M_S
+                        + 3.0;
+                    let resume_note = self.override_resume_note(&busy);
+                    // Claim the vehicle race-free BEFORE spawning: the
+                    // detour flag suspends a running raster; an idle
+                    // vehicle is additionally occupied by the busy label.
+                    let resume_task = if busy.is_empty() {
+                        self.occupy("sensor-override");
+                        "sensor-override".to_string()
+                    } else {
+                        busy.clone()
+                    };
+                    self.shared.detour.store(true, Ordering::Relaxed);
+                    tokio::spawn(crate::sensor::override_capture_task(
+                        self.shared.clone(),
+                        req.clone(),
+                        resume_task,
+                    ));
+                    Ack::ok_detail(format!(
+                        "flying to point (~{eta_s:.0} s), capturing {}, {resume_note} after",
+                        req.sensor
+                    ))
+                }
+            }
+            // Mode `opportunistic`: arm a watchpoint that fires in passing.
+            Ok(()) if req.mode == sensor_mode::OPPORTUNISTIC => {
+                let radius_m = if req.radius_m > 0.0 { req.radius_m } else { 15.0 };
+                let expiry_s = if req.expiry_s > 0.0 { req.expiry_s } else { 120.0 };
+                tokio::spawn(crate::sensor::watchpoint_task(self.shared.clone(), req.clone()));
+                Ack::ok_detail(format!(
+                    "watchpoint armed: {} fires within {radius_m:.0} m, expires in {expiry_s:.0} s",
+                    req.sensor
+                ))
+            }
+            Ok(()) => Ack::refuse(
+                "bad-mode",
+                format!("unknown capture mode '{}' (now|override|opportunistic)", req.mode),
+            ),
         };
         self.journal_ack(
             "sensor_capture",

@@ -258,9 +258,14 @@ async fn smart_rtl_slots_layer_without_overlap() {
     );
 }
 
-/// v2 assertion 4 — fleet flight floor: a descender at 4.0 m AGL against
-/// the 3.5 m fleet floor only gives the 0.5 m it has; the climber absorbs
+/// v2 assertion 4 — fleet flight floor: a descender at 4.5 m AGL against
+/// the 3.5 m fleet floor only gives the 1.0 m it has; the climber absorbs
 /// the shortfall, and the descender never sinks below the floor.
+///
+/// Round-3 note: the scenario moved from 4.0 m (a 0.5 m give) to 4.5 m —
+/// sub-0.75 m biases now never engage at all (the hover-oscillation
+/// hysteresis, `uas_fleet_node::coordination::MIN_ENGAGE_BIAS_M`); that
+/// regime is pinned by uas-fleet-node's `sub_noise_bias_never_engages`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fleet_floor_respected_by_descender() {
     let origin_b = north_of(ORIGIN, 120.0);
@@ -272,10 +277,10 @@ async fn fleet_floor_respected_by_descender() {
         .await
         .expect("fleet up");
 
-    airborne(&fleet, 0, 7.5, 5.0);
-    airborne(&fleet, 1, 4.0, 5.0);
-    goto(&fleet, 0, origin_b, 7.5);
-    goto(&fleet, 1, ORIGIN, 4.0);
+    airborne(&fleet, 0, 8.0, 5.0);
+    airborne(&fleet, 1, 4.5, 5.0);
+    goto(&fleet, 0, origin_b, 8.0);
+    goto(&fleet, 1, ORIGIN, 4.5);
 
     let converged = wait_for(Duration::from_secs(45), || {
         fleet.publishes_mode(0, 1, "coop") && fleet.publishes_mode(1, 0, "coop")
@@ -292,16 +297,16 @@ async fn fleet_floor_respected_by_descender() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    // Plan math: spread 5.0; the descender gives min(2.0, agl - 3.5) ≈ 0.5
+    // Plan math: spread 5.0; the descender gives min(2.0, agl - 3.5) ≈ 1.0
     // and the climber absorbs the rest. Because the two sides plan at
     // different instants over a real network, the climber may observe the
     // peer already AT the floor (descent applied first) and absorb the
     // FULL spread (+5.0) — legitimate floor-awareness, so the pinned
     // invariants are: descender floor-limited, pair opens >= the full
     // spread, and the descender never sinks below the floor.
-    let floor_limited = (-0.85..=-0.15).contains(&bias_b);
+    let floor_limited = (-1.35..=-0.65).contains(&bias_b);
     let pair_spread = bias_a - bias_b;
-    let climber_absorbed = bias_a >= 4.15 && pair_spread >= 4.85;
+    let climber_absorbed = bias_a >= 3.85 && pair_spread >= 4.85;
     let above_floor = min_agl_b >= 3.5 - 0.15;
     let pass = converged && floor_limited && climber_absorbed && above_floor;
     Verdict::new(

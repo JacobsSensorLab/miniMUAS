@@ -64,9 +64,40 @@ async fn headless_backend_serves_ui_ws_and_fallbacks() {
     assert_eq!(hello["type"], json!("hello"));
     assert_eq!(hello["vehicles"], json!(["wuas-01", "iuas-01"]));
     assert_eq!(hello["mission"]["state"], json!("idle"));
+    assert_eq!(hello["recording"], json!(false), "idle: no session armed");
 
-    // 3 — a command round-trips: disabling a vehicle broadcasts the event
-    // (and lazily opens the recording).
+    // 3 — recording is session-scoped: idle traffic produced NOTHING, an
+    // explicit Record request arms a session, and a command round-trip
+    // (disabling a vehicle) broadcasts an event that lands in it.
+    let empty: Value = http
+        .get(format!("{base}/replays"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        empty["replays"].as_array().unwrap().is_empty(),
+        "idle dashboard records nothing"
+    );
+    ws.send(Message::Text(
+        json!({ "cmd": "record", "action": "start" }).to_string().into(),
+    ))
+    .await
+    .expect("record start sends");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Message::Text(text) = ws.next().await.expect("ws open").expect("ws ok") {
+                let v: Value = serde_json::from_str(&text).unwrap();
+                if v["kind"] == json!("record.started") {
+                    return v;
+                }
+            }
+        }
+    })
+    .await
+    .expect("record.started arrives");
     ws.send(Message::Text(
         json!({ "cmd": "set_enabled", "vehicle": "iuas-01", "enabled": false })
             .to_string()
@@ -153,6 +184,10 @@ async fn headless_backend_serves_ui_ws_and_fallbacks() {
     assert_eq!(replays_list.len(), 1, "one live recording");
     assert_eq!(replays_list[0]["recording"], json!(true));
     let name = replays_list[0]["name"].as_str().unwrap().to_string();
+    assert!(
+        name.contains("-manual-") && name.ends_with(".jsonl"),
+        "session name is <run>-<mission>-<t>.jsonl, got {name}"
+    );
     let jsonl = http
         .get(format!("{base}/replays/{name}"))
         .send()

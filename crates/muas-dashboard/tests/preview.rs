@@ -103,12 +103,18 @@ fn preview_message_keeps_v2_shape() {
 
 // ───────────────────────────── recorder ─────────────────────────────────────
 
-/// Every broadcast lands as a parseable uas-console RecordedEvent line.
+/// Every broadcast during an ARMED session lands as a parseable uas-console
+/// RecordedEvent line; idle broadcasts (before arming) land nowhere.
 #[test]
 fn recorder_jsonl_is_parseable_by_uas_console() {
     let dir = std::env::temp_dir().join(format!("muas-dash-rec-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let hub = Hub::new(Some(dir.clone()));
+    let hub = Hub::new(Some(dir.clone()), "run-t");
+    // Idle traffic before the session arms is NOT recorded.
+    hub.broadcast(&json!({ "type": "telemetry", "vehicle": "wuas-01", "idle": true }));
+    assert!(hub.recording_path().is_none(), "idle produces no recording");
+    let name = hub.arm("mission-1").expect("session arms");
+    assert!(name.starts_with("run-t-mission-1-") && name.ends_with(".jsonl"));
     let messages = [
         json!({ "type": "event", "kind": "mission.started", "t": 1.0, "mission_id": "m-1" }),
         json!({ "type": "telemetry", "vehicle": "wuas-01",
@@ -118,8 +124,8 @@ fn recorder_jsonl_is_parseable_by_uas_console() {
     for m in &messages {
         hub.broadcast(m);
     }
-    hub.sync();
-    let path = hub.recording_path().expect("recording opened lazily");
+    let path = hub.recording_path().expect("recording open while armed");
+    hub.finalize();
     let replayer = Replayer::load(&path).expect("recording parses");
     assert_eq!(replayer.events().len(), messages.len());
     for (event, expected) in replayer.events().iter().zip(&messages) {

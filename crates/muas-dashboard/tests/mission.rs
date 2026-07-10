@@ -410,6 +410,58 @@ async fn scripted_detection_drives_dispatch_through_the_executor() {
     assert!(calls.contains(&("iuas-01".to_string(), "investigate".to_string())));
 }
 
+/// Recording sessions are mission-scoped: idle records nothing, mission
+/// start arms `<run>-<mission>-<t>.jsonl`, RTL-all finalizes (capturing the
+/// abort commands), and a later mission opens a NEW session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recording_sessions_are_mission_scoped() {
+    let dir = std::env::temp_dir().join(format!("muas-dash-sess-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let commander = Arc::new(ScriptedCommander::answering(CmdResult::Ack(Ack::ok())));
+    let config = DashConfig {
+        record_dir: Some(dir.clone()),
+        run_name: "testrun".into(),
+        confirm_count: 1,
+        ..DashConfig::default()
+    };
+    let dash = Arc::new(Dashboard::new(
+        config,
+        Arc::new(ScriptedDetector::default()),
+        commander,
+    ));
+
+    // Idle: nothing armed, nothing on disk.
+    assert!(!dash.hub.is_recording());
+    dash.hub.broadcast(&json!({ "type": "telemetry", "vehicle": "wuas-01" }));
+    assert!(!dir.exists() || std::fs::read_dir(&dir).unwrap().next().is_none());
+
+    // Mission start arms a session named by run + mission.
+    dash.handle_command(&json!({ "cmd": "start_mission", "params": params(&["camera"]) }));
+    let path = dash.hub.recording_path().expect("mission start arms the recorder");
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    assert!(name.starts_with("testrun-mission-"), "session name: {name}");
+
+    // RTL-all aborts the mission and finalizes the session.
+    dash.handle_command(&json!({ "cmd": "all", "command": "rtl" }));
+    assert_eq!(dash.mission_state(), "aborted");
+    assert!(!dash.hub.is_recording(), "RTL-all finalizes the recording");
+    let text = std::fs::read_to_string(&path).expect("session file exists");
+    assert!(text.contains("record.started"), "first line marks the arm");
+    assert!(text.contains("mission.started"));
+    assert!(text.contains("command.sent"), "the abort commands are captured");
+    assert!(text.contains("record.stopped"), "last line marks the finalize");
+
+    // Post-finalize idle traffic lands nowhere.
+    dash.hub.broadcast(&json!({ "type": "telemetry", "vehicle": "wuas-01" }));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+
+    // A new mission opens a NEW session file.
+    dash.handle_command(&json!({ "cmd": "start_mission", "params": params(&["camera"]) }));
+    let second = dash.hub.recording_path().expect("second session arms");
+    assert_ne!(second, path, "each mission gets its own recording");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ───────────────────────────── wire shapes ──────────────────────────────────
 
 #[test]

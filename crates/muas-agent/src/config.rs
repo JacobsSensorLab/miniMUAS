@@ -16,6 +16,50 @@ pub enum Endpoint {
     Mavlink(String),
 }
 
+/// What the vehicle does once a task completes and nothing else claims it
+/// (`--idle-policy`, ROUND-3 §1 "post-task idle"). The decision is journaled
+/// (`idle.policy`) whichever branch runs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum IdlePolicy {
+    /// Hover where the task ended (the pre-round-3 behavior; default).
+    Hold,
+    /// Hover, then RTL (smart when a fleet is configured) after this many
+    /// seconds still idle. A new task or an operator command cancels it.
+    RtlAfter(f64),
+    /// Climb to this vehicle's smart-RTL altitude slot and hold there —
+    /// layered hovers, so idle vehicles never share an altitude. Falls back
+    /// to `Hold` when no fleet slot exists.
+    SlotHold,
+}
+
+impl IdlePolicy {
+    /// Parse the `--idle-policy` flag value.
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "hold" => Ok(Self::Hold),
+            "slot-hold" => Ok(Self::SlotHold),
+            other => match other.strip_prefix("rtl-after:") {
+                Some(seconds) => match seconds.parse::<f64>() {
+                    Ok(s) if s > 0.0 => Ok(Self::RtlAfter(s)),
+                    _ => Err(format!("--idle-policy: bad rtl-after seconds '{seconds}'")),
+                },
+                None => Err(format!(
+                    "--idle-policy: expected hold|rtl-after:<s>|slot-hold, got '{value}'"
+                )),
+            },
+        }
+    }
+
+    /// The journaled policy name.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Hold => "hold",
+            Self::RtlAfter(_) => "rtl-after",
+            Self::SlotHold => "slot-hold",
+        }
+    }
+}
+
 /// Service carrier hosting the vehicle service.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CarrierKind {
@@ -72,6 +116,9 @@ pub struct AgentConfig {
     pub rtl_base_agl_m: f64,
     pub rtl_sep_m: f64,
 
+    // -- post-task idle policy (`--idle-policy`) --
+    pub idle_policy: IdlePolicy,
+
     // -- journals --
     pub log_dir: Option<PathBuf>,
     /// Mirror journal events into an ndf-apps Block chain.
@@ -117,6 +164,7 @@ impl Default for AgentConfig {
             floor_agl_m: 3.5,
             rtl_base_agl_m: 8.0,
             rtl_sep_m: 3.0,
+            idle_policy: IdlePolicy::Hold,
             log_dir: None,
             journal_chain: false,
             sensor_feed: crate::sensor::SensorFeedConfig::None,
@@ -187,6 +235,8 @@ COORDINATION:
     --floor-agl-m <M>          fleet flight floor (default 3.5; SAME fleet-wide)
     --rtl-base-agl-m <M>       lowest smart-RTL slot (default 8)
     --rtl-sep-m <M>            slot separation (default 3)
+    --idle-policy <P>          post-task idle behavior (journaled decision):
+                               hold (default) | rtl-after:<s> | slot-hold
 
 SENSORS:
     --sensor-feed <S>          none (default) | synthetic — synthetic renders
@@ -328,6 +378,7 @@ pub fn parse_args(args: &[String]) -> Result<ParseOutcome, String> {
             "--floor-agl-m" => floor = Some(parse_f64(&next(arg, &mut it)?, arg)?),
             "--rtl-base-agl-m" => config.rtl_base_agl_m = parse_f64(&next(arg, &mut it)?, arg)?,
             "--rtl-sep-m" => config.rtl_sep_m = parse_f64(&next(arg, &mut it)?, arg)?,
+            "--idle-policy" => config.idle_policy = IdlePolicy::parse(&next(arg, &mut it)?)?,
             "--sensor-feed" => {
                 config.sensor_feed = match next(arg, &mut it)?.as_str() {
                     "none" => crate::sensor::SensorFeedConfig::None,
@@ -463,6 +514,29 @@ mod tests {
                 lon_deg: -90.25
             }
         );
+    }
+
+    #[test]
+    fn idle_policy_parses_all_three_shapes() {
+        assert_eq!(IdlePolicy::parse("hold"), Ok(IdlePolicy::Hold));
+        assert_eq!(IdlePolicy::parse("slot-hold"), Ok(IdlePolicy::SlotHold));
+        assert_eq!(IdlePolicy::parse("rtl-after:45"), Ok(IdlePolicy::RtlAfter(45.0)));
+        assert!(IdlePolicy::parse("rtl-after:0").is_err());
+        assert!(IdlePolicy::parse("rtl-after:soon").is_err());
+        assert!(IdlePolicy::parse("wander").is_err());
+
+        let ParseOutcome::Run(config) = parse_args(&args(&[
+            "--vehicle-id",
+            "iuas-01",
+            "--idle-policy",
+            "rtl-after:30",
+        ]))
+        .unwrap() else {
+            panic!("expected Run");
+        };
+        assert_eq!(config.idle_policy, IdlePolicy::RtlAfter(30.0));
+        // Default stays the pre-round-3 behavior.
+        assert_eq!(AgentConfig::default().idle_policy, IdlePolicy::Hold);
     }
 
     #[test]

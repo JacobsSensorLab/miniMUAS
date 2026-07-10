@@ -49,7 +49,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use uas_flight::geo::{m_per_deg_lon, EARTH_M_PER_DEG_LAT};
 
-use crate::lock;
+use crate::{lock, BackendExt};
 
 // ---------------------------------------------------------------------------
 // the seam
@@ -567,16 +567,27 @@ pub(crate) async fn publish_raster_capture(
     .await
 }
 
-/// Execute one tasked `sensor_capture` in mode `now`: capture at the
-/// current pose, publish the artifact, surface the v2-shaped
-/// `SensorCaptureResult` dict on the `sensor/last` latest-wins stream (the
-/// dashboard's sensor-event poller pins that schema).
-pub(crate) async fn capture_now_task(
-    shared: Arc<crate::AgentShared>,
-    req: muas_contracts::services::SensorRequest,
-) {
-    let Some(feed) = shared.sensor_feed.clone() else { return };
-    let pose = pose_snapshot(&shared);
+/// Publish one v2-shaped `SensorCaptureResult` dict: journal it and store
+/// it on the `sensor/last` latest-wins stream (the dashboard's
+/// sensor-event poller pins that schema).
+pub(crate) fn publish_sensor_result(shared: &crate::AgentShared, result: serde_json::Value) {
+    shared.journal.event("sensor.capture.result", result.clone());
+    if let Ok(bytes) = serde_json::to_vec(&result) {
+        *lock(&shared.latest_sensor) = Some(Bytes::from(bytes));
+    }
+}
+
+/// Execute one tasked capture at the CURRENT pose: capture, publish the
+/// artifact, surface the result. `trigger` names the capture mode in the
+/// result message (`now` / `override` / `opportunistic`). Returns whether
+/// the capture succeeded.
+pub(crate) async fn execute_capture(
+    shared: &Arc<crate::AgentShared>,
+    req: &muas_contracts::services::SensorRequest,
+    trigger: &str,
+) -> bool {
+    let Some(feed) = shared.sensor_feed.clone() else { return false };
+    let pose = pose_snapshot(shared);
     let ts = crate::telemetry::gps_time_ns();
     let request_id = format!("cap-{}", (ts / 1_000_000) % 100_000_000);
 
@@ -585,7 +596,7 @@ pub(crate) async fn capture_now_task(
         match feed.audio_wav(&pose, duration) {
             Some(wav) => {
                 publish_artifact(
-                    &shared,
+                    shared,
                     &req.mission_id,
                     &format!("audio/mic0/clip/{ts}/0"),
                     "audio/wav",
@@ -604,7 +615,7 @@ pub(crate) async fn capture_now_task(
     } else {
         match feed.video_frame(&pose) {
             Some(frame) => publish_artifact(
-                &shared,
+                shared,
                 &req.mission_id,
                 &format!("camera/cam0/still/{ts}/0"),
                 "image/jpeg",
@@ -622,12 +633,13 @@ pub(crate) async fn capture_now_task(
     };
 
     // The v2 SensorCaptureResult JSON dict (pinned by the GCS poller).
+    let ok = published.is_ok();
     let result = match &published {
         Ok(name) => serde_json::json!({
             "request_id": request_id,
             "sensor": req.sensor,
             "status": "captured",
-            "message": "synthetic capture",
+            "message": format!("synthetic capture ({trigger})"),
             "lat_deg": pose.lat_deg,
             "lon_deg": pose.lon_deg,
             "gps_time_ns": ts,
@@ -642,9 +654,190 @@ pub(crate) async fn capture_now_task(
             "artifacts": [],
         }),
     };
-    shared.journal.event("sensor.capture.result", result.clone());
-    if let Ok(bytes) = serde_json::to_vec(&result) {
-        *lock(&shared.latest_sensor) = Some(Bytes::from(bytes));
+    publish_sensor_result(shared, result);
+    ok
+}
+
+/// Execute one tasked `sensor_capture` in mode `now`: capture wherever the
+/// vehicle already is.
+pub(crate) async fn capture_now_task(
+    shared: Arc<crate::AgentShared>,
+    req: muas_contracts::services::SensorRequest,
+) {
+    execute_capture(&shared, &req, "now").await;
+}
+
+/// Cruise poll cadence for override detours / watchpoint checks.
+const TASKING_TICK: Duration = Duration::from_millis(200);
+/// Guided target re-send period during the override cruise (v2 rule).
+const TASKING_RESEND: Duration = Duration::from_secs(2);
+/// Arrival tolerance at the override capture point, metres.
+const TASKING_TOL_M: f64 = 2.5;
+/// Nominal detour cruise speed used for deadline/ETA sizing, m/s.
+pub(crate) const OVERRIDE_SPEED_M_S: f64 = 3.0;
+
+/// Execute mode `override` (v2 fly-capture-resume): fly to the picked
+/// point at the current AGL, capture there, then clear the detour flag so
+/// the suspended mission re-issues its pre-empted target (`run_raster`'s
+/// detour pause), or release the vehicle when it was idle
+/// (`resume_task == "sensor-override"`).
+///
+/// The detour flag is already SET by the ack handler (so a second override
+/// is busy-refused race-free); this task owns clearing it.
+pub(crate) async fn override_capture_task(
+    shared: Arc<crate::AgentShared>,
+    req: muas_contracts::services::SensorRequest,
+    resume_task: String,
+) {
+    let (here, agl) = {
+        let backend = lock(&shared.backend);
+        let t = crate::BackendExt::as_dyn_ref(&*backend).telemetry();
+        (
+            (t.lat_deg, t.lon_deg),
+            t.agl_m
+                .clamp(shared.agl_bounds.min_agl_m, shared.agl_bounds.max_agl_m),
+        )
+    };
+    let dist = muas_contracts::policy::dist_m(here, (req.lat_deg, req.lon_deg));
+    shared.journal.event(
+        "sensor.override.started",
+        serde_json::json!({
+            "sensor": req.sensor,
+            "lat_deg": req.lat_deg,
+            "lon_deg": req.lon_deg,
+            "agl_m": agl,
+            "distance_m": dist,
+            "resume_task": resume_task,
+        }),
+    );
+
+    let deadline =
+        tokio::time::Instant::now() + Duration::from_secs_f64(dist / (0.5 * OVERRIDE_SPEED_M_S) + 45.0);
+    let mut next_send = tokio::time::Instant::now();
+    let flight_failure: Option<&str> = loop {
+        tokio::select! {
+            () = shared.cancel.cancelled() => break Some("agent shutdown"),
+            _ = tokio::time::sleep(TASKING_TICK) => {}
+        }
+        // The abort ladder (rtl/land/hold) or a re-labelled vehicle kills
+        // the detour; whatever mode the interrupting command set stands.
+        if shared.abort.load(std::sync::atomic::Ordering::Relaxed)
+            || *lock(&shared.busy) != resume_task
+        {
+            break Some("pre-empted by another command");
+        }
+        let arrived = {
+            let mut backend = lock(&shared.backend);
+            if tokio::time::Instant::now() >= next_send {
+                backend
+                    .as_dyn()
+                    .goto(req.lat_deg, req.lon_deg, agl, None);
+                next_send = tokio::time::Instant::now() + TASKING_RESEND;
+            }
+            backend
+                .as_dyn_ref()
+                .at_target(req.lat_deg, req.lon_deg, agl, TASKING_TOL_M)
+        };
+        if arrived {
+            break None;
+        }
+        if tokio::time::Instant::now() > deadline {
+            break Some("travel deadline exceeded");
+        }
+    };
+
+    let ok = match flight_failure {
+        None => execute_capture(&shared, &req, "override").await,
+        Some(reason) => {
+            publish_sensor_result(
+                &shared,
+                serde_json::json!({
+                    "request_id": format!("cap-{}", (crate::telemetry::gps_time_ns() / 1_000_000) % 100_000_000),
+                    "sensor": req.sensor,
+                    "status": "failed",
+                    "message": format!("override flight failed: {reason}"),
+                    "gps_time_ns": crate::telemetry::gps_time_ns(),
+                    "artifacts": [],
+                }),
+            );
+            false
+        }
+    };
+
+    // Resume: clear the detour (paused mission re-issues its target within
+    // one re-send period) and release the vehicle if the override owned it.
+    shared.detour.store(false, std::sync::atomic::Ordering::Relaxed);
+    {
+        let mut busy = lock(&shared.busy);
+        if resume_task == "sensor-override" && *busy == "sensor-override" {
+            busy.clear();
+        }
+    }
+    shared.journal.event(
+        "sensor.override.finished",
+        serde_json::json!({
+            "ok": ok,
+            "resumed_task": if resume_task == "sensor-override" { "" } else { resume_task.as_str() },
+        }),
+    );
+}
+
+/// Execute mode `opportunistic`: arm a watchpoint that fires a capture the
+/// moment the vehicle passes within `radius_m` of the point (riding along
+/// with whatever the vehicle is doing — no detour), and expires after
+/// `expiry_s` without a pass.
+pub(crate) async fn watchpoint_task(
+    shared: Arc<crate::AgentShared>,
+    req: muas_contracts::services::SensorRequest,
+) {
+    let radius_m = if req.radius_m > 0.0 { req.radius_m } else { 15.0 };
+    let expiry_s = if req.expiry_s > 0.0 { req.expiry_s } else { 120.0 };
+    shared.journal.event(
+        "sensor.watchpoint.armed",
+        serde_json::json!({
+            "sensor": req.sensor,
+            "lat_deg": req.lat_deg,
+            "lon_deg": req.lon_deg,
+            "radius_m": radius_m,
+            "expiry_s": expiry_s,
+        }),
+    );
+    let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(expiry_s);
+    loop {
+        tokio::select! {
+            () = shared.cancel.cancelled() => return,
+            _ = tokio::time::sleep(TASKING_TICK) => {}
+        }
+        let here = lock(&shared.backend).as_dyn_ref().position();
+        if let Some((lat, lon, _)) = here {
+            if muas_contracts::policy::dist_m((lat, lon), (req.lat_deg, req.lon_deg)) <= radius_m
+            {
+                shared.journal.event(
+                    "sensor.watchpoint.fired",
+                    serde_json::json!({ "sensor": req.sensor, "radius_m": radius_m }),
+                );
+                execute_capture(&shared, &req, "opportunistic").await;
+                return;
+            }
+        }
+        if tokio::time::Instant::now() > deadline {
+            shared.journal.event(
+                "sensor.watchpoint.expired",
+                serde_json::json!({ "sensor": req.sensor, "expiry_s": expiry_s }),
+            );
+            publish_sensor_result(
+                &shared,
+                serde_json::json!({
+                    "request_id": format!("cap-{}", (crate::telemetry::gps_time_ns() / 1_000_000) % 100_000_000),
+                    "sensor": req.sensor,
+                    "status": "expired",
+                    "message": "watchpoint expired without a pass",
+                    "gps_time_ns": crate::telemetry::gps_time_ns(),
+                    "artifacts": [],
+                }),
+            );
+            return;
+        }
     }
 }
 

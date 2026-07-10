@@ -35,6 +35,9 @@ pub struct DashConfig {
     pub tile_upstream: String,
     /// Mission recorder directory; `None` disables recording.
     pub record_dir: Option<PathBuf>,
+    /// Run label recordings group under (`<run>-<mission>-<t>.jsonl`);
+    /// empty = auto (`run-<dashboard start time>`).
+    pub run_name: String,
     /// Point-to-point UDP faces toward vehicles / forwarders.
     pub links: Vec<UdpLink>,
 }
@@ -55,6 +58,7 @@ impl Default for DashConfig {
                             World_Imagery/MapServer/tile/{z}/{y}/{x}"
                 .into(),
             record_dir: Some(PathBuf::from("/var/lib/minimuas/replays")),
+            run_name: String::new(),
             links: Vec::new(),
         }
     }
@@ -109,6 +113,9 @@ MAP / RECORDER:
                                empty string disables proxying (pure offline)
     --record-dir <DIR>         mission recorder JSONL directory (default
                                /var/lib/minimuas/replays); empty disables
+    --run-name <NAME>          run label recordings group under, producing
+                               <run>-<mission>-<t>.jsonl session files
+                               (default: run-<dashboard start time>)
 
     --help                     print this help
 ";
@@ -186,6 +193,7 @@ pub fn parse_args(args: &[String]) -> Result<ParseOutcome, String> {
                 let dir = next(arg, &mut it)?;
                 config.record_dir = if dir.is_empty() { None } else { Some(PathBuf::from(dir)) };
             }
+            "--run-name" => config.run_name = next(arg, &mut it)?,
             "--vehicle" => {
                 let value = next(arg, &mut it)?;
                 let (vid, addrs) = split_pair(&value, '=', arg)?;

@@ -247,6 +247,14 @@ pub struct Mission {
     /// Investigation sensors each vehicle advertises (from its
     /// CapabilityProfile extras); absent ⇒ legacy assumption `camera`.
     pub capabilities: HashMap<String, BTreeSet<String>>,
+    /// ROUND-3 second-target dispatch fix: externally observed per-vehicle
+    /// busy state (from the `busy` field the telemetry poller already
+    /// fetches). Needed because the async layer maps the investigate
+    /// ACCEPTANCE ack to job completion (`lib.rs` `Action::Dispatch` — the
+    /// v3 typed-Ack deviation), so job statuses alone no longer say who is
+    /// actually flying. `pump_dispatch` skips hinted-busy vehicles; a
+    /// busy→idle transition ([`Mission::set_vehicle_busy`]) pumps the queue.
+    pub vehicle_busy: HashMap<String, bool>,
     /// The additive `sensor_meta` object each vehicle advertises (hfov /
     /// DRI / audio reach — the map sensor layer renders from it); `Null`
     /// for legacy vehicles.
@@ -274,6 +282,7 @@ impl Mission {
             candidates: Vec::new(),
             enabled,
             capabilities: HashMap::new(),
+            vehicle_busy: HashMap::new(),
             sensor_meta: HashMap::new(),
             seen_frames: HashSet::new(),
             detects_pending: 0,
@@ -451,6 +460,27 @@ impl Mission {
         let mut actions = vec![Action::Emit(msg)];
         actions.extend(self.pump_dispatch());
         actions
+    }
+
+    /// ROUND-3 (SURGICAL, see `vehicle_busy`): the vehicle's live busy
+    /// state, as read off the telemetry the dashboard already polls
+    /// (`busy` non-empty ⇒ occupied). A busy→idle transition pumps the
+    /// queue — this is how "job 2 dispatches when job 1 completes" works
+    /// now that dispatch acks return at ACCEPTANCE, not completion.
+    ///
+    /// Wiring note for the dashboard owner: call this from the telemetry
+    /// poller (`ndn.rs::telemetry_poller`) with
+    /// `sample["busy"].as_str() != ""` for each IUAS.
+    pub fn set_vehicle_busy(&mut self, vehicle: &str, busy: bool) -> Vec<Action> {
+        if !self.enabled.contains_key(vehicle) {
+            return Vec::new();
+        }
+        let previous = self.vehicle_busy.insert(vehicle.to_string(), busy);
+        if previous == Some(busy) || busy {
+            return Vec::new();
+        }
+        // Busy → idle: a finishing IUAS takes the next serviceable job.
+        self.pump_dispatch()
     }
 
     /// v2 `handle_command` abort semantics: RTL/Land of the searcher during
@@ -732,6 +762,16 @@ impl Mission {
             .filter(|j| j.status == "investigating")
             .map(|j| j.vehicle.clone())
             .collect();
+        // ROUND-3: a vehicle whose TELEMETRY says it is occupied is busy no
+        // matter what the job table thinks (the accept-ack completes jobs
+        // early; see `vehicle_busy`). This is what routes a second target
+        // to the idle capable IUAS instead of the one still flying.
+        busy.extend(
+            self.vehicle_busy
+                .iter()
+                .filter(|(_, is_busy)| **is_busy)
+                .map(|(vid, _)| vid.clone()),
+        );
         let mut to_dispatch: Vec<(usize, usize, String)> = Vec::new();
         for ti in 0..self.targets.len() {
             for ji in 0..self.targets[ti].jobs.len() {
@@ -854,6 +894,40 @@ impl Mission {
         else {
             return Vec::new();
         };
+        // ROUND-3 (SURGICAL): an agent busy-refusal is a scheduling race,
+        // not a job failure — the 2026-07-10 eval journals show target 2's
+        // jobs dispatched at the same vehicles still flying target 1
+        // ("vehicle busy with task 'investigate'") and then terminally
+        // marked failed, so only the first target was ever investigated.
+        // Requeue the job, remember the vehicle as busy, and pump so an
+        // idle capable vehicle can take it now (or the busy one when its
+        // telemetry goes idle). Detection keys on the pinned
+        // `PolicyRejection::Busy` detail text because `JobResult` carries
+        // no ack code (adding one means touching `lib.rs`, which is the
+        // dashboard owner's file — flagged in the round report).
+        if !result.ok && result.note.starts_with("vehicle busy") {
+            let refused_by = self.targets[ti]
+                .jobs
+                .iter_mut()
+                .find(|j| j.sensor == result.sensor)
+                .map(|job| {
+                    job.status = "queued".into();
+                    std::mem::take(&mut job.vehicle)
+                });
+            let Some(refused_by) = refused_by else {
+                return Vec::new();
+            };
+            self.vehicle_busy.insert(refused_by.clone(), true);
+            let payload = json!({
+                "index": result.target_index,
+                "sensor": result.sensor,
+                "vehicle": refused_by,
+                "note": result.note,
+            });
+            let mut actions = vec![Action::Emit(self.event("target.job_requeued", payload))];
+            actions.extend(self.pump_dispatch());
+            return actions;
+        }
         let status = if result.ok { "done" } else { "failed" };
         {
             let target = &mut self.targets[ti];

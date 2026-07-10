@@ -40,7 +40,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use muas_contracts::services::{InvestigateRequest, RasterRequest};
+use muas_contracts::services::{investigate_pattern, InvestigateRequest, RasterRequest};
 use tracing::{info, warn};
 use uas_fleet_data::kinds::{search_state, SearchStatus};
 use uas_fleet_node::flight_backend::FlightBackend;
@@ -48,7 +48,7 @@ use uas_flight::geo::{m_per_deg_lon, Position, EARTH_M_PER_DEG_LAT};
 use uas_flight::motion::MotionTarget;
 use uas_flight::patterns::{RasterBounds, RasterPath};
 
-use crate::{lock, AgentShared, BackendExt, TakeoffStart};
+use crate::{lock, AgentShared, BackendExt, IdlePolicy, TakeoffStart};
 
 /// Runner control-loop cadence (v2 slept 0.1–0.2 s between checks; the
 /// abort flag is honored within one such cycle).
@@ -654,6 +654,281 @@ impl OrbitFlight {
 }
 
 // ---------------------------------------------------------------------------
+// WaypointFlight — a cruise sequence (the flyover profile in flight)
+// ---------------------------------------------------------------------------
+
+/// A fixed waypoint sequence flown with the v2 cruise discipline: 2 s
+/// target re-sends, arrival tolerance, per-leg travel deadlines that "move
+/// on" when blocked (never hover a dead leg), and an overall speed-sized
+/// budget. Used for the acoustic flyover profile — the geometry comes from
+/// [`uas_flight::patterns::flyover_targets`].
+pub struct WaypointFlight {
+    /// `(lat_deg, lon_deg, agl_m)` in flight order.
+    points: Vec<(f64, f64, f64)>,
+    idx: usize,
+    next_send_s: f64,
+    leg_deadline_s: Option<f64>,
+    speed_m_s: f64,
+    deadline_s: f64,
+    done: Option<FlightOutcome>,
+}
+
+impl WaypointFlight {
+    pub fn new(points: Vec<(f64, f64, f64)>, speed_m_s: f64, now_s: f64) -> Self {
+        let speed_m_s = speed_m_s.max(0.3);
+        let mut path_len = 0.0;
+        for pair in points.windows(2) {
+            path_len += dist_m((pair[0].0, pair[0].1), (pair[1].0, pair[1].1));
+        }
+        Self {
+            points,
+            idx: 0,
+            next_send_s: 0.0,
+            leg_deadline_s: None,
+            speed_m_s,
+            deadline_s: now_s + 3.0 * path_len / speed_m_s + 90.0,
+            done: None,
+        }
+    }
+
+    /// `(next_waypoint_index, total)` — progress for status/journal.
+    pub fn progress(&self) -> (usize, usize) {
+        (self.idx, self.points.len())
+    }
+
+    /// One control tick; same contract as [`RasterFlight::tick`].
+    pub fn tick(&mut self, now_s: f64, backend: &mut dyn FlightBackend) -> Option<FlightOutcome> {
+        if let Some(outcome) = self.done {
+            return Some(outcome);
+        }
+        if self.idx >= self.points.len() {
+            self.done = Some(FlightOutcome::Completed);
+            return self.done;
+        }
+        if now_s > self.deadline_s {
+            self.done = Some(FlightOutcome::TimedOut);
+            return self.done;
+        }
+        let (lat, lon, agl) = self.points[self.idx];
+        let here = backend.position().unwrap_or((0.0, 0.0, 0.0));
+        let leg_deadline = *self.leg_deadline_s.get_or_insert_with(|| {
+            now_s + dist_m((here.0, here.1), (lat, lon)) / (0.5 * self.speed_m_s) + 45.0
+        });
+        if now_s >= self.next_send_s {
+            backend.goto(lat, lon, agl, None);
+            self.next_send_s = now_s + TARGET_RESEND_S;
+        }
+        if backend.at_target(lat, lon, agl, ARRIVE_TOL_M) || now_s > leg_deadline {
+            self.idx += 1;
+            self.leg_deadline_s = None;
+            self.next_send_s = 0.0;
+            if self.idx >= self.points.len() {
+                self.done = Some(FlightOutcome::Completed);
+                return self.done;
+            }
+        }
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// investigate pattern selection (ROUND-3: dispatch-by-sensor)
+// ---------------------------------------------------------------------------
+
+/// Which flight geometry an investigate request flies. Explicit `orbit` /
+/// `flyover` are honored; `auto` (or absent — older callers) selects the
+/// acoustic flyover for audio-only jobs on an audio-capable vehicle, and
+/// the carrot orbit for everything else (camera keeps the orbit).
+pub fn select_investigate_pattern(req: &InvestigateRequest, has_audio: bool) -> &'static str {
+    match req.pattern.as_str() {
+        investigate_pattern::ORBIT => investigate_pattern::ORBIT,
+        investigate_pattern::FLYOVER => investigate_pattern::FLYOVER,
+        _ => {
+            let audio_only =
+                !req.sensors.is_empty() && req.sensors.iter().all(|s| s == "audio");
+            if audio_only && has_audio {
+                investigate_pattern::FLYOVER
+            } else {
+                investigate_pattern::ORBIT
+            }
+        }
+    }
+}
+
+/// Compass bearing (degrees) from `from` toward `to`; 0 when co-located
+/// (the flyover's approach axis when the vehicle is already overhead).
+fn bearing_deg(from: (f64, f64), to: (f64, f64)) -> f64 {
+    let dn = (to.0 - from.0) * EARTH_M_PER_DEG_LAT;
+    let de = (to.1 - from.1) * m_per_deg_lon(from.0);
+    if dn.hypot(de) < 1.0 {
+        0.0
+    } else {
+        de.atan2(dn).to_degrees().rem_euclid(360.0)
+    }
+}
+
+/// Build the flyover waypoint list for an investigate request: approach
+/// along the vehicle's natural inbound bearing at the requested AGL, dip to
+/// the commandable floor (the closest legal pass for an omnidirectional
+/// mic), `turns` passes rotating cross-axis.
+fn flyover_points(
+    shared: &AgentShared,
+    req: &InvestigateRequest,
+) -> Result<Vec<(f64, f64, f64)>, String> {
+    let here = lock(&shared.backend)
+        .as_dyn_ref()
+        .position()
+        .unwrap_or((req.lat_deg, req.lon_deg, 0.0));
+    let approach = bearing_deg((here.0, here.1), (req.lat_deg, req.lon_deg));
+    let dip_agl = shared.agl_bounds.min_agl_m;
+    let passes = (req.turns.round() as usize).max(1);
+    let targets = uas_flight::patterns::flyover_targets(
+        Position::new(req.lat_deg, req.lon_deg, 0.0),
+        approach,
+        req.agl_m,
+        dip_agl,
+        req.radius_m.max(2.0),
+        passes,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(targets
+        .into_iter()
+        .map(|t| (t.position.lat, t.position.lon, t.position.alt))
+        .collect())
+}
+
+// ---------------------------------------------------------------------------
+// mission clock (freezes during sensor-override detours)
+// ---------------------------------------------------------------------------
+
+/// Mission-time clock: while a sensor-override detour owns the vehicle the
+/// clock freezes, so cruise deadlines and re-send schedules do not burn
+/// down against a suspended mission (the resumed cruise re-issues its
+/// target within one re-send period — "re-issue the pre-empted target").
+struct MissionClock {
+    last: tokio::time::Instant,
+    elapsed_s: f64,
+}
+
+impl MissionClock {
+    fn start() -> Self {
+        Self {
+            last: tokio::time::Instant::now(),
+            elapsed_s: 0.0,
+        }
+    }
+
+    /// Advance and return mission time; a paused interval contributes 0.
+    fn tick(&mut self, paused: bool) -> f64 {
+        let now = tokio::time::Instant::now();
+        if !paused {
+            self.elapsed_s += (now - self.last).as_secs_f64();
+        }
+        self.last = now;
+        self.elapsed_s
+    }
+}
+
+// ---------------------------------------------------------------------------
+// post-task idle policy (ROUND-3 §1)
+// ---------------------------------------------------------------------------
+
+/// Poll cadence while an `rtl-after` timer is armed.
+const IDLE_POLL: Duration = Duration::from_millis(250);
+
+/// Apply the configured post-task idle policy after a mission task ran to
+/// its natural end (`completed`/`timeout` — an aborted task means another
+/// command owns the vehicle). Called with the busy label already released;
+/// re-checks idleness so a task acked between completion and this call
+/// wins. Every branch journals its decision (`idle.policy`).
+pub(crate) fn apply_idle_policy(shared: &Arc<AgentShared>, after_task: &'static str) {
+    if shared.abort.load(Ordering::Relaxed) || !lock(&shared.busy).is_empty() {
+        return; // something else already owns the vehicle
+    }
+    match shared.idle_policy {
+        IdlePolicy::Hold => {
+            // The pre-round-3 behavior, now an explicit journaled decision.
+            shared.journal.event(
+                "idle.policy",
+                serde_json::json!({
+                    "policy": "hold", "after_task": after_task, "action": "hover",
+                }),
+            );
+        }
+        IdlePolicy::SlotHold => match shared.slot_agl_m {
+            Some(slot_agl_m) => {
+                {
+                    let mut backend = lock(&shared.backend);
+                    if let Some((lat, lon, _)) = backend.as_dyn_ref().position() {
+                        backend.as_dyn().goto(lat, lon, slot_agl_m, None);
+                    }
+                }
+                shared.journal.event(
+                    "idle.policy",
+                    serde_json::json!({
+                        "policy": "slot-hold", "after_task": after_task,
+                        "action": "climb-to-slot", "slot_agl_m": slot_agl_m,
+                    }),
+                );
+            }
+            None => {
+                shared.journal.event(
+                    "idle.policy",
+                    serde_json::json!({
+                        "policy": "slot-hold", "after_task": after_task,
+                        "action": "hover", "note": "no fleet slot; holding",
+                    }),
+                );
+            }
+        },
+        IdlePolicy::RtlAfter(after_s) => {
+            shared.journal.event(
+                "idle.policy",
+                serde_json::json!({
+                    "policy": "rtl-after", "after_task": after_task,
+                    "action": "armed", "after_s": after_s,
+                }),
+            );
+            let shared = shared.clone();
+            tokio::spawn(async move {
+                let deadline =
+                    tokio::time::Instant::now() + Duration::from_secs_f64(after_s);
+                loop {
+                    tokio::select! {
+                        () = shared.cancel.cancelled() => return,
+                        _ = tokio::time::sleep(IDLE_POLL) => {}
+                    }
+                    if shared.abort.load(Ordering::Relaxed) || !lock(&shared.busy).is_empty() {
+                        shared.journal.event(
+                            "idle.policy",
+                            serde_json::json!({ "policy": "rtl-after", "action": "cancelled" }),
+                        );
+                        return;
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        break;
+                    }
+                }
+                let smart = shared.smart_rtl;
+                if smart {
+                    *lock(&shared.busy) = "rtl".to_string();
+                    let _ = shared.commands.send(crate::AgentCommand::SmartRtl);
+                } else {
+                    lock(&shared.backend).as_dyn().rtl();
+                }
+                shared.journal.event(
+                    "idle.policy",
+                    serde_json::json!({
+                        "policy": "rtl-after", "action": "rtl",
+                        "after_s": after_s, "smart": smart,
+                    }),
+                );
+            });
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // lock-per-poll takeoff (fixes KNOWN-ISSUES #4)
 // ---------------------------------------------------------------------------
 
@@ -810,7 +1085,7 @@ pub(crate) async fn run_raster(shared: Arc<AgentShared>, req: RasterRequest, pla
         return;
     }
 
-    let t0 = tokio::time::Instant::now();
+    let mut clock = MissionClock::start();
     let mut flight = RasterFlight::new(plan, 0.0);
     let mut interval = tokio::time::interval(CONTROL_TICK);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -824,7 +1099,25 @@ pub(crate) async fn run_raster(shared: Arc<AgentShared>, req: RasterRequest, pla
         if interrupted(&shared, LABEL) {
             break FlightOutcome::Aborted;
         }
-        let now_s = t0.elapsed().as_secs_f64();
+        // A sensor-override detour owns the vehicle: freeze the state
+        // machine (no target commands, mission clock paused) and keep the
+        // status stream fresh; the next cruise re-send after resume
+        // re-issues the pre-empted target (v2 override fly-capture-resume).
+        let paused = shared.detour.load(Ordering::Relaxed);
+        let now_s = clock.tick(paused);
+        if paused {
+            if last_status.elapsed() >= Duration::from_secs(1) {
+                status.push(
+                    search_state::SEARCHING,
+                    flight.leg() as u64,
+                    flight.frames,
+                    "paused: sensor-override detour",
+                    &recent_frames,
+                );
+                last_status = tokio::time::Instant::now();
+            }
+            continue;
+        }
         let outcome = {
             let mut backend = lock(&shared.backend);
             flight.tick(now_s, backend.as_dyn(), &mut events)
@@ -912,15 +1205,21 @@ pub(crate) async fn run_raster(shared: Arc<AgentShared>, req: RasterRequest, pla
     );
     info!(outcome = outcome.as_str(), frames = flight.frames, "raster search finished");
     clear_busy(&shared, LABEL);
+    if matches!(outcome, FlightOutcome::Completed | FlightOutcome::TimedOut) {
+        apply_idle_policy(&shared, LABEL);
+    }
 }
 
 /// v2 investigate cruise speed when the request carries no constraint.
 const INVESTIGATE_SPEED_M_S: f64 = 3.0;
 
 /// Fly an accepted investigate request (busy label `"investigate"` is
-/// already set and the abort flag cleared by the ack handler).
+/// already set and the abort flag cleared by the ack handler). The flight
+/// pattern is selected by [`select_investigate_pattern`]: carrot orbit for
+/// camera work, acoustic flyover for audio-only jobs.
 pub(crate) async fn run_investigate(shared: Arc<AgentShared>, req: InvestigateRequest) {
     const LABEL: &str = "investigate";
+    let pattern = select_investigate_pattern(&req, shared.extras.iter().any(|e| e == "audio"));
     shared.journal.event(
         "investigate.started",
         serde_json::json!({
@@ -931,43 +1230,16 @@ pub(crate) async fn run_investigate(shared: Arc<AgentShared>, req: InvestigateRe
             "radius_m": req.radius_m,
             "turns": req.turns,
             "sensors": req.sensors,
+            "pattern": pattern,
         }),
     );
     lock(&shared.backend).as_dyn().set_cruise_speed(INVESTIGATE_SPEED_M_S);
 
     let outcome = if ensure_airborne(&shared, req.agl_m, LABEL).await {
-        let turns = if req.turns > 0.0 { req.turns } else { 1.0 };
-        let mut flight = OrbitFlight::new(
-            (req.lat_deg, req.lon_deg),
-            req.radius_m,
-            req.agl_m,
-            turns,
-            INVESTIGATE_SPEED_M_S,
-        );
-        let t0 = tokio::time::Instant::now();
-        let mut interval = tokio::time::interval(CONTROL_TICK);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut events = Vec::new();
-        loop {
-            interval.tick().await;
-            if interrupted(&shared, LABEL) {
-                break FlightOutcome::Aborted;
-            }
-            let now_s = t0.elapsed().as_secs_f64();
-            let outcome = {
-                let mut backend = lock(&shared.backend);
-                flight.tick(now_s, backend.as_dyn(), &mut events)
-            };
-            for event in events.drain(..) {
-                if event == MissionEvent::OrbitEntered {
-                    shared
-                        .journal
-                        .event("investigate.orbit_entered", serde_json::json!({}));
-                }
-            }
-            if let Some(outcome) = outcome {
-                break outcome;
-            }
+        if pattern == investigate_pattern::FLYOVER {
+            fly_flyover(&shared, &req, LABEL).await
+        } else {
+            fly_orbit(&shared, &req, LABEL).await
         }
     } else {
         shared.journal.event(
@@ -982,10 +1254,98 @@ pub(crate) async fn run_investigate(shared: Arc<AgentShared>, req: InvestigateRe
         serde_json::json!({
             "mission_id": req.mission_id,
             "outcome": outcome.as_str(),
+            "pattern": pattern,
         }),
     );
-    info!(outcome = outcome.as_str(), "investigate finished");
+    info!(outcome = outcome.as_str(), pattern, "investigate finished");
     clear_busy(&shared, LABEL);
+    if matches!(outcome, FlightOutcome::Completed | FlightOutcome::TimedOut) {
+        apply_idle_policy(&shared, LABEL);
+    }
+}
+
+/// The v2 carrot-orbit leg of [`run_investigate`].
+async fn fly_orbit(shared: &Arc<AgentShared>, req: &InvestigateRequest, label: &str) -> FlightOutcome {
+    let turns = if req.turns > 0.0 { req.turns } else { 1.0 };
+    let mut flight = OrbitFlight::new(
+        (req.lat_deg, req.lon_deg),
+        req.radius_m,
+        req.agl_m,
+        turns,
+        INVESTIGATE_SPEED_M_S,
+    );
+    let t0 = tokio::time::Instant::now();
+    let mut interval = tokio::time::interval(CONTROL_TICK);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut events = Vec::new();
+    loop {
+        interval.tick().await;
+        if interrupted(shared, label) {
+            break FlightOutcome::Aborted;
+        }
+        let now_s = t0.elapsed().as_secs_f64();
+        let outcome = {
+            let mut backend = lock(&shared.backend);
+            flight.tick(now_s, backend.as_dyn(), &mut events)
+        };
+        for event in events.drain(..) {
+            if event == MissionEvent::OrbitEntered {
+                shared
+                    .journal
+                    .event("investigate.orbit_entered", serde_json::json!({}));
+            }
+        }
+        if let Some(outcome) = outcome {
+            break outcome;
+        }
+    }
+}
+
+/// The acoustic-flyover leg of [`run_investigate`]: transit at the request
+/// AGL, dip to the commandable floor over the target, climb out —
+/// `turns` passes rotating cross-axis (uas-flight `flyover_targets`).
+async fn fly_flyover(
+    shared: &Arc<AgentShared>,
+    req: &InvestigateRequest,
+    label: &str,
+) -> FlightOutcome {
+    let points = match flyover_points(shared, req) {
+        Ok(points) => points,
+        Err(err) => {
+            // Geometry rejected (should have been caught at ack): journaled
+            // and treated like a failed flight, not a panic.
+            shared
+                .journal
+                .event("investigate.flyover_rejected", serde_json::json!({ "error": err }));
+            return FlightOutcome::TimedOut;
+        }
+    };
+    shared.journal.event(
+        "investigate.flyover",
+        serde_json::json!({
+            "waypoints": points.len(),
+            "dip_agl_m": shared.agl_bounds.min_agl_m,
+            "cruise_agl_m": req.agl_m,
+        }),
+    );
+    let mut flight = WaypointFlight::new(points, INVESTIGATE_SPEED_M_S, 0.0);
+    let t0 = tokio::time::Instant::now();
+    let mut interval = tokio::time::interval(CONTROL_TICK);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        interval.tick().await;
+        if interrupted(shared, label) {
+            break FlightOutcome::Aborted;
+        }
+        let now_s = t0.elapsed().as_secs_f64();
+        let outcome = {
+            let mut backend = lock(&shared.backend);
+            flight.tick(now_s, backend.as_dyn())
+        };
+        if let Some(outcome) = outcome {
+            break outcome;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1230,37 +1590,24 @@ mod tests {
     /// The async runner honors the abort flag within one control cycle and
     /// publishes the aborted search state (agent-shared plumbing, sim
     /// backend, paused tokio time).
-    #[tokio::test(start_paused = true)]
-    async fn raster_runner_aborts_within_one_cycle() {
-        let (journal, _task) = crate::journal::spawn("wuas-77", None, None, None);
+    /// Bench agent shared state over a sim backend, with the sim motion
+    /// ticker the agent itself would spawn. `customize` runs before the
+    /// shared state is frozen behind the `Arc`.
+    fn bench_shared_with(
+        vehicle_id: &str,
+        busy: &str,
+        log_dir: Option<std::path::PathBuf>,
+        customize: impl FnOnce(&mut AgentShared),
+    ) -> (Arc<AgentShared>, crate::SharedBackend) {
+        let (journal, _task) = crate::journal::spawn(vehicle_id, log_dir, None, None);
         let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel();
         let sim = SimFlightBackend::new(ORIGIN.0, ORIGIN.1);
         let backend: crate::SharedBackend =
             Arc::new(std::sync::Mutex::new(Box::new(sim) as Box<dyn crate::TickableBackend>));
-        let shared = Arc::new(AgentShared {
-            vehicle_id: "wuas-77".into(),
-            backend: backend.clone(),
-            busy: std::sync::Mutex::new("raster-search".into()),
-            abort: std::sync::atomic::AtomicBool::new(false),
-            agl_bounds: Default::default(),
-            max_range_m: 300.0,
-            audio_range_m: 30.0,
-            smart_rtl: false,
-            latest_telemetry: std::sync::Mutex::new(None),
-            latest_coord: std::sync::Mutex::new(Bytes::from_static(b"[]")),
-            latest_search: std::sync::Mutex::new(None),
-            latest_state: std::sync::Mutex::new(None),
-            fallback_home: std::sync::Mutex::new(None),
-            latest_video: std::sync::Mutex::new(None),
-            latest_sensor: std::sync::Mutex::new(None),
-            sensor_feed: None,
-            frames: None,
-            video_session: std::sync::Mutex::new(None),
-            cancel: tokio_util::sync::CancellationToken::new(),
-            journal,
-            commands: cmd_tx,
-        });
-        // Motion ticker (the agent spawns the same loop for sim endpoints).
+        let mut shared = AgentShared::bench(vehicle_id, backend.clone(), journal, cmd_tx);
+        customize(&mut shared);
+        *lock(&shared.busy) = busy.to_string();
+        let shared = Arc::new(shared);
         {
             let backend = backend.clone();
             tokio::spawn(async move {
@@ -1271,6 +1618,36 @@ mod tests {
                 }
             });
         }
+        (shared, backend)
+    }
+
+    fn bench_shared(vehicle_id: &str, busy: &str) -> (Arc<AgentShared>, crate::SharedBackend) {
+        bench_shared_with(vehicle_id, busy, None, |_| {})
+    }
+
+    /// Parse every journal line from a bench journal directory.
+    fn journal_lines(dir: &std::path::Path) -> Vec<serde_json::Value> {
+        let mut lines = Vec::new();
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let text = std::fs::read_to_string(entry.path()).unwrap_or_default();
+            lines.extend(text.lines().filter_map(|l| serde_json::from_str(l).ok()));
+        }
+        lines
+    }
+
+    fn temp_log_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "muas-mission-test-{tag}-{}-{}",
+            std::process::id(),
+            crate::telemetry::gps_time_ns()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn raster_runner_aborts_within_one_cycle() {
+        let (shared, _backend) = bench_shared("wuas-77", "raster-search");
         let req = raster_req(300.0, 200.0, 25.0, 20.0); // big: stays running
         let plan = plan_raster(&req).unwrap();
         let runner = tokio::spawn(run_raster(shared.clone(), req, plan));
@@ -1296,5 +1673,418 @@ mod tests {
         // The runner still owned the label (nothing re-labelled), so it
         // cleared it on the way out.
         assert_eq!(*lock(&shared.busy), "");
+    }
+
+    /// Poll `predicate` every 100 ms of (paused) tokio time until it holds.
+    async fn wait_until(budget_s: f64, mut predicate: impl FnMut() -> bool) -> bool {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(budget_s);
+        loop {
+            if predicate() {
+                return true;
+            }
+            if tokio::time::Instant::now() > deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    fn investigate_req(sensors: &[&str], pattern: &str, north_m: f64) -> InvestigateRequest {
+        InvestigateRequest {
+            lat_deg: ORIGIN.0 + north_m / EARTH_M_PER_DEG_LAT,
+            lon_deg: ORIGIN.1,
+            agl_m: 8.0,
+            radius_m: 6.0,
+            turns: 1.0,
+            sensors: sensors.iter().map(|s| s.to_string()).collect(),
+            mission_id: "m-test".into(),
+            pattern: pattern.into(),
+        }
+    }
+
+    #[test]
+    fn pattern_selection_by_sensor_and_capability() {
+        use muas_contracts::services::investigate_pattern as p;
+        // auto + audio-only + mic fitted -> flyover
+        assert_eq!(select_investigate_pattern(&investigate_req(&["audio"], "", 0.0), true), p::FLYOVER);
+        assert_eq!(select_investigate_pattern(&investigate_req(&["audio"], p::AUTO, 0.0), true), p::FLYOVER);
+        // camera (or mixed) keeps the carrot orbit
+        assert_eq!(select_investigate_pattern(&investigate_req(&["camera"], "", 0.0), true), p::ORBIT);
+        assert_eq!(
+            select_investigate_pattern(&investigate_req(&["camera", "audio"], "", 0.0), true),
+            p::ORBIT
+        );
+        // no sensors requested: orbit (legacy dispatch)
+        assert_eq!(select_investigate_pattern(&investigate_req(&[], "", 0.0), true), p::ORBIT);
+        // audio-only but no mic capability: orbit
+        assert_eq!(select_investigate_pattern(&investigate_req(&["audio"], "", 0.0), false), p::ORBIT);
+        // explicit pattern always wins
+        assert_eq!(select_investigate_pattern(&investigate_req(&["camera"], p::FLYOVER, 0.0), false), p::FLYOVER);
+        assert_eq!(select_investigate_pattern(&investigate_req(&["audio"], p::ORBIT, 0.0), true), p::ORBIT);
+    }
+
+    #[test]
+    fn waypoint_flight_flies_the_flyover_profile_with_dips() {
+        // Flyover 40 m north of the origin: cruise 8, dip 3.5, radius 6.
+        let center_lat = ORIGIN.0 + 40.0 / EARTH_M_PER_DEG_LAT;
+        let targets = uas_flight::patterns::flyover_targets(
+            Position::new(center_lat, ORIGIN.1, 0.0),
+            0.0,
+            8.0,
+            3.5,
+            6.0,
+            2,
+        )
+        .unwrap();
+        let points: Vec<(f64, f64, f64)> = targets
+            .into_iter()
+            .map(|t| (t.position.lat, t.position.lon, t.position.alt))
+            .collect();
+        assert_eq!(points.len(), 10, "5 waypoints per pass, 2 passes");
+
+        let mut sim = SimFlightBackend::new(ORIGIN.0, ORIGIN.1);
+        assert!(sim.ensure_airborne(8.0));
+        sim.set_cruise_speed(4.0);
+        let mut flight = WaypointFlight::new(points, 4.0, 0.0);
+        let mut now = 0.0;
+        let mut min_agl_near_center = f64::MAX;
+        let outcome = loop {
+            if let Some(outcome) = flight.tick(now, &mut sim) {
+                break outcome;
+            }
+            sim.advance(SIM_TICK_S);
+            now += SIM_TICK_S;
+            let (lat, lon, agl) = sim.position().unwrap();
+            if dist_m((lat, lon), (center_lat, ORIGIN.1)) < 2.0 {
+                min_agl_near_center = min_agl_near_center.min(agl);
+            }
+            assert!(now < 600.0, "flyover never completed");
+        };
+        assert_eq!(outcome, FlightOutcome::Completed);
+        // The vehicle actually dipped over the target...
+        assert!(
+            min_agl_near_center < 4.5,
+            "no dip over the center (min {min_agl_near_center:.1} m)"
+        );
+        // ...and climbed back out to cruise by the end.
+        let (_, _, agl) = sim.position().unwrap();
+        assert!((agl - 8.0).abs() < 1.0, "ended at {agl:.1} m, expected cruise 8");
+    }
+
+    /// End-to-end: an audio-only investigate flies the flyover, and the
+    /// rtl-after idle policy engages once the vehicle has idled the
+    /// configured time (journaled decision, native RTL without a fleet).
+    #[tokio::test(start_paused = true)]
+    async fn audio_investigate_flies_flyover_then_rtl_after_idles_home() {
+        let dir = temp_log_dir("flyover-rtl");
+        let (shared, backend) = bench_shared_with("iuas-77", "investigate", Some(dir.clone()), |s| {
+            s.extras = vec!["orbit".into(), "audio".into()];
+            s.idle_policy = IdlePolicy::RtlAfter(2.0);
+        });
+        let req = investigate_req(&["audio"], "", 40.0);
+        let runner = tokio::spawn(run_investigate(shared.clone(), req));
+        assert!(
+            wait_until(300.0, || runner.is_finished()).await,
+            "investigate never finished"
+        );
+        assert_eq!(*lock(&shared.busy), "", "vehicle released after the flight");
+
+        // The rtl-after timer runs while the vehicle idles.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let mode = lock(&backend).as_dyn_ref().telemetry().mode;
+        assert_eq!(mode, "RTL", "rtl-after engaged native RTL");
+
+        shared.journal.sync().await;
+        let lines = journal_lines(&dir);
+        let started = lines.iter().find(|l| l["kind"] == "investigate.started").unwrap();
+        assert_eq!(started["pattern"], "flyover");
+        assert!(lines.iter().any(|l| l["kind"] == "investigate.flyover"));
+        let finished = lines.iter().find(|l| l["kind"] == "investigate.finished").unwrap();
+        assert_eq!(finished["outcome"], "completed");
+        // The idle decision is journaled: armed, then fired.
+        assert!(lines
+            .iter()
+            .any(|l| l["kind"] == "idle.policy" && l["action"] == "armed"));
+        let fired = lines
+            .iter()
+            .find(|l| l["kind"] == "idle.policy" && l["action"] == "rtl")
+            .expect("rtl decision journaled");
+        assert_eq!(fired["smart"], false);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rtl_after_cancels_when_a_new_task_claims_the_vehicle() {
+        let dir = temp_log_dir("rtl-cancel");
+        let (shared, backend) = bench_shared_with("iuas-78", "", Some(dir.clone()), |s| {
+            s.idle_policy = IdlePolicy::RtlAfter(5.0);
+        });
+        lock(&backend).as_dyn().ensure_airborne(8.0);
+        apply_idle_policy(&shared, "investigate");
+        // A new task arrives inside the window: the timer must stand down.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        *lock(&shared.busy) = "raster-search".to_string();
+        tokio::time::sleep(Duration::from_secs(6)).await;
+        assert_eq!(lock(&backend).as_dyn_ref().telemetry().mode, "GUIDED");
+        shared.journal.sync().await;
+        let lines = journal_lines(&dir);
+        assert!(lines
+            .iter()
+            .any(|l| l["kind"] == "idle.policy" && l["action"] == "cancelled"));
+        assert!(!lines.iter().any(|l| l["kind"] == "idle.policy" && l["action"] == "rtl"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn slot_hold_climbs_to_the_fleet_slot() {
+        let (shared, backend) = bench_shared_with("iuas-79", "", None, |s| {
+            s.idle_policy = IdlePolicy::SlotHold;
+            s.slot_agl_m = Some(11.0);
+        });
+        lock(&backend).as_dyn().ensure_airborne(8.0);
+        apply_idle_policy(&shared, "investigate");
+        assert!(
+            wait_until(30.0, || {
+                (lock(&backend).as_dyn_ref().telemetry().agl_m - 11.0).abs() < 0.5
+            })
+            .await,
+            "never climbed to the 11 m slot"
+        );
+    }
+
+    /// The v2 override contract, end to end: a running raster is suspended
+    /// (not aborted), the vehicle flies to the picked point, captures
+    /// there, and the raster resumes and completes with every planned
+    /// capture — while the ack said exactly that up front.
+    #[tokio::test(start_paused = true)]
+    async fn override_detour_pauses_raster_captures_at_point_and_resumes() {
+        use muas_contracts::services::{sensor_mode, SensorRequest, VehicleService};
+
+        let dir = temp_log_dir("override");
+        let (shared, backend) = bench_shared_with("wuas-88", "raster-search", Some(dir.clone()), |s| {
+            let feed = crate::sensor::SyntheticFeed::new(
+                &crate::sensor::SensorFeedConfig::synthetic(),
+                false,
+                30.0,
+            )
+            .unwrap();
+            s.sensor_feed = Some(Arc::new(feed));
+        });
+        let req = raster_req(120.0, 60.0, 20.0, 15.0);
+        let plan = plan_raster(&req).unwrap();
+        let capture_total = plan.capture_count();
+        let runner = tokio::spawn(run_raster(shared.clone(), req, plan));
+
+        // Let the search actually start sweeping.
+        assert!(
+            wait_until(60.0, || {
+                lock(&shared.latest_search)
+                    .as_ref()
+                    .and_then(|b| serde_json::from_slice::<SearchStatus>(b).ok())
+                    .is_some_and(|s| s.state == search_state::SEARCHING)
+            })
+            .await,
+            "raster never started searching"
+        );
+
+        // Operator picks a point 30 m east: override = fly-capture-resume.
+        let point = (ORIGIN.0, ORIGIN.1 + 30.0 / m_per_deg_lon(ORIGIN.0));
+        let service = crate::service_impl::VehicleServiceImpl::new(shared.clone());
+        let ack = service
+            .sensor_capture(SensorRequest {
+                sensor: "camera".into(),
+                mode: sensor_mode::OVERRIDE.into(),
+                lat_deg: point.0,
+                lon_deg: point.1,
+                ..SensorRequest::default()
+            })
+            .await;
+        assert!(ack.accepted, "override refused: {}", ack.detail);
+        assert!(
+            ack.detail.contains("flying to point") && ack.detail.contains("resuming raster"),
+            "ack must say what will happen: '{}'",
+            ack.detail
+        );
+        assert!(shared.detour.load(Ordering::Relaxed), "detour armed");
+
+        // A second override while one is flying is refused busy.
+        let second = service
+            .sensor_capture(SensorRequest {
+                sensor: "camera".into(),
+                mode: sensor_mode::OVERRIDE.into(),
+                lat_deg: point.0,
+                lon_deg: point.1,
+                ..SensorRequest::default()
+            })
+            .await;
+        assert!(!second.accepted);
+        assert_eq!(second.code, "busy");
+
+        // The capture happens AT the picked point (result lands on
+        // sensor/last the moment the capture executes there).
+        assert!(
+            wait_until(120.0, || lock(&shared.latest_sensor).is_some()).await,
+            "override capture never produced a result"
+        );
+        let (lat, lon, _) = lock(&backend).as_dyn_ref().position().unwrap();
+        assert!(
+            dist_m((lat, lon), point) < 6.0,
+            "capture fired {:.1} m from the picked point",
+            dist_m((lat, lon), point)
+        );
+        let result: serde_json::Value =
+            serde_json::from_slice(lock(&shared.latest_sensor).as_ref().unwrap()).unwrap();
+        assert_eq!(result["sensor"], "camera");
+
+        // The raster RESUMED (not aborted) and completed every capture.
+        assert!(
+            wait_until(600.0, || runner.is_finished()).await,
+            "raster never finished after the detour"
+        );
+        let status: SearchStatus =
+            serde_json::from_slice(lock(&shared.latest_search).as_ref().unwrap()).unwrap();
+        assert_eq!(status.state, search_state::DONE, "raster resumed to completion");
+        assert_eq!(status.frames_captured as usize, capture_total);
+        assert!(!shared.detour.load(Ordering::Relaxed), "detour released");
+        assert_eq!(*lock(&shared.busy), "");
+
+        shared.journal.sync().await;
+        let lines = journal_lines(&dir);
+        assert!(lines.iter().any(|l| l["kind"] == "sensor.override.started"));
+        let finished = lines
+            .iter()
+            .find(|l| l["kind"] == "sensor.override.finished")
+            .expect("override finish journaled");
+        assert_eq!(finished["resumed_task"], "raster-search");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn override_is_rejected_mid_investigation_and_on_the_ground() {
+        use muas_contracts::services::{sensor_mode, SensorRequest, VehicleService};
+        // Mid-investigation: the pinned v2 rejection.
+        let (shared, backend) = bench_shared("iuas-90", "investigate");
+        lock(&backend).as_dyn().ensure_airborne(8.0);
+        let service = crate::service_impl::VehicleServiceImpl::new(shared);
+        let ack = service
+            .sensor_capture(SensorRequest {
+                sensor: "camera".into(),
+                mode: sensor_mode::OVERRIDE.into(),
+                lat_deg: ORIGIN.0,
+                lon_deg: ORIGIN.1,
+                ..SensorRequest::default()
+            })
+            .await;
+        assert!(!ack.accepted);
+        assert_eq!(ack.code, "busy");
+
+        // Idle but on the ground: a detour must not launch a vehicle.
+        // (Feed fitted — no-feed vehicles keep the documented stub ack.)
+        let (shared, _backend) = bench_shared_with("iuas-91", "", None, |s| {
+            let feed = crate::sensor::SyntheticFeed::new(
+                &crate::sensor::SensorFeedConfig::synthetic(),
+                false,
+                30.0,
+            )
+            .unwrap();
+            s.sensor_feed = Some(Arc::new(feed));
+        });
+        let service = crate::service_impl::VehicleServiceImpl::new(shared.clone());
+        let ack = service
+            .sensor_capture(SensorRequest {
+                sensor: "camera".into(),
+                mode: sensor_mode::OVERRIDE.into(),
+                lat_deg: ORIGIN.0,
+                lon_deg: ORIGIN.1,
+                ..SensorRequest::default()
+            })
+            .await;
+        assert!(!ack.accepted);
+        assert_eq!(ack.code, "not-airborne");
+        assert_eq!(*lock(&shared.busy), "", "refusal must not occupy the vehicle");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn watchpoint_fires_in_passing_and_expires_without_a_pass() {
+        use muas_contracts::services::{sensor_mode, SensorRequest, VehicleService};
+
+        // (a) fires when the vehicle passes within the radius
+        let dir = temp_log_dir("watchpoint");
+        let (shared, backend) = bench_shared_with("iuas-92", "", Some(dir.clone()), |s| {
+            let feed = crate::sensor::SyntheticFeed::new(
+                &crate::sensor::SensorFeedConfig::synthetic(),
+                false,
+                30.0,
+            )
+            .unwrap();
+            s.sensor_feed = Some(Arc::new(feed));
+        });
+        lock(&backend).as_dyn().ensure_airborne(8.0);
+        let service = crate::service_impl::VehicleServiceImpl::new(shared.clone());
+        let watch = (ORIGIN.0 + 40.0 / EARTH_M_PER_DEG_LAT, ORIGIN.1);
+        let ack = service
+            .sensor_capture(SensorRequest {
+                sensor: "camera".into(),
+                mode: sensor_mode::OPPORTUNISTIC.into(),
+                lat_deg: watch.0,
+                lon_deg: watch.1,
+                radius_m: 12.0,
+                expiry_s: 300.0,
+                ..SensorRequest::default()
+            })
+            .await;
+        assert!(ack.accepted);
+        assert!(ack.detail.contains("watchpoint armed"), "detail: {}", ack.detail);
+        // Fly a leg straight through the watchpoint.
+        lock(&backend)
+            .as_dyn()
+            .goto(ORIGIN.0 + 80.0 / EARTH_M_PER_DEG_LAT, ORIGIN.1, 8.0, None);
+        assert!(
+            wait_until(120.0, || lock(&shared.latest_sensor).is_some()).await,
+            "watchpoint never fired"
+        );
+        shared.journal.sync().await;
+        let lines = journal_lines(&dir);
+        assert!(lines.iter().any(|l| l["kind"] == "sensor.watchpoint.armed"));
+        assert!(lines.iter().any(|l| l["kind"] == "sensor.watchpoint.fired"));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // (b) expires without a pass; the outcome is surfaced
+        let dir = temp_log_dir("watchpoint-exp");
+        let (shared, backend) = bench_shared_with("iuas-93", "", Some(dir.clone()), |s| {
+            let feed = crate::sensor::SyntheticFeed::new(
+                &crate::sensor::SensorFeedConfig::synthetic(),
+                false,
+                30.0,
+            )
+            .unwrap();
+            s.sensor_feed = Some(Arc::new(feed));
+        });
+        lock(&backend).as_dyn().ensure_airborne(8.0);
+        let service = crate::service_impl::VehicleServiceImpl::new(shared.clone());
+        let ack = service
+            .sensor_capture(SensorRequest {
+                sensor: "camera".into(),
+                mode: sensor_mode::OPPORTUNISTIC.into(),
+                lat_deg: ORIGIN.0 + 200.0 / EARTH_M_PER_DEG_LAT,
+                lon_deg: ORIGIN.1,
+                radius_m: 10.0,
+                expiry_s: 2.0,
+                ..SensorRequest::default()
+            })
+            .await;
+        assert!(ack.accepted);
+        assert!(
+            wait_until(30.0, || lock(&shared.latest_sensor).is_some()).await,
+            "expiry never surfaced"
+        );
+        let result: serde_json::Value =
+            serde_json::from_slice(lock(&shared.latest_sensor).as_ref().unwrap()).unwrap();
+        assert_eq!(result["status"], "expired");
+        shared.journal.sync().await;
+        assert!(journal_lines(&dir)
+            .iter()
+            .any(|l| l["kind"] == "sensor.watchpoint.expired"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

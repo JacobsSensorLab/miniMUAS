@@ -13,9 +13,14 @@
 //! 3. **Mission state machine** — detect→confirm→queue→dispatch, the brain
 //!    the agents deliberately don't have ([`mission`]).
 //!
-//! Recording: every JSON broadcast lands in a power-loss-safe JSONL via
-//! uas-console's `Recorder`; `/replays` serves the index and the files, and
-//! replay is frontend-driven through the same `dispatch()` handlers.
+//! Recording: session-scoped power-loss-safe JSONL via uas-console's
+//! `Recorder` — armed at mission start (or the explicit Record button),
+//! finalized at mission end / RTL-all / explicit stop, named
+//! `<run>-<mission>-<t>.jsonl`; an idle dashboard records nothing.
+//! Recordings are derived UI artifacts (the broadcast stream the operator
+//! saw); the per-vehicle journal chains remain the durable truth.
+//! `/replays` serves the index and the files, and replay is frontend-driven
+//! through the same `dispatch()` handlers.
 
 pub mod config;
 pub mod detect;
@@ -97,7 +102,7 @@ impl Dashboard {
         mission_cfg.search_margin_s = config.search_margin_s;
         let vehicles = config.vehicles();
         Self {
-            hub: hub::Hub::new(config.record_dir.clone()),
+            hub: hub::Hub::new(config.record_dir.clone(), &config.run_name),
             mission: Mutex::new(Mission::new(mission_cfg)),
             last_sample: Mutex::new(HashMap::new()),
             sensor_data: Mutex::new(Vec::new()),
@@ -185,6 +190,7 @@ impl Dashboard {
             "sensor_meta": sensor_meta,
             "sensor_data": *lock(&self.sensor_data),
             "mission": m.hello_mission(),
+            "recording": self.hub.is_recording(),
         });
         // Sim capability flag: present ONLY when a virtual deployment
         // attached itself — gates the UI's anomaly-placement tool.
@@ -224,6 +230,50 @@ impl Dashboard {
         self.hub.broadcast(&json!({ "type": "sensor_data", "item": item }));
     }
 
+    // ── recording sessions ──────────────────────────────────────────────────
+
+    /// Arm a recording session (mission start / explicit Record). Emits
+    /// `record.started` only on a fresh arm — re-arming an open session
+    /// (e.g. a mission starting under a manual recording) is silent.
+    ///
+    /// Recordings are derived UI artifacts (the operator's broadcast
+    /// stream); the per-vehicle journal chains stay the durable truth.
+    pub fn arm_recording(&self, label: &str) {
+        let was_recording = self.hub.is_recording();
+        if let Some(name) = self.hub.arm(label) {
+            if !was_recording {
+                self.emit_event("record.started", json!({ "name": name }));
+            }
+        }
+    }
+
+    /// Finalize the recording session (mission end / RTL-all / explicit
+    /// stop). The `record.stopped` event is broadcast first so it is the
+    /// recording's last line. No-op while idle.
+    pub fn finalize_recording(&self) {
+        if !self.hub.is_recording() {
+            return;
+        }
+        let name = self
+            .hub
+            .recording_path()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+        self.emit_event("record.stopped", json!({ "name": name }));
+        self.hub.finalize();
+    }
+
+    /// Finalize when an operator command just aborted a live mission
+    /// (searcher RTL/Land mid-search, or any RTL/Land/Hold-all).
+    fn finalize_if_aborted(&self, was_live: bool) {
+        if was_live && self.mission_state() == "aborted" {
+            self.finalize_recording();
+        }
+    }
+
+    fn mission_live(&self) -> bool {
+        matches!(self.mission_state().as_str(), "searching" | "investigating")
+    }
+
     // ── action executor ─────────────────────────────────────────────────────
 
     /// Execute the mission machine's actions: broadcast emissions, fan out
@@ -232,11 +282,27 @@ impl Dashboard {
         for action in actions {
             match action {
                 Action::Emit(message) => {
-                    if message.get("type") == Some(&json!("event")) {
+                    let kind = if message.get("type") == Some(&json!("event")) {
                         let kind = message.get("kind").and_then(Value::as_str).unwrap_or("");
                         tracing::info!(target: "dash", kind, "event");
+                        kind.to_string()
+                    } else {
+                        String::new()
+                    };
+                    // Session-scoped recording: arm BEFORE broadcasting
+                    // mission.started (it must be the first recorded line)…
+                    if kind == "mission.started" {
+                        let label = message
+                            .get("mission_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("mission");
+                        self.arm_recording(label);
                     }
                     self.hub.broadcast(&message);
+                    // …and finalize AFTER mission.completed lands.
+                    if kind == "mission.completed" {
+                        self.finalize_recording();
+                    }
                 }
                 Action::SensorData(item) => self.add_sensor_data(item),
                 Action::Detect { mission_id, frame, seq: _, object_query } => {
@@ -361,6 +427,14 @@ impl Dashboard {
                 let actions = self.with_mission(|m| m.set_enabled(vid, enabled));
                 self.apply_actions(actions);
             }
+            "record" => {
+                // Explicit Record button: arm/stop a manual session.
+                match message.get("action").and_then(Value::as_str).unwrap_or("") {
+                    "start" => self.arm_recording("manual"),
+                    "stop" => self.finalize_recording(),
+                    _ => {}
+                }
+            }
             "flight" => self.cmd_flight(message),
             "all" => self.cmd_all(message),
             "video" => self.cmd_video(message),
@@ -397,35 +471,59 @@ impl Dashboard {
             );
             return;
         }
+        let was_live = self.mission_live();
         self.with_mission(|m| m.note_flight_command(&vid, command));
         self.send_flight(vid, command.to_string(), message.get("params").cloned());
+        // Searcher RTL/Land aborted the mission: the recording session ends
+        // with the abort command it just captured.
+        self.finalize_if_aborted(was_live);
     }
 
     fn send_flight(self: &Arc<Self>, vid: String, command: String, params: Option<Value>) {
-        self.emit_event("command.sent", json!({ "vehicle": vid, "command": command }));
+        // Correlation id for the per-command lifecycle strip
+        // (sent → acked/refused → outcome) in the UI.
+        let id = format!("cmd-{}", hub::now_ns() / 1_000_000 % 100_000_000_000);
+        self.emit_event(
+            "command.sent",
+            json!({ "id": id, "vehicle": vid, "command": command }),
+        );
         let agl = params
             .as_ref()
             .and_then(|p| p.get("target_agl_m"))
             .and_then(Value::as_f64);
         let dash = self.clone();
         tokio::spawn(async move {
+            // `detail` is the provider's free-form note and rides its own
+            // field; `error` appears ONLY on a refusal/transport failure —
+            // an accepted ack's note must never render as an error.
             match dash.commander.flight(vid.clone(), command.clone(), agl).await {
-                CmdResult::Ack(ack) => dash.emit_event(
-                    "command.result",
-                    json!({
+                CmdResult::Ack(ack) => {
+                    let mut m = json!({
+                        "id": id,
                         "vehicle": vid,
                         "command": command,
                         "ok": ack.accepted,
-                        "error": ack.detail,
-                    }),
-                ),
+                        "detail": ack.detail,
+                    });
+                    if !ack.accepted {
+                        m["error"] = json!(ack.detail);
+                    }
+                    dash.emit_event("command.result", m);
+                }
                 CmdResult::Timeout => dash.emit_event(
                     "command.timeout",
-                    json!({ "vehicle": vid, "command": command }),
+                    json!({ "id": id, "vehicle": vid, "command": command }),
                 ),
                 CmdResult::Error(err) => dash.emit_event(
                     "command.result",
-                    json!({ "vehicle": vid, "command": command, "ok": false, "error": err }),
+                    json!({
+                        "id": id,
+                        "vehicle": vid,
+                        "command": command,
+                        "ok": false,
+                        "detail": err,
+                        "error": err,
+                    }),
                 ),
             }
         });
@@ -436,10 +534,14 @@ impl Dashboard {
         if !matches!(command, "rtl" | "land" | "hold") {
             return;
         }
+        let was_live = self.mission_live();
         self.with_mission(mission::Mission::note_all_command);
         for vid in self.vehicles() {
             self.send_flight(vid, command.to_string(), None);
         }
+        // RTL/Land/Hold-all ends the mission AND its recording session (the
+        // command.sent lines above are its final captured moments).
+        self.finalize_if_aborted(was_live);
     }
 
     fn cmd_video(self: &Arc<Self>, message: &Value) {
