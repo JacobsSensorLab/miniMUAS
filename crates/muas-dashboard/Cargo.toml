@@ -6,9 +6,39 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["tile-proxy"]
+# Upstream satellite-tile proxy-and-cache (bench with internet). Without it
+# the tile route serves the offline cache only and the UI falls back to the
+# 10 m grid.
+tile-proxy = ["dep:reqwest"]
+
 [dependencies]
-uas-console = { workspace = true }
+# workspace-listed
 muas-contracts = { workspace = true }
-tokio = { workspace = true }
+uas-console = { workspace = true }
+manifest = { workspace = true }
+uas-flight = { workspace = true }
+uas-fleet-data = { workspace = true }
+ndn-app = { workspace = true }
+ndn-engine = { workspace = true }
+ndn-face = { workspace = true }
+ndn-packet = { workspace = true }
+ndn-rpc = { workspace = true }
+ndn-service-core = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["net", "fs", "io-util"] }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+# new third-party (this crate only)
+axum = { version = "0.8", features = ["ws"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+
+[dev-dependencies]
+tokio-tungstenite = "0.26"
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json"] }

@@ -1,0 +1,1383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>miniMUAS v3 — Mission Console</title>
+<style>
+/* =======================================================================
+   Carbon Design System (Gray 100 theme), hand-rolled for offline use:
+   the field AP has no internet, so tokens/components are embedded rather
+   than loaded from @carbon/styles. Token names follow Carbon v11.
+   ======================================================================= */
+:root {
+  /* g100 core tokens */
+  --cds-background: #161616;
+  --cds-layer-01: #262626;
+  --cds-layer-02: #393939;
+  --cds-layer-accent: #393939;
+  --cds-field-01: #262626;
+  --cds-border-subtle: #393939;
+  --cds-border-strong: #6f6f6f;
+  --cds-text-primary: #f4f4f4;
+  --cds-text-secondary: #c6c6c6;
+  --cds-text-placeholder: #6f6f6f;
+  --cds-text-helper: #8d8d8d;
+  --cds-text-inverse: #161616;
+  --cds-link-primary: #78a9ff;
+  --cds-interactive: #4589ff;
+  --cds-button-primary: #0f62fe;
+  --cds-button-primary-hover: #0353e9;
+  --cds-button-secondary: #6f6f6f;
+  --cds-button-secondary-hover: #606060;
+  --cds-button-danger: #da1e28;
+  --cds-button-danger-hover: #ba1b23;
+  --cds-support-error: #fa4d56;
+  --cds-support-success: #42be65;
+  --cds-support-warning: #f1c21b;
+  --cds-support-info: #4589ff;
+  --cds-focus: #ffffff;
+  --cds-layer-selected-inverse: #f4f4f4;
+  /* spacing scale */
+  --sp-02: 4px; --sp-03: 8px; --sp-04: 12px; --sp-05: 16px; --sp-06: 24px;
+  /* type */
+  --font-sans: 'IBM Plex Sans', system-ui, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+}
+* { box-sizing: border-box; margin: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--cds-background); color: var(--cds-text-primary);
+  font: 400 14px/1.29 var(--font-sans); letter-spacing: .16px;
+  display: grid; grid-template-rows: 48px 1fr;
+  grid-template-columns: 336px 1fr 288px;
+  grid-template-areas: "header header header" "side map right";
+  overflow: hidden;
+}
+
+/* ---- UI shell header -------------------------------------------------- */
+.cds-header {
+  grid-area: header; display: flex; align-items: center;
+  background: #161616; border-bottom: 1px solid var(--cds-border-subtle);
+  padding: 0 var(--sp-05); gap: var(--sp-05);
+}
+.cds-header .name { font-size: 14px; letter-spacing: .1px; }
+.cds-header .name b { font-weight: 600; margin-right: 6px; }
+.cds-header .spacer { flex: 1; }
+
+/* ---- panels ------------------------------------------------------------ */
+#sidebar, #right {
+  background: var(--cds-background); overflow-y: auto;
+  padding: var(--sp-05);
+}
+#sidebar { grid-area: side; border-right: 1px solid var(--cds-border-subtle); }
+#right { grid-area: right; border-left: 1px solid var(--cds-border-subtle); }
+#mapwrap { grid-area: map; position: relative; }
+#map { width: 100%; height: 100%; display: block; cursor: grab; }
+
+/* heading-compact-01 over label-01 section pattern */
+h3 {
+  font-size: 12px; font-weight: 400; letter-spacing: .32px; line-height: 1.34;
+  color: var(--cds-text-secondary); text-transform: none;
+  margin: var(--sp-06) 0 var(--sp-03);
+  padding-bottom: var(--sp-02);
+  border-bottom: 1px solid var(--cds-border-subtle);
+}
+h3:first-child { margin-top: 0; }
+
+/* ---- form fields: label above, underlined field, square ---------------- */
+.field { margin-bottom: var(--sp-04); }
+.field label {
+  display: block; font-size: 12px; letter-spacing: .32px; line-height: 1.34;
+  color: var(--cds-text-secondary); margin-bottom: var(--sp-02);
+}
+.field input, .field select {
+  width: 100%; height: 32px; padding: 0 var(--sp-05);
+  background: var(--cds-field-01); color: var(--cds-text-primary);
+  border: none; border-bottom: 1px solid var(--cds-border-strong);
+  border-radius: 0; font: inherit;
+}
+.field input:focus, .field select:focus {
+  outline: 2px solid var(--cds-focus); outline-offset: -2px;
+}
+.field input::placeholder { color: var(--cds-text-placeholder); }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-03); }
+.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--sp-03); }
+
+/* ---- buttons: Carbon sharp corners, sized, left-aligned ----------------- */
+.cds-btn {
+  display: inline-flex; align-items: center; justify-content: flex-start;
+  height: 32px; padding: 0 var(--sp-05); border: 1px solid transparent;
+  border-radius: 0; font: 400 14px/1 var(--font-sans); letter-spacing: .16px;
+  cursor: pointer; transition: background 70ms cubic-bezier(0,0,.38,.9);
+  color: var(--cds-text-primary); background: transparent;
+}
+.cds-btn:focus-visible { outline: 2px solid var(--cds-focus); outline-offset: -2px; }
+.cds-btn:disabled { opacity: .4; cursor: not-allowed; }
+.cds-btn--primary { background: var(--cds-button-primary); padding-right: 48px; }
+.cds-btn--primary:hover { background: var(--cds-button-primary-hover); }
+.cds-btn--secondary { background: var(--cds-button-secondary); }
+.cds-btn--secondary:hover { background: var(--cds-button-secondary-hover); }
+.cds-btn--danger { background: var(--cds-button-danger); }
+.cds-btn--danger:hover { background: var(--cds-button-danger-hover); }
+.cds-btn--tertiary {
+  border-color: var(--cds-text-primary); color: var(--cds-text-primary);
+}
+.cds-btn--tertiary:hover { background: var(--cds-text-primary); color: var(--cds-text-inverse); }
+.cds-btn--danger-tertiary {
+  border-color: var(--cds-support-error); color: var(--cds-support-error);
+}
+.cds-btn--danger-tertiary:hover {
+  background: var(--cds-button-danger); border-color: var(--cds-button-danger);
+  color: var(--cds-text-primary);
+}
+.cds-btn--ghost { color: var(--cds-link-primary); }
+.cds-btn--ghost:hover { background: var(--cds-layer-01); }
+.btnrow { display: flex; gap: var(--sp-03); margin: var(--sp-03) 0; flex-wrap: wrap; }
+.btnrow .cds-btn { flex: 1; }
+
+/* ---- content switcher ---------------------------------------------------- */
+.cds-switcher { display: flex; margin-bottom: var(--sp-04); }
+.cds-switcher button {
+  flex: 1; height: 32px; border: none; border-radius: 0; cursor: pointer;
+  background: var(--cds-layer-01); color: var(--cds-text-secondary);
+  font: 400 14px/1 var(--font-sans); letter-spacing: .16px;
+  border-right: 1px solid var(--cds-border-subtle);
+  transition: background 70ms cubic-bezier(0,0,.38,.9);
+}
+.cds-switcher button:last-child { border-right: none; }
+.cds-switcher button:hover { background: var(--cds-layer-02); }
+.cds-switcher button.on {
+  background: var(--cds-layer-selected-inverse); color: var(--cds-text-inverse);
+}
+.cds-switcher button:focus-visible { outline: 2px solid var(--cds-focus); outline-offset: -2px; }
+
+/* ---- tags ------------------------------------------------------------------ */
+.cds-tag {
+  display: inline-flex; align-items: center; height: 18px;
+  padding: 0 var(--sp-03); border-radius: 9px;
+  font-size: 12px; letter-spacing: .32px; white-space: nowrap;
+  background: var(--cds-layer-02); color: var(--cds-text-secondary);
+}
+.cds-tag--green { background: #044317; color: #6fdc8c; }
+.cds-tag--red { background: #520408; color: #ff8389; }
+.cds-tag--blue { background: #00254d; color: #a6c8ff; }
+.cds-tag--yellow { background: #302400; color: #f1c21b; }
+.cds-tag--gray { background: var(--cds-layer-02); color: var(--cds-text-secondary); }
+
+/* ---- tiles (cards) ----------------------------------------------------------- */
+.cds-tile {
+  background: var(--cds-layer-01); border-radius: 0;
+  padding: var(--sp-05); margin-bottom: var(--sp-03);
+}
+.cds-tile .head {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: var(--sp-03);
+}
+.cds-tile .head b { font-size: 14px; font-weight: 600; }
+.vid-dot { width: 8px; height: 8px; display: inline-block; margin-right: var(--sp-03); }
+.kv { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--sp-02) var(--sp-03);
+      font-size: 12px; letter-spacing: .32px; }
+.kv .k { color: var(--cds-text-helper); }
+.kv .v { font-family: var(--font-mono); font-size: 12px; color: var(--cds-text-primary); }
+.cds-tile .btnrow { margin-bottom: 0; }
+.cds-tile .btnrow .cds-btn { height: 24px; padding: 0 var(--sp-03); font-size: 12px; }
+
+/* ---- toggle ------------------------------------------------------------------- */
+.cds-toggle { display: flex; align-items: center; gap: var(--sp-03);
+  cursor: pointer; user-select: none; }
+.cds-toggle .track {
+  width: 32px; height: 16px; border-radius: 8px; background: var(--cds-border-strong);
+  position: relative; transition: background 110ms cubic-bezier(0,0,.38,.9);
+  flex: none;
+}
+.cds-toggle .track::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 10px; height: 10px;
+  border-radius: 50%; background: var(--cds-text-primary);
+  transition: transform 110ms cubic-bezier(0,0,.38,.9);
+}
+.cds-toggle.on .track { background: var(--cds-support-success); }
+.cds-toggle.on .track::after { transform: translateX(16px); background: var(--cds-text-inverse); }
+.cds-toggle .lbl { font-size: 12px; letter-spacing: .32px; color: var(--cds-text-secondary); }
+
+/* ---- video panels --------------------------------------------------------------- */
+.vidpanel img { width: 100%; background: #000; aspect-ratio: 4/3;
+  object-fit: contain; display: block; margin-top: var(--sp-03); }
+.vidstats { font: 400 12px var(--font-mono); color: var(--cds-text-helper);
+  margin-top: var(--sp-02); }
+
+/* ---- event log: inline-notification style --------------------------------------- */
+#log { height: 220px; overflow-y: auto; }
+#log .n {
+  background: var(--cds-layer-01); border-left: 3px solid var(--cds-support-info);
+  padding: var(--sp-02) var(--sp-03); margin-bottom: 2px;
+  font: 400 11px/1.5 var(--font-mono);
+}
+#log .n .t { color: var(--cds-text-helper); margin-right: var(--sp-03); }
+#log .n.hit { border-left-color: var(--cds-support-success); }
+#log .n.err { border-left-color: var(--cds-support-error); }
+
+/* ---- map overlays ------------------------------------------------------------------ */
+#mission-banner {
+  position: absolute; top: var(--sp-03); left: var(--sp-03); z-index: 5;
+  background: var(--cds-layer-01); border: 1px solid var(--cds-border-subtle);
+  padding: var(--sp-03) var(--sp-05); display: flex; gap: var(--sp-05);
+  align-items: center; font: 400 12px var(--font-mono);
+}
+#mission-banner .k { color: var(--cds-text-helper); margin-right: var(--sp-02); }
+.pickhint {
+  position: absolute; bottom: var(--sp-05); left: 50%; transform: translateX(-50%);
+  background: var(--cds-support-warning); color: var(--cds-text-inverse);
+  padding: var(--sp-02) var(--sp-05); font-size: 12px; font-weight: 600;
+  display: none; z-index: 5;
+}
+#estimate { font: 400 12px var(--font-mono); color: var(--cds-text-secondary);
+  display: block; margin: var(--sp-02) 0 0; }
+#thumb { width: 100%; margin-top: var(--sp-03); display: none; }
+#detCard a { color: var(--cds-link-primary); text-decoration: none; }
+#detCard a:hover { text-decoration: underline; }
+#detCard .mono { font-family: var(--font-mono); font-size: 12px; }
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-thumb { background: var(--cds-layer-02); }
+</style>
+</head>
+<body>
+
+<header class="cds-header">
+  <span class="name"><b>miniMUAS</b>v3 Mission Console</span>
+  <span class="cds-tag cds-tag--gray" id="mstate">idle</span>
+  <span class="spacer"></span>
+  <button class="cds-btn cds-btn--ghost" id="replayBtn">Replay</button>
+  <button class="cds-btn cds-btn--ghost" id="dataBtn">Data on</button>
+  <button class="cds-btn cds-btn--ghost" id="eventsBtn">Events on</button>
+  <button class="cds-btn cds-btn--ghost" id="imageryBtn">Imagery on</button>
+  <span class="cds-tag cds-tag--red" id="conn">offline</span>
+</header>
+
+<div id="sidebar">
+  <h3>Search area</h3>
+  <div class="cds-switcher" id="modeSeg">
+    <button data-mode="center" class="on">Center + size</button>
+    <button data-mode="corners">Two corners</button>
+  </div>
+  <div id="centerMode">
+    <div class="grid-2">
+      <div class="field"><label for="clat">Center latitude</label>
+        <input id="clat" type="number" step="0.000001" value="35.120800"></div>
+      <div class="field"><label for="clon">Center longitude</label>
+        <input id="clon" type="number" step="0.000001" value="-89.934700"></div>
+      <div class="field"><label for="wm">Width (m, E–W)</label>
+        <input id="wm" type="number" value="40"></div>
+      <div class="field"><label for="hm">Height (m, N–S)</label>
+        <input id="hm" type="number" value="24"></div>
+    </div>
+    <div class="btnrow"><button class="cds-btn cds-btn--ghost" id="pickCenter">Pick center on map</button></div>
+  </div>
+  <div id="cornersMode" style="display:none">
+    <div class="field"><label for="ca">Corner A (lat, lon)</label>
+      <input id="ca" type="text" placeholder="35.1209, -89.9349"></div>
+    <div class="field"><label for="cb">Corner B (lat, lon)</label>
+      <input id="cb" type="text" placeholder="35.1207, -89.9345"></div>
+    <div class="btnrow">
+      <button class="cds-btn cds-btn--ghost" id="pickA">Pick A</button>
+      <button class="cds-btn cds-btn--ghost" id="pickB">Pick B</button>
+    </div>
+  </div>
+
+  <h3>Raster</h3>
+  <div class="grid-2">
+    <div class="field"><label for="agl">Search AGL (m)</label>
+      <input id="agl" type="number" step="0.5" value="6"></div>
+    <div class="field"><label for="spacing">Leg spacing (m)</label>
+      <input id="spacing" type="number" step="0.5" value="5"></div>
+    <div class="field"><label for="capm">Capture every (m)</label>
+      <input id="capm" type="number" step="0.5" value="4"></div>
+    <div class="field"><label for="speed">Speed (m/s)</label>
+      <input id="speed" type="number" step="0.5" value="2"></div>
+  </div>
+  <div class="field"><label for="objq">Target object</label>
+    <input id="objq" type="text" value="tennis racket"></div>
+  <div class="field"><label for="minconf">Minimum confidence</label>
+    <input id="minconf" type="number" step="0.05" value="0.3"></div>
+  <div class="field"><label for="sep">Target separation (m)</label>
+    <input id="sep" type="number" step="0.5" value="5"
+      title="Hits closer together than this are the same object"></div>
+  <div class="btnrow">
+    <button class="cds-btn cds-btn--tertiary" id="previewBtn">Preview legs</button>
+  </div>
+  <span id="estimate"></span>
+
+  <h3>IUAS investigation</h3>
+  <div class="grid-3">
+    <div class="field"><label for="oagl">AGL (m)</label>
+      <input id="oagl" type="number" step="0.5" value="8"></div>
+    <div class="field"><label for="oradius">Radius (m)</label>
+      <input id="oradius" type="number" step="0.5" value="6"></div>
+    <div class="field"><label for="ocount">Orbits</label>
+      <input id="ocount" type="number" step="0.5" value="1"></div>
+  </div>
+  <div class="field"><label>Investigate with (each sensor is flown by an
+    IUAS that carries it)</label>
+    <div style="display:flex;gap:16px;padding:4px 0">
+      <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
+        <input type="checkbox" id="senscam" checked> camera</label>
+      <label style="display:flex;gap:6px;align-items:center;cursor:pointer">
+        <input type="checkbox" id="sensaud"> audio</label>
+    </div></div>
+
+  <h3>Mission</h3>
+  <div class="btnrow">
+    <button class="cds-btn cds-btn--primary" id="startBtn">Start mission</button>
+  </div>
+  <div class="btnrow">
+    <button class="cds-btn cds-btn--danger" id="rtlAll">RTL all</button>
+    <button class="cds-btn cds-btn--danger" id="landAll">Land all</button>
+    <button class="cds-btn cds-btn--secondary" id="holdAll">Hold all</button>
+  </div>
+
+  <h3>Sensor tasking</h3>
+  <div class="grid-2">
+    <div class="field"><label for="tvid">Vehicle</label>
+      <select id="tvid"></select></div>
+    <div class="field"><label for="tsensor">Sensor</label>
+      <select id="tsensor">
+        <option value="camera">camera</option>
+        <option value="audio">audio</option>
+      </select></div>
+    <div class="field"><label for="tmode">Mode</label>
+      <select id="tmode"
+        title="now: capture at the vehicle's current position. override:
+fly to the picked point, capture, then resume the interrupted sweep.
+opportunistic: fire whenever the vehicle happens to pass within range.">
+        <option value="now">now (here)</option>
+        <option value="override">override + resume</option>
+        <option value="opportunistic">opportunistic</option>
+      </select></div>
+    <div class="field"><label for="tdur">Audio secs</label>
+      <input id="tdur" type="number" step="1" value="6"></div>
+  </div>
+  <div class="btnrow">
+    <button class="cds-btn cds-btn--secondary" id="capNow">Capture now</button>
+    <button class="cds-btn cds-btn--tertiary" id="capPick">Pick point</button>
+  </div>
+
+  <h3>Detection</h3>
+  <div class="cds-tile" id="detCard">none yet</div>
+  <img id="thumb" alt="trigger frame">
+
+  <h3>Event log</h3>
+  <div id="log"></div>
+</div>
+
+<div id="mapwrap">
+  <canvas id="map"></canvas>
+  <div id="mission-banner">
+    <span><span class="k">frames</span><b id="mframes">0</b></span>
+    <span><span class="k">leg</span><b id="mleg">–</b></span>
+    <span><span class="k">detects</span><b id="mdet">0/0</b></span>
+    <span><span class="k">targets</span><b id="mtargets">0</b></span>
+  </div>
+  <div class="pickhint" id="pickhint">click the map…</div>
+</div>
+
+<div id="right">
+  <h3>Vehicles</h3>
+  <div id="cards"></div>
+  <h3>Video</h3>
+  <div id="videos"></div>
+</div>
+
+<!-- replay transport (hidden until a recording is loaded) -->
+<div id="replaybar" style="display:none;position:fixed;left:0;right:0;bottom:0;
+     z-index:55;background:#262626;border-top:2px solid #8a3ffc;padding:8px 16px">
+  <div style="display:flex;align-items:center;gap:12px">
+    <span class="cds-tag" style="background:#8a3ffc;color:#fff">REPLAY</span>
+    <span id="rname" class="mono" style="font-size:12px"></span>
+    <button class="cds-btn cds-btn--secondary" id="rplay"
+            style="min-width:44px">⏸</button>
+    <select id="rspeed" style="height:28px;background:#393939;color:#f4f4f4;
+            border:none;padding:0 8px">
+      <option value="1">1×</option>
+      <option value="4" selected>4×</option>
+      <option value="16">16×</option>
+      <option value="60">60×</option>
+    </select>
+    <input id="rslider" type="range" min="0" max="100" value="0" step="0.1"
+           style="flex:1">
+    <span id="rtime" class="mono" style="font-size:12px;min-width:130px"></span>
+    <button class="cds-btn cds-btn--danger-tertiary" id="rexit">Exit replay</button>
+  </div>
+</div>
+
+<!-- sensor-data playback modal -->
+<div id="modal" style="display:none;position:fixed;inset:0;z-index:60;
+     background:rgba(0,0,0,0.65)">
+  <div style="max-width:600px;margin:7vh auto;background:var(--cds-layer-01,#262626);
+       border:1px solid #393939;padding:16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;
+         margin-bottom:12px">
+      <b id="modalTitle"></b>
+      <button class="cds-btn cds-btn--ghost" id="modalClose">✕ close</button>
+    </div>
+    <div id="modalBody" style="max-height:72vh;overflow:auto"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const M_PER_DEG_LAT = 111111;
+const mPerDegLon = lat => M_PER_DEG_LAT * Math.max(Math.cos(lat*Math.PI/180), 1e-6);
+// Carbon categorical palette (blue 40, purple 40, teal 40, magenta 40)
+const PALETTE = ["#78a9ff", "#be95ff", "#08bdba", "#ff7eb6"];
+const COLORS = {};
+let VEHICLES = ["wuas-01","iuas-01"];
+
+// ---------- websocket ----------
+let ws, wsOK = false;
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => { wsOK = true; if (!REPLAY.active) setConn(true); };
+  ws.onclose = () => { wsOK = false; if (!REPLAY.active) setConn(false);
+                       setTimeout(connect, 1500); };
+  ws.onmessage = ev => {
+    // any traffic proves the link — the tag must never read "offline"
+    // while data is visibly streaming
+    if (!wsOK) { wsOK = true; if (!REPLAY.active) setConn(true); }
+    if (REPLAY.active) return;  // replay owns the UI; live resumes on exit
+    if (ev.data instanceof ArrayBuffer) { onVideoFrame(ev.data); return; }
+    dispatch(JSON.parse(ev.data));
+  };
+}
+function dispatch(m){
+  if (m.type === "hello") onHello(m);
+  else if (m.type === "telemetry") onTelemetry(m);
+  else if (m.type === "telemetry_stale") onStale(m);
+  else if (m.type === "search_status") onSearch(m);
+  else if (m.type === "raster_preview") onPreview(m);
+  else if (m.type === "event") onEvent(m);
+  else if (m.type === "capabilities") onCaps(m);
+  else if (m.type === "sensor_data") pushSensorData(m.item);
+  else if (m.type === "video_stats") onVideoStats(m);
+}
+const send = obj => {
+  if (REPLAY.active){
+    console.warn("replay mode: command suppressed", obj);
+    return;
+  }
+  if (wsOK) ws.send(JSON.stringify(obj));
+};
+function setConn(ok){ const c = document.getElementById("conn");
+  c.textContent = ok ? "connected" : "offline";
+  c.className = "cds-tag " + (ok ? "cds-tag--green" : "cds-tag--red"); }
+
+// ---------- per-vehicle enable gate + manual takeoff ----------
+function setEnabledUI(vid, on){
+  const en = document.getElementById(`en-${vid}`);
+  if (en){ en.classList.toggle("on", on); en.setAttribute("aria-checked", on); }
+  const gate = document.getElementById(`gate-${vid}`);
+  if (gate) gate.style.display = on ? "none" : "";
+  const to = document.querySelector(`button[onclick="cmdTakeoff('${vid}')"]`);
+  if (to) to.disabled = !on;
+}
+// Takeoff is the one flight action that puts an aircraft in the air on a
+// single click, so it carries a confirmation — unlike the safety actions
+// (RTL/Land/Hold), which must stay instant.
+function cmdTakeoff(vid){
+  const input = document.getElementById(`toagl-${vid}`);
+  const agl = input ? +input.value : 5;
+  if (!(agl > 0)) { return; }
+  if (confirm(`Takeoff ${vid} to ${agl} m AGL?\nThe vehicle will arm and climb.`))
+    send({cmd:"flight", vehicle:vid, command:"takeoff", params:{target_agl_m:agl}});
+}
+
+// ---------- map (canvas, local ENU around view center, g100 palette) ----------
+const cv = document.getElementById("map"), ctx = cv.getContext("2d");
+let view = { lat: 35.1208, lon: -89.9347, mppx: 0.18 };
+let plan = null;
+let drones = {};
+let targets = [];   // mission targets: {index, object_id, confidence, lat,
+                    //  lon, frame, status, artifacts}
+let picking = null;
+
+function resize(){ const r = cv.parentElement.getBoundingClientRect();
+  cv.width = r.width; cv.height = r.height; }
+window.addEventListener("resize", resize);
+function toPx(lat, lon){
+  return [ cv.width/2 + (lon - view.lon) * mPerDegLon(view.lat) / view.mppx,
+           cv.height/2 - (lat - view.lat) * M_PER_DEG_LAT / view.mppx ]; }
+function toLL(x, y){
+  return [ view.lat - (y - cv.height/2) * view.mppx / M_PER_DEG_LAT,
+           view.lon + (x - cv.width/2) * view.mppx / mPerDegLon(view.lat) ]; }
+
+// ---------- satellite tile layer (Web Mercator, served by the GCS) ----------
+// Tiles come from /tiles/{z}/{x}/{y}: local cache on node 03, proxied from
+// Esri and cached when the bench has internet. Missing tiles -> the meter
+// grid still shows underneath, so the map degrades gracefully offline.
+let imagery = true;
+// ---------- event map layer: every georeferenced event, pinned in ----------
+// time AND space so the log can be correlated with the ground track
+let showEvents = true;
+let mapEvents = [];           // {t, kind, lat, lon, seq?, conf?, extra}
+let hoverEvt = null;          // event under the cursor (tooltip)
+const EVT_STYLE = kind =>
+  kind === "detect.hit"        ? "#42be65" :
+  kind === "detect.candidate"  ? "#f1c21b" :
+  kind === "mission.target_found" ? "#fa4d56" :
+  kind.startsWith("target.")   ? "#4589ff" : "#a8a8a8";
+function pushMapEvent(m){
+  if (typeof m.lat !== "number" || typeof m.lon !== "number") return;
+  mapEvents.push({ t:m.t, kind:m.kind, lat:m.lat, lon:m.lon,
+    seq:m.seq, conf:m.confidence, sensor:m.sensor, index:m.index });
+  if (mapEvents.length > 600) mapEvents.shift();
+}
+// ---------- sensor-data layer: everything captured, where + when ----------
+let showData = true;
+let sensorData = [];          // {vehicle,sensor,kind,name,lat,lon,t,source,label}
+let CAPS = {};                // vid -> ["camera","audio"]
+const SENSOR_COLOR = { camera:"#78a9ff", audio:"#ff832b" };
+function pushSensorData(item){
+  if (!item || sensorData.some(d => d.name === item.name)) return;
+  sensorData.push(item);
+  if (sensorData.length > 500) sensorData.shift();
+}
+function artifactHTML(d){
+  const url = `/artifact?name=${encodeURIComponent(d.name)}`;
+  const player = (d.kind || "").startsWith("audio")
+    ? `<audio controls preload="none" src="${url}" style="width:100%"></audio>`
+    : `<img src="${url}" style="max-width:100%" alt="${d.label || d.name}">`;
+  const when = new Date((d.t || 0) * 1000).toLocaleTimeString();
+  return `<div style="margin-bottom:16px">${player}
+    <div class="mono" style="margin-top:4px;font-size:12px;color:#a8a8a8">
+      ${d.label || ""} · ${d.vehicle} · ${d.sensor} · ${d.source} · ${when}<br>
+      ${(d.lat ?? 0).toFixed(6)}, ${(d.lon ?? 0).toFixed(6)}
+      <a target="_blank" href="${url}">open ↗</a></div></div>`;
+}
+function openModalHTML(title, html){
+  modalTitle.textContent = title;
+  modalBody.innerHTML = html;
+  modal.style.display = "";
+}
+function openModal(title, items){
+  openModalHTML(title, items.length
+    ? items.map(artifactHTML).join("")
+    : "<span style='color:#a8a8a8'>no captured data yet</span>");
+}
+function closeModal(){ modal.style.display = "none"; modalBody.innerHTML = ""; }
+
+// ---------- mission replay: re-dispatch a recorded broadcast stream ----------
+// The GCS records every WS broadcast to JSONL ({ts, m} per line); replay
+// resets the UI and feeds those messages through the SAME dispatch()
+// handlers with a transport bar — what you debug is exactly what the
+// operator saw, on the same rendering code.
+const REPLAY = { active:false, msgs:[], i:0, cur:0, dur:0, timer:null,
+                 playing:false };
+const fmtClock = s => {
+  s = Math.max(0, Math.round(s));
+  return `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
+};
+function resetUIState(){
+  drones = {}; targets = []; mapEvents = []; sensorData = [];
+  hoverEvt = null; plan = null;
+  log.innerHTML = "";
+  mframes.textContent = "0"; mleg.textContent = "–";
+  mdet.textContent = "0/0"; mtargets.textContent = "0";
+  renderTargets();
+}
+function openReplayPicker(){
+  fetch("/replays").then(r => r.json()).then(j => {
+    const rows = (j.replays || []).map(r => `
+      <div style="display:flex;justify-content:space-between;align-items:center;
+                  margin-bottom:8px">
+        <a href="#" onclick="loadReplay('${r.name}');return false"
+           class="mono">${r.name}</a>
+        <span style="color:#a8a8a8;font-size:12px">
+          ${(r.bytes/1024).toFixed(0)} kB
+          ${r.recording ? ' · <b style="color:#8a3ffc">recording now</b>' : ""}
+        </span>
+      </div>`).join("");
+    openModalHTML("Mission replays",
+      rows || "<span style='color:#a8a8a8'>no recordings yet — the GCS " +
+              "records every session to --record-dir</span>");
+  }).catch(() => openModalHTML("Mission replays",
+    "<span style='color:#fa4d56'>could not list recordings</span>"));
+}
+function loadReplay(name){
+  fetch(`/replays/${name}`).then(r => r.text()).then(text => {
+    const msgs = [];
+    for (const line of text.split("\n")){
+      if (!line.trim()) continue;
+      try { const o = JSON.parse(line);
+            // v3 recordings are uas-console RecordedEvent lines
+            // ({t_ns, event}); v2's {ts, m} lines still load.
+            if (o && o.t_ns && o.event) msgs.push({ts: o.t_ns / 1e9, m: o.event});
+            else if (o && o.ts && o.m) msgs.push(o); } catch (e) {}
+    }
+    if (!msgs.length){
+      openModalHTML("Mission replays",
+        "<span style='color:#fa4d56'>recording is empty</span>");
+      return;
+    }
+    closeModal();
+    REPLAY.msgs = msgs;
+    REPLAY.t0 = msgs[0].ts;
+    REPLAY.dur = msgs[msgs.length-1].ts - msgs[0].ts;
+    REPLAY.i = 0; REPLAY.cur = 0;
+    REPLAY.active = true; REPLAY.playing = true;
+    resetUIState();
+    rname.textContent = name;
+    rslider.max = REPLAY.dur; rslider.value = 0;
+    rplay.textContent = "⏸";
+    replaybar.style.display = "";
+    const c = document.getElementById("conn");
+    c.textContent = "replay"; c.className = "cds-tag";
+    c.style.background = "#8a3ffc"; c.style.color = "#fff";
+    if (REPLAY.timer) clearInterval(REPLAY.timer);
+    REPLAY.timer = setInterval(replayTick, 100);
+  });
+}
+function replayTick(){
+  if (!REPLAY.playing) return;
+  REPLAY.cur = Math.min(REPLAY.cur + 0.1 * (+rspeed.value), REPLAY.dur + 0.01);
+  while (REPLAY.i < REPLAY.msgs.length &&
+         REPLAY.msgs[REPLAY.i].ts - REPLAY.t0 <= REPLAY.cur){
+    dispatch(REPLAY.msgs[REPLAY.i].m); REPLAY.i++;
+  }
+  rslider.value = REPLAY.cur;
+  rtime.textContent = `${fmtClock(REPLAY.cur)} / ${fmtClock(REPLAY.dur)}`;
+  if (REPLAY.i >= REPLAY.msgs.length){
+    REPLAY.playing = false; rplay.textContent = "▶";
+  }
+}
+function replaySeek(t){
+  // deterministic seek: rebuild state by fast-dispatching from the start
+  REPLAY.cur = Math.max(0, Math.min(t, REPLAY.dur));
+  resetUIState();
+  REPLAY.i = 0;
+  while (REPLAY.i < REPLAY.msgs.length &&
+         REPLAY.msgs[REPLAY.i].ts - REPLAY.t0 <= REPLAY.cur){
+    dispatch(REPLAY.msgs[REPLAY.i].m); REPLAY.i++;
+  }
+  rtime.textContent = `${fmtClock(REPLAY.cur)} / ${fmtClock(REPLAY.dur)}`;
+}
+const tileImgs = new Map();   // "z/x/y" -> Image (img.ok set on load)
+const lon2tx = (lon, z) => (lon + 180) / 360 * 2**z;
+const lat2ty = (lat, z) => {
+  const r = lat * Math.PI / 180;
+  return (1 - Math.log(Math.tan(r) + 1/Math.cos(r)) / Math.PI) / 2 * 2**z;
+};
+const tx2lon = (x, z) => x / 2**z * 360 - 180;
+const ty2lat = (y, z) => {
+  const n = Math.PI - 2 * Math.PI * y / 2**z;
+  return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+};
+function tileFor(z, x, y){
+  const key = `${z}/${x}/${y}`;
+  let img = tileImgs.get(key);
+  if (!img){
+    if (tileImgs.size > 400){            // bounded cache, evict oldest
+      const first = tileImgs.keys().next().value;
+      tileImgs.delete(first);
+    }
+    img = new Image();
+    img.ok = false;
+    img.onload = () => { img.ok = true; };
+    img.onerror = () => { img.bad = true; };
+    img.src = `/tiles/${z}/${x}/${y}`;
+    tileImgs.set(key, img);
+  }
+  return img;
+}
+function drawTiles(){
+  if (!imagery) return false;
+  // zoom whose tile resolution best matches the current meters-per-pixel
+  // (156543.03 m/px is the z=0 per-pixel ground resolution at the equator)
+  const groundMpp = 156543.03392 * Math.cos(view.lat * Math.PI / 180);
+  const z = Math.max(3, Math.min(19, Math.round(Math.log2(groundMpp / view.mppx))));
+  const [latN, lonW] = toLL(0, 0), [latS, lonE] = toLL(cv.width, cv.height);
+  const x0 = Math.floor(lon2tx(lonW, z)), x1 = Math.floor(lon2tx(lonE, z));
+  const y0 = Math.floor(lat2ty(latN, z)), y1 = Math.floor(lat2ty(latS, z));
+  if ((x1 - x0 + 1) * (y1 - y0 + 1) > 80) return false; // sanity bound
+  let drew = false;
+  for (let x = x0; x <= x1; x++){
+    for (let y = y0; y <= y1; y++){
+      const img = tileFor(z, x, y);
+      if (!img.ok) continue;
+      // project the tile's corner coordinates through the same transform
+      // as every vector; sub-pixel mercator/ENU divergence at these extents
+      const pNW = toPx(ty2lat(y, z), tx2lon(x, z));
+      const pSE = toPx(ty2lat(y + 1, z), tx2lon(x + 1, z));
+      ctx.drawImage(img, pNW[0], pNW[1],
+                    pSE[0] - pNW[0] + 0.5, pSE[1] - pNW[1] + 0.5);
+      drew = true;
+    }
+  }
+  if (drew){
+    // translucent veil keeps the Carbon vectors and labels readable
+    ctx.fillStyle = "rgba(13,17,23,0.35)";
+    ctx.fillRect(0, 0, cv.width, cv.height);
+  }
+  return drew;
+}
+
+function draw(){
+  ctx.fillStyle = "#161616"; ctx.fillRect(0,0,cv.width,cv.height);
+  const tiled = drawTiles();
+  const grid = 10 / view.mppx;
+  if (!tiled && grid > 14) {
+    ctx.strokeStyle = "#262626"; ctx.lineWidth = 1; ctx.beginPath();
+    const ox = (cv.width/2) % grid, oy = (cv.height/2) % grid;
+    for (let x = ox; x < cv.width; x += grid){ ctx.moveTo(x,0); ctx.lineTo(x,cv.height); }
+    for (let y = oy; y < cv.height; y += grid){ ctx.moveTo(0,y); ctx.lineTo(cv.width,y); }
+    ctx.stroke();
+    ctx.fillStyle = "#6f6f6f"; ctx.font = "11px 'IBM Plex Mono', monospace";
+    ctx.fillText("grid 10 m", 12, cv.height - 12);
+  }
+  if (plan){
+    ctx.strokeStyle = "#f1c21b99"; ctx.lineWidth = 1.5; ctx.beginPath();
+    plan.corners.forEach((c,i) => { const p = toPx(c.lat, c.lon);
+      i ? ctx.lineTo(p[0],p[1]) : ctx.moveTo(p[0],p[1]); });
+    ctx.closePath(); ctx.stroke();
+    ctx.strokeStyle = "#4589ff66"; ctx.beginPath();
+    let prev = null;
+    plan.legs.forEach(leg => {
+      const a = toPx(leg[0].lat, leg[0].lon), b = toPx(leg[1].lat, leg[1].lon);
+      if (prev) ctx.lineTo(a[0],a[1]); else ctx.moveTo(a[0],a[1]);
+      ctx.lineTo(b[0],b[1]); prev = b; });
+    ctx.stroke();
+    ctx.fillStyle = "#78a9ff";
+    plan.captures.forEach(c => { const p = toPx(c.lat, c.lon);
+      ctx.fillRect(p[0]-1.5, p[1]-1.5, 3, 3); });
+  }
+  if (showData){
+    // captured data: squares = camera frames, circles = audio clips;
+    // hollow = mission evidence, filled = operator-tasked
+    for (const d of sensorData){
+      const p = toPx(d.lat, d.lon);
+      if (p[0] < -20 || p[0] > cv.width+20 || p[1] < -20 || p[1] > cv.height+20)
+        continue;
+      const col = SENSOR_COLOR[d.sensor] || "#a8a8a8";
+      ctx.lineWidth = 1.5;
+      if (d.sensor === "audio"){
+        ctx.beginPath(); ctx.arc(p[0], p[1], 4, 0, 7);
+        if (d.source === "tasked"){ ctx.fillStyle = col; ctx.fill(); }
+        else { ctx.strokeStyle = col; ctx.stroke(); }
+      } else {
+        if (d.source === "tasked"){ ctx.fillStyle = col;
+          ctx.fillRect(p[0]-3.5, p[1]-3.5, 7, 7); }
+        else { ctx.strokeStyle = col;
+          ctx.strokeRect(p[0]-3.5, p[1]-3.5, 7, 7); }
+      }
+    }
+  }
+  if (showEvents){
+    // diamonds, oldest faintest — a spatial replay of the event log
+    const tNow = Date.now()/1000;
+    for (const e of mapEvents){
+      const p = toPx(e.lat, e.lon);
+      if (p[0] < -20 || p[0] > cv.width+20 || p[1] < -20 || p[1] > cv.height+20)
+        continue;
+      const age = Math.min((tNow - e.t) / 600, 1);   // fades over 10 min
+      ctx.globalAlpha = 0.9 - 0.55 * age;
+      ctx.strokeStyle = EVT_STYLE(e.kind); ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(p[0], p[1]-4); ctx.lineTo(p[0]+4, p[1]);
+      ctx.lineTo(p[0], p[1]+4); ctx.lineTo(p[0]-4, p[1]);
+      ctx.closePath(); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    if (hoverEvt){
+      const p = toPx(hoverEvt.lat, hoverEvt.lon);
+      ctx.strokeStyle = "#f4f4f4"; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(p[0], p[1], 7, 0, 7); ctx.stroke();
+      const when = new Date(hoverEvt.t*1000).toLocaleTimeString();
+      const parts = [ `${when}  ${hoverEvt.kind}` ];
+      if (hoverEvt.label)        parts.push(hoverEvt.label);
+      if (hoverEvt.seq != null)  parts.push(`frame #${hoverEvt.seq}`);
+      if (hoverEvt.index != null) parts.push(`target #${hoverEvt.index}`);
+      if (hoverEvt.sensor)       parts.push(hoverEvt.sensor);
+      if (hoverEvt.conf != null) parts.push(`${(hoverEvt.conf*100).toFixed(0)}%`);
+      const text = parts.join(" · ");
+      ctx.font = "12px 'IBM Plex Mono', monospace";
+      const w = ctx.measureText(text).width;
+      const bx = Math.min(p[0]+10, cv.width - w - 16), by = p[1] - 26;
+      ctx.fillStyle = "rgba(22,22,22,0.92)";
+      ctx.fillRect(bx-6, by-13, w+12, 20);
+      ctx.strokeStyle = "#393939"; ctx.lineWidth = 1;
+      ctx.strokeRect(bx-6, by-13, w+12, 20);
+      ctx.fillStyle = "#f4f4f4";
+      ctx.fillText(text, bx, by+2);
+    }
+  }
+  // targets: yellow=queued, pulsing blue=investigating, green=done, red=failed
+  const TGT = { queued:"#f1c21b", investigating:"#4589ff",
+                done:"#42be65", failed:"#fa4d56" };
+  for (const t of targets){
+    const p = toPx(t.lat, t.lon);
+    const col = TGT[t.status] || "#f4f4f4";
+    if (t.status === "investigating"){
+      const pulse = 8 + 4*Math.sin(Date.now()/300);
+      ctx.strokeStyle = col; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(p[0],p[1],pulse,0,7); ctx.stroke();
+    }
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(p[0],p[1],4,0,7); ctx.fill();
+    ctx.font = "12px 'IBM Plex Sans', sans-serif";
+    ctx.fillText(`#${t.index} ${t.object_id} ${(t.confidence*100).toFixed(0)}%`,
+                 p[0]+12, p[1]-8);
+  }
+  // ease each marker toward its latest telemetry fix: samples arrive at
+  // ~3-4 Hz, frames at 60 — exponential smoothing (τ≈0.25 s) turns the
+  // stepwise fixes into continuous motion without lying about position
+  // by more than one sample interval
+  const now = performance.now();
+  const dt = Math.min((now - (draw.last || now)) / 1000, 0.25);
+  draw.last = now;
+  const k = 1 - Math.exp(-dt / 0.25);
+  for (const d of Object.values(drones)){
+    if (d.tlat === undefined) continue;
+    if (d.lat === undefined || d.stale){ d.lat = d.tlat; d.lon = d.tlon; }
+    else { d.lat += (d.tlat - d.lat) * k; d.lon += (d.tlon - d.lon) * k; }
+    if (d.thead !== undefined){
+      // shortest-arc easing so 359°→1° turns 2°, not −358°
+      if (d.heading === undefined || d.stale) d.heading = d.thead;
+      else d.heading += (((d.thead - d.heading + 540) % 360) - 180) * k;
+    }
+  }
+  for (const [vid, d] of Object.entries(drones)){
+    const col = COLORS[vid] || "#f4f4f4";
+    if (d.lat === undefined) continue;
+    if (d.trail && d.trail.length > 1){
+      ctx.strokeStyle = col + "55"; ctx.lineWidth = 1.5; ctx.beginPath();
+      d.trail.forEach((t,i) => { const p = toPx(t[0],t[1]);
+        i ? ctx.lineTo(p[0],p[1]) : ctx.moveTo(p[0],p[1]); });
+      ctx.stroke();
+    }
+    const p = toPx(d.lat, d.lon), hd = (d.heading||0) * Math.PI/180;
+    ctx.save(); ctx.translate(p[0],p[1]); ctx.rotate(hd);
+    ctx.fillStyle = d.stale ? "#525252" : col;
+    ctx.beginPath(); ctx.moveTo(0,-9); ctx.lineTo(6,7); ctx.lineTo(-6,7);
+    ctx.closePath(); ctx.fill(); ctx.restore();
+    ctx.fillStyle = d.stale ? "#525252" : col;
+    ctx.font = "12px 'IBM Plex Mono', monospace";
+    ctx.fillText(`${vid} ${d.agl?.toFixed(1)??"–"}m${d.stale?" (stale)":""}`,
+                 p[0]+10, p[1]+4);
+  }
+  requestAnimationFrame(draw);
+}
+
+let drag = null;
+cv.addEventListener("mousedown", e => drag = {x:e.offsetX, y:e.offsetY});
+cv.addEventListener("mousemove", e => {
+  if (!drag){
+    // hit-test the event + data layers for the hover tooltip
+    hoverEvt = null;
+    let best = 121;  // 11 px pick radius, squared
+    if (showEvents){
+      for (const ev of mapEvents){
+        const p = toPx(ev.lat, ev.lon);
+        const d = (p[0]-e.offsetX)**2 + (p[1]-e.offsetY)**2;
+        if (d < best){ best = d; hoverEvt = ev; }
+      }
+    }
+    if (showData){
+      for (const it of sensorData){
+        const p = toPx(it.lat, it.lon);
+        const d = (p[0]-e.offsetX)**2 + (p[1]-e.offsetY)**2;
+        if (d < best){ best = d;
+          hoverEvt = { t:it.t, kind:`data.${it.sensor}`, lat:it.lat,
+                       lon:it.lon, label:`${it.label} — click to play` }; }
+      }
+    }
+    return;
+  }
+  view.lon -= (e.offsetX - drag.x) * view.mppx / mPerDegLon(view.lat);
+  view.lat += (e.offsetY - drag.y) * view.mppx / M_PER_DEG_LAT;
+  drag = {x:e.offsetX, y:e.offsetY};
+});
+window.addEventListener("mouseup", () => drag = null);
+cv.addEventListener("wheel", e => {
+  e.preventDefault();
+  view.mppx = Math.min(4, Math.max(0.02, view.mppx * (e.deltaY>0 ? 1.15 : 0.87)));
+}, {passive:false});
+cv.addEventListener("click", e => {
+  if (!picking){
+    // clicking a sensor-data point opens its playback/details modal
+    if (!showData) return;
+    let best = 144, hit = null;
+    for (const d of sensorData){
+      const p = toPx(d.lat, d.lon);
+      const dist = (p[0]-e.offsetX)**2 + (p[1]-e.offsetY)**2;
+      if (dist < best){ best = dist; hit = d; }
+    }
+    if (hit) openModal(`${hit.label} · ${hit.vehicle}`, [hit]);
+    return;
+  }
+  const [lat, lon] = toLL(e.offsetX, e.offsetY);
+  if (picking === "capture"){
+    // "now" is a here-capture; a picked point implies flying there
+    const mode = tmode.value === "now" ? "override" : tmode.value;
+    send({cmd:"sensor", vehicle:tvid.value, params:{
+      sensor:tsensor.value, mode, duration_s:+tdur.value,
+      target:{lat, lon}, radius_m:6, expires_s:600}});
+    picking = null; pickhint.style.display = "none";
+    return;
+  }
+  if (picking === "center"){ clat.value = lat.toFixed(6); clon.value = lon.toFixed(6); }
+  if (picking === "A") ca.value = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+  if (picking === "B") cb.value = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+  picking = null; pickhint.style.display = "none"; preview();
+});
+function pick(which, label){ picking = which;
+  pickhint.textContent = `click the map to set ${label}`;
+  pickhint.style.display = "block"; }
+pickCenter.onclick = () => pick("center","the area center");
+pickA.onclick = () => pick("A","corner A");
+pickB.onclick = () => pick("B","corner B");
+imageryBtn.onclick = () => {
+  imagery = !imagery;
+  imageryBtn.textContent = imagery ? "Imagery on" : "Imagery off";
+};
+eventsBtn.onclick = () => {
+  showEvents = !showEvents;
+  if (!showEvents) hoverEvt = null;
+  eventsBtn.textContent = showEvents ? "Events on" : "Events off";
+};
+dataBtn.onclick = () => {
+  showData = !showData;
+  if (!showData) hoverEvt = null;
+  dataBtn.textContent = showData ? "Data on" : "Data off";
+};
+modalClose.onclick = closeModal;
+modal.onclick = e => { if (e.target === modal) closeModal(); };
+window.addEventListener("keydown", e => {
+  if (e.key === "Escape") closeModal();
+});
+
+// ---------- sensor tasking ----------
+capNow.onclick = () =>
+  send({cmd:"sensor", vehicle:tvid.value, params:{
+    sensor:tsensor.value, mode:"now", duration_s:+tdur.value}});
+capPick.onclick = () => pick("capture",
+  `${tsensor.value} capture point for ${tvid.value}`);
+
+// ---------- replay transport ----------
+replayBtn.onclick = openReplayPicker;
+rplay.onclick = () => {
+  if (REPLAY.i >= REPLAY.msgs.length && !REPLAY.playing) replaySeek(0);
+  REPLAY.playing = !REPLAY.playing;
+  rplay.textContent = REPLAY.playing ? "⏸" : "▶";
+};
+rslider.addEventListener("input", () => replaySeek(+rslider.value));
+rexit.onclick = () => location.reload();  // cleanest path back to live
+
+// ---------- authorized companion shutdown ----------
+function cmdShutdown(vid){
+  const typed = prompt(
+    `AUTHORIZED SHUTDOWN of ${vid}'s companion computer.\n` +
+    `The vehicle must be DISARMED and idle. The companion syncs its\n` +
+    `journals and powers off cleanly (safe to pull the battery after).\n\n` +
+    `Type the vehicle id (${vid}) to confirm:`);
+  if (typed === null) return;
+  if (typed.trim() !== vid){ alert("confirm mismatch — not sent"); return; }
+  send({cmd:"system", vehicle:vid, command:"shutdown", confirm:vid});
+}
+
+// ---------- area + mission params ----------
+let areaMode = "center";
+modeSeg.querySelectorAll("button").forEach(b => b.onclick = () => {
+  areaMode = b.dataset.mode;
+  modeSeg.querySelectorAll("button").forEach(x => x.classList.toggle("on", x===b));
+  centerMode.style.display = areaMode==="center" ? "" : "none";
+  cornersMode.style.display = areaMode==="corners" ? "" : "none";
+  preview();
+});
+const parseLL = s => s.split(",").map(parseFloat);
+function areaSpec(){
+  if (areaMode === "center")
+    return { mode:"center", center_lat:+clat.value, center_lon:+clon.value,
+             width_m:+wm.value, height_m:+hm.value };
+  const a = parseLL(ca.value||""), b = parseLL(cb.value||"");
+  return { mode:"corners", corner_a:a, corner_b:b };
+}
+function missionParams(){
+  return { area: areaSpec(), agl_m:+agl.value, leg_spacing_m:+spacing.value,
+    capture_every_m:+capm.value, speed_m_s:+speed.value,
+    object_query: objq.value, min_confidence:+minconf.value,
+    target_separation_m:+sep.value,
+    orbit_agl_m:+oagl.value, orbit_radius_m:+oradius.value,
+    orbit_count:+ocount.value, max_duration_s: 600,
+    investigate_sensors: [senscam.checked && "camera",
+                          sensaud.checked && "audio"].filter(Boolean) };
+}
+function preview(){
+  const a = areaSpec();
+  if (a.mode==="corners" && (!a.corner_a || a.corner_a.length<2 ||
+      !a.corner_b || a.corner_b.length<2 ||
+      a.corner_a.some(isNaN) || a.corner_b.some(isNaN))) return;
+  if (REPLAY.active) return;
+  // v3: the preview is an HTTP endpoint sharing uas-flight's raster
+  // geometry with the agent — what you preview is what flies.
+  fetch("/preview", { method:"POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ area:a, leg_spacing_m:+spacing.value,
+      capture_every_m:+capm.value, speed_m_s:+speed.value }) })
+    .then(r => r.json()).then(m => dispatch(m)).catch(() => {});
+}
+["clat","clon","wm","hm","ca","cb","spacing","capm","speed"].forEach(id =>
+  document.getElementById(id).addEventListener("change", preview));
+previewBtn.onclick = preview;
+function onPreview(m){
+  plan = m.plan;
+  estimate.textContent =
+    `${m.plan.legs.length} legs · ${m.plan.captures.length} captures · ~${Math.round(m.estimate_s)} s`;
+  view.lat = m.plan.center.lat; view.lon = m.plan.center.lon;
+}
+
+// the only confirmation in the UI, per spec
+startBtn.onclick = () => {
+  if (!plan) { preview(); }
+  const est = estimate.textContent || "";
+  if (confirm(`Start mission?\n${est}\nWUAS searches at ${agl.value} m AGL.`))
+    send({ cmd:"start_mission", params: missionParams() });
+};
+rtlAll.onclick = () => send({cmd:"all", command:"rtl"});
+landAll.onclick = () => send({cmd:"all", command:"land"});
+holdAll.onclick = () => send({cmd:"all", command:"hold"});
+
+// ---------- vehicle tiles + video panels ----------
+function onHello(m){
+  VEHICLES = m.vehicles;
+  if (m.mission){
+    targets = m.mission.targets || [];
+    setState(m.mission.state || "idle");
+    renderTargets();
+  }
+  (m.sensor_data || []).forEach(pushSensorData);
+  VEHICLES.forEach((v,i) => COLORS[v] = PALETTE[i % PALETTE.length]);
+  tvid.innerHTML = VEHICLES.map(v => `<option value="${v}">${v}</option>`).join("");
+  cards.innerHTML = ""; videos.innerHTML = "";
+  VEHICLES.forEach(vid => {
+    drones[vid] = drones[vid] || {lat:view.lat, lon:view.lon, trail:[], stale:true};
+    const tile = document.createElement("div");
+    tile.className = "cds-tile";
+    tile.innerHTML = `
+      <div class="head"><b><span class="vid-dot" style="background:${COLORS[vid]}"></span>${vid}</b>
+        <span class="cds-toggle on" id="en-${vid}" role="switch" aria-checked="true"
+              tabindex="0" title="Enable/disable this vehicle. Disabled: no auto-dispatch and no takeoff, but RTL/Land/Hold still work."><span class="lbl">enabled</span><span class="track"></span></span></div>
+      <div class="head" style="margin-bottom:8px">
+        <span class="cds-tag cds-tag--gray" id="link-${vid}">no link</span>
+        <span class="cds-tag cds-tag--gray" id="caps-${vid}" style="display:none"
+              title="sensors this vehicle advertises"></span>
+        <span class="cds-tag cds-tag--gray" id="gate-${vid}" style="display:none">disabled</span></div>
+      <div class="kv">
+        <span class="k">mode</span><span class="k">AGL</span><span class="k">battery</span>
+        <span class="v" id="mode-${vid}">–</span>
+        <span class="v" id="agl-${vid}">–</span>
+        <span class="v" id="batt-${vid}">–</span>
+        <span class="k">armed</span><span class="k">task</span><span class="k">source</span>
+        <span class="v" id="armed-${vid}">–</span>
+        <span class="v" id="busy-${vid}">–</span>
+        <span class="v" id="src-${vid}">–</span>
+        <span class="k">clock Δ</span><span class="k"></span><span class="k"></span>
+        <span class="v" id="skew-${vid}" title="node clock minus GCS clock; large values mean the time subsystem needs attention, not the link">–</span>
+        <span class="v"></span>
+        <span class="v"></span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:flex-end;margin-top:12px">
+        <div class="field" style="margin:0;flex:0 0 64px">
+          <label for="toagl-${vid}">T/O AGL</label>
+          <input id="toagl-${vid}" type="number" step="0.5" value="5" style="height:24px;padding:0 6px"></div>
+        <button class="cds-btn cds-btn--secondary" style="height:24px;padding:0 8px;font-size:12px;flex:1"
+          onclick="cmdTakeoff('${vid}')">Takeoff</button>
+      </div>
+      <div class="btnrow" style="margin-top:8px">
+        <button class="cds-btn cds-btn--danger-tertiary"
+          onclick="send({cmd:'flight',vehicle:'${vid}',command:'rtl'})">RTL</button>
+        <button class="cds-btn cds-btn--danger-tertiary"
+          onclick="send({cmd:'flight',vehicle:'${vid}',command:'land'})">Land</button>
+        <button class="cds-btn cds-btn--tertiary"
+          onclick="send({cmd:'flight',vehicle:'${vid}',command:'hold'})">Hold</button>
+      </div>
+      <div class="btnrow" style="margin-top:8px">
+        <button class="cds-btn cds-btn--ghost" style="font-size:12px"
+          title="clean sync + poweroff of the companion computer; refused while armed or mid-task"
+          onclick="cmdShutdown('${vid}')">⏻ Power off companion</button>
+      </div>`;
+    cards.appendChild(tile);
+    // enable toggle
+    const en = document.getElementById(`en-${vid}`);
+    const enabled0 = !m.enabled || m.enabled[vid] !== false;
+    setEnabledUI(vid, enabled0);
+    const flipEnabled = () => {
+      const now = !en.classList.contains("on");
+      send({cmd:"set_enabled", vehicle:vid, enabled:now});
+      setEnabledUI(vid, now);
+    };
+    en.onclick = flipEnabled;
+    en.onkeydown = e => { if (e.key===" "||e.key==="Enter"){ e.preventDefault(); flipEnabled(); } };
+
+    const vp = document.createElement("div");
+    vp.className = "cds-tile vidpanel";
+    vp.innerHTML = `
+      <div class="head"><b style="color:${COLORS[vid]}">${vid}</b>
+        <span class="cds-toggle" id="vtog-${vid}" role="switch" aria-checked="false"
+              tabindex="0"><span class="lbl">camera</span><span class="track"></span></span>
+      </div>
+      <img id="vimg-${vid}" style="display:none" alt="${vid} video">
+      <div class="vidstats" id="vstats-${vid}"></div>`;
+    videos.appendChild(vp);
+    let on = false;
+    const tog = document.getElementById(`vtog-${vid}`);
+    const flip = () => {
+      on = !on;
+      tog.classList.toggle("on", on);
+      tog.setAttribute("aria-checked", on);
+      document.getElementById(`vimg-${vid}`).style.display = on ? "" : "none";
+      send({cmd:"video", vehicle:vid,
+            params:{enable:on, width:320, height:240, fps:8, quality:40}});
+    };
+    tog.onclick = flip;
+    tog.onkeydown = e => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); flip(); } };
+  });
+  if (m.capabilities)
+    Object.entries(m.capabilities).forEach(([v, sensors]) =>
+      onCaps({vehicle:v, sensors}));
+}
+function onTelemetry(m){
+  const s = m.sample, vid = m.vehicle;
+  const d = drones[vid] = drones[vid] || {trail:[]};
+  Object.assign(d, { tlat:s.lat_deg, tlon:s.lon_deg, agl:s.agl_m,
+    thead:s.heading_deg, stale:false });
+  const tail = d.trail[d.trail.length-1];
+  if (!tail || tail[0] !== s.lat_deg || tail[1] !== s.lon_deg){
+    d.trail.push([s.lat_deg, s.lon_deg]);
+    if (d.trail.length > 600) d.trail.shift();
+  }
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  const avoid = s.avoid_bias_m
+    ? ` ⚠${s.avoid_bias_m > 0 ? "+" : ""}${s.avoid_bias_m.toFixed(0)}m` : "";
+  set(`mode-${vid}`, (s.mode || "–") + avoid);
+  const modeEl = document.getElementById(`mode-${vid}`);
+  if (modeEl) modeEl.style.color = avoid ? "var(--cds-support-warning)" : "";
+  set(`agl-${vid}`, `${(s.agl_m??0).toFixed(1)} m` +
+    (s.rangefinder_m >= 0 ? ` · rf ${s.rangefinder_m.toFixed(1)}` : ""));
+  const aglEl = document.getElementById(`agl-${vid}`);
+  if (aglEl) aglEl.style.color = s.agl_alarm ? "var(--cds-support-error)" : "";
+  set(`armed-${vid}`, s.armed ? "yes" : "no");
+  set(`busy-${vid}`, s.busy || "idle");
+  set(`src-${vid}`, s.source);
+  const batt = document.getElementById(`batt-${vid}`);
+  if (batt){
+    batt.textContent = s.battery_pct >= 0 ? `${s.battery_pct.toFixed(0)}%`
+      : (s.battery_v > 0 ? `${s.battery_v.toFixed(1)} V` : "–");
+    batt.style.color = s.battery_pct < 0 ? ""
+      : s.battery_pct < 20 ? "var(--cds-support-error)"
+      : s.battery_pct < 40 ? "var(--cds-support-warning)"
+      : "var(--cds-support-success)";
+  }
+  const link = document.getElementById(`link-${vid}`);
+  if (link){ const age = m.age_s;
+    link.textContent = `link ${age.toFixed(0)} s`;
+    link.className = "cds-tag " + (age < 4 ? "cds-tag--green"
+      : age < 10 ? "cds-tag--yellow" : "cds-tag--red"); }
+  const skew = document.getElementById(`skew-${vid}`);
+  if (skew && m.skew_s != null){
+    const a = Math.abs(m.skew_s);
+    skew.textContent = a < 120 ? `${m.skew_s > 0 ? "−" : "+"}${a.toFixed(0)} s`
+      : `${m.skew_s > 0 ? "−" : "+"}${(a/60).toFixed(1)} min`;
+    skew.style.color = a < 5 ? "" : "var(--cds-support-warning)";
+  }
+}
+function onStale(m){
+  const d = drones[m.vehicle]; if (d) d.stale = true;
+  const link = document.getElementById(`link-${m.vehicle}`);
+  if (link){ link.textContent = m.silent_s == null ? "no link"
+      : `lost ${m.silent_s.toFixed(0)} s`; link.className = "cds-tag cds-tag--red"; }
+}
+function onSearch(m){
+  const s = m.status;
+  mframes.textContent = s.frames_captured;
+  mleg.textContent = `${s.leg+1}/${s.legs_total}`;
+  mdet.textContent = `${m.detects_done}/${m.detects_done + m.detects_pending}`;
+}
+
+// ---------- video frames (binary: [vehicleIndex][jpeg]) ----------
+const blobURLs = {};
+function onVideoFrame(buf){
+  const u8 = new Uint8Array(buf);
+  const vid = VEHICLES[u8[0]]; if (!vid) return;
+  const img = document.getElementById(`vimg-${vid}`); if (!img) return;
+  const blob = new Blob([u8.slice(1)], {type:"image/jpeg"});
+  if (blobURLs[vid]) URL.revokeObjectURL(blobURLs[vid]);
+  blobURLs[vid] = URL.createObjectURL(blob);
+  img.src = blobURLs[vid];
+}
+const SENSOR_ICON = { camera:"📷", audio:"🎙" };
+function onCaps(m){
+  CAPS[m.vehicle] = m.sensors || [];
+  const el = document.getElementById(`caps-${m.vehicle}`);
+  if (!el) return;
+  el.textContent = (m.sensors || []).map(s => SENSOR_ICON[s] || s).join(" ")
+    || "–";
+  el.title = `sensors: ${(m.sensors || []).join(", ") || "none"} — `
+    + "click to browse this vehicle's captured data";
+  el.style.display = "";
+  el.style.cursor = "pointer";
+  el.onclick = () =>
+    openModal(`${m.vehicle} captured data`,
+      sensorData.filter(d => d.vehicle === m.vehicle).slice().reverse());
+}
+function onVideoStats(m){
+  const el = document.getElementById(`vstats-${m.vehicle}`);
+  if (el) el.textContent = `${m.fps} fps · ${m.kbps} kbps · #${m.seq}`;
+}
+
+// ---------- events / mission state ----------
+const STATE_TAG = { idle:"cds-tag--gray", searching:"cds-tag--blue",
+  investigating:"cds-tag--yellow",
+  done:"cds-tag--green", aborted:"cds-tag--red" };
+function setState(state){
+  mstate.textContent = state;
+  mstate.className = "cds-tag " + (STATE_TAG[state] ?? "cds-tag--gray");
+}
+// ---------- targets panel ----------
+const TGT_TAG = { queued:"cds-tag--yellow", investigating:"cds-tag--blue",
+                  done:"cds-tag--green", failed:"cds-tag--red" };
+function renderTargets(){
+  mtargets.textContent = targets.length;
+  if (!targets.length){
+    detCard.textContent = mstate.textContent === "searching"
+      ? "searching…" : "none yet";
+    thumb.style.display = "none";
+    return;
+  }
+  detCard.innerHTML = targets.map(t => `
+    <div style="display:flex;justify-content:space-between;align-items:center;
+                margin-bottom:8px">
+      <span><b>#${t.index} ${t.object_id}</b> · ${(t.confidence*100).toFixed(1)}%
+        <div class="mono">${t.lat.toFixed(6)}, ${t.lon.toFixed(6)}</div>
+        <div>${(t.jobs || []).map(j => `
+          <span class="cds-tag ${TGT_TAG[j.status]||'cds-tag--gray'}"
+                title="${j.vehicle || 'not assigned yet'}">${j.sensor} ${j.status}</span>
+          ${(j.artifacts || []).map(a => `<a target="_blank"
+            href="/artifact?name=${encodeURIComponent(a)}">${j.sensor === "audio"
+              ? "audio" : "capture"} ↗</a>`).join(" ")}`).join(" ")}
+        </div>
+      </span>
+      <span class="cds-tag ${TGT_TAG[t.status]||'cds-tag--gray'}">${t.status}</span>
+    </div>`).join("");
+  const latest = targets[targets.length-1];
+  if (latest && latest.frame){
+    thumb.src = `/artifact?name=${encodeURIComponent(latest.frame)}`;
+    thumb.style.display = "block";
+  }
+}
+
+function onEvent(m){
+  const line = document.createElement("div");
+  line.className = "n";
+  const t = new Date(m.t*1000).toLocaleTimeString();
+  const isDetect = m.kind.startsWith("detect.") && m.seq != null;
+  const skip = ["type","kind","t"].concat(isDetect ? ["frame","seq"] : []);
+  const extra = Object.entries(m).filter(([k]) =>
+    !skip.includes(k)).map(([k,v]) =>
+    `${k}=${typeof v==="number" ? +v.toFixed(5) : JSON.stringify(v)}`).join(" ");
+  const tag = isDetect ? `<b>frame #${m.seq}</b> ` : "";
+  line.innerHTML = `<span class="t">${t}</span>${m.kind} ${tag}${extra}`;
+  if (m.kind.includes("hit") || m.kind.includes("target_found") ||
+      m.kind.includes("completed")) line.classList.add("hit");
+  if (m.kind.includes("fail") || m.kind.includes("timeout")) line.classList.add("err");
+  // detect responses complete out of capture order (each frame's round
+  // trip varies); slot each detect line above the first detect line with
+  // a LOWER frame number so the log reads in frame order
+  let anchor = null;
+  if (isDetect){
+    line.dataset.seq = m.seq;
+    for (const child of log.children){
+      const s = child.dataset.seq;
+      if (s !== undefined && Number(s) < m.seq){ anchor = child; break; }
+    }
+  }
+  if (anchor) log.insertBefore(line, anchor); else log.prepend(line);
+  while (log.children.length > 250) log.lastChild.remove();
+
+  // pin georeferenced events to the map, and let the log line locate
+  // them: click pans the view to where (and shows when) it happened
+  pushMapEvent(m);
+  if (typeof m.lat === "number" && typeof m.lon === "number"){
+    line.style.cursor = "pointer";
+    line.title = "click to locate on map";
+    line.onclick = () => { view.lat = m.lat; view.lon = m.lon; };
+  }
+
+  const byIndex = i => targets.find(x => x.index === i);
+  const jobOf = (tg, sensor) =>
+    (tg.jobs || []).find(j => j.sensor === sensor);
+  switch (m.kind){
+    case "mission.started":
+      setState("searching"); targets = []; mapEvents = []; hoverEvt = null;
+      renderTargets(); break;
+    case "mission.target_found":
+      targets.push({ index:m.index, object_id:m.object_id,
+        confidence:m.confidence, lat:m.lat, lon:m.lon, frame:m.frame,
+        status:"queued", artifacts:[],
+        jobs:(m.sensors || ["camera"]).map(s =>
+          ({sensor:s, vehicle:"", status:"queued", artifacts:[]})) });
+      renderTargets(); break;
+    case "target.updated": {
+      const tg = byIndex(m.index);
+      if (tg){ tg.confidence = m.confidence; tg.lat = m.lat; tg.lon = m.lon;
+               tg.frame = m.frame; renderTargets(); }
+      break; }
+    case "target.dispatch": {
+      const tg = byIndex(m.index);
+      if (tg){ tg.status = "investigating";
+               const j = jobOf(tg, m.sensor);
+               if (j){ j.status = "investigating"; j.vehicle = m.vehicle; }
+               renderTargets(); }
+      break; }
+    case "target.job_completed":
+    case "target.job_failed": {
+      const tg = byIndex(m.index);
+      if (tg){ const j = jobOf(tg, m.sensor);
+               if (j){ j.status = m.kind === "target.job_completed"
+                         ? "done" : "failed";
+                       j.artifacts = m.artifacts || []; }
+               renderTargets(); }
+      break; }
+    case "target.completed":
+    case "target.failed": {
+      const tg = byIndex(m.index);
+      if (tg){ tg.status = m.kind === "target.completed" ? "done" : "failed";
+               tg.artifacts = m.artifacts || []; renderTargets(); }
+      break; }
+    case "mission.completed":
+      setState("done"); renderTargets(); break;
+    case "mission.search_finished":
+      // raster done; if targets remain, the IUAS queue is still draining
+      if (targets.some(t => t.status === "queued" || t.status === "investigating"))
+        setState("investigating");
+      break;
+    case "mission.search_failed":
+    case "mission.search_timeout":
+      // backend still drains/completes the queue; tag reflects the phase
+      if (!targets.length) setState("done");
+      break;
+    case "command.sent":
+      // operator stop of the searcher: reflect the abort immediately
+      if (m.vehicle === VEHICLES[0] && mstate.textContent === "searching")
+        setState("aborted");
+      break;
+    case "vehicle.enabled":
+      setEnabledUI(m.vehicle, true); break;
+    case "vehicle.disabled":
+      setEnabledUI(m.vehicle, false); break;
+  }
+}
+
+resize(); connect(); draw();
+setTimeout(preview, 800);
+</script>
+</body>
+</html>

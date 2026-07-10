@@ -1,0 +1,678 @@
+//! miniMUAS v3 GCS dashboard: web UI backend + mission orchestrator.
+//!
+//! One process, three jobs (the v2 shape, ported):
+//!
+//! 1. **Web server** (axum) at `http://0.0.0.0:8080` serving the embedded
+//!    single-page canvas UI and one WebSocket carrying everything:
+//!    telemetry, search status, events, detections, video frames (binary),
+//!    and operator commands — the v2 JSON message schema, kept.
+//! 2. **NDN consumer** (`/muas/v3` engine + UDP faces, the muas-agent
+//!    bring-up pattern): latest-wins pollers with MustBeFresh, and every
+//!    service request through the typed `VehicleService` client over
+//!    `FaceRpcCarrier`.
+//! 3. **Mission state machine** — detect→confirm→queue→dispatch, the brain
+//!    the agents deliberately don't have ([`mission`]).
+//!
+//! Recording: every JSON broadcast lands in a power-loss-safe JSONL via
+//! uas-console's `Recorder`; `/replays` serves the index and the files, and
+//! replay is frontend-driven through the same `dispatch()` handlers.
+
+pub mod config;
+pub mod hub;
+pub mod lens;
+pub mod mission;
+pub mod ndn;
+pub mod providers;
+pub mod raster;
+pub mod server;
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::time::Duration;
+
+use ndn_app::EngineAppExt;
+use ndn_engine::{ForwarderEngine, ShutdownHandle};
+use serde_json::{json, Value};
+use tokio_util::sync::CancellationToken;
+
+pub use config::{DashConfig, ParseOutcome, UdpLink, HELP};
+
+/// CLI convenience: parsed config, `Ok(None)` for `--help`.
+pub fn parse_outcome(args: &[String]) -> Result<Option<DashConfig>, String> {
+    match config::parse_args(args)? {
+        ParseOutcome::Run(config) => Ok(Some(*config)),
+        ParseOutcome::Help => Ok(None),
+    }
+}
+use mission::{Action, DetectOutcome, JobResult, Mission, MissionConfig};
+use providers::{CmdResult, Commander, DetectionProvider};
+
+/// Lock a mutex, recovering from poisoning (v2's "failures never kill the
+/// process" posture, same as muas-agent).
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Wall clock, seconds since the Unix epoch (v2 `time.time()`).
+fn now_s() -> f64 {
+    hub::now_ns() as f64 / 1e9
+}
+
+/// Everything the web layer, the pollers, and the action executor share.
+pub struct Dashboard {
+    pub config: DashConfig,
+    pub hub: hub::Hub,
+    mission: Mutex<Mission>,
+    /// Last decoded telemetry per vehicle (armed guard for shutdown).
+    last_sample: Mutex<HashMap<String, Value>>,
+    /// Everything captured this session (map layer + playback modal).
+    sensor_data: Mutex<Vec<Value>>,
+    /// Per-vehicle video relay enable flags.
+    video_flags: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    pub detector: Arc<dyn DetectionProvider>,
+    pub commander: Arc<dyn Commander>,
+    /// uas-console binding dogfood (track + tile lenses, /instrument.json).
+    pub lens: lens::LensHost,
+    /// Engine handle for on-demand consumers (artifacts, video relays);
+    /// absent in pure-logic tests.
+    engine: OnceLock<(ForwarderEngine, CancellationToken)>,
+}
+
+impl Dashboard {
+    /// Assemble the shared state (no sockets yet — see [`start`]).
+    pub fn new(
+        config: DashConfig,
+        detector: Arc<dyn DetectionProvider>,
+        commander: Arc<dyn Commander>,
+    ) -> Self {
+        let mut mission_cfg =
+            MissionConfig::new(config.wuas_id.clone(), config.iuas_ids.clone());
+        mission_cfg.confirm_count = config.confirm_count;
+        mission_cfg.search_margin_s = config.search_margin_s;
+        let vehicles = config.vehicles();
+        Self {
+            hub: hub::Hub::new(config.record_dir.clone()),
+            mission: Mutex::new(Mission::new(mission_cfg)),
+            last_sample: Mutex::new(HashMap::new()),
+            sensor_data: Mutex::new(Vec::new()),
+            video_flags: Mutex::new(HashMap::new()),
+            detector,
+            commander,
+            lens: lens::LensHost::new(&vehicles),
+            engine: OnceLock::new(),
+            config,
+        }
+    }
+
+    /// Attach the engine (enables artifact fetches + video relays).
+    pub fn attach_engine(&self, engine: ForwarderEngine, cancel: CancellationToken) {
+        let _ = self.engine.set((engine, cancel));
+    }
+
+    /// A fresh app consumer over the attached engine.
+    pub fn consumer(&self) -> Option<ndn_app::Consumer> {
+        self.engine
+            .get()
+            .map(|(engine, cancel)| engine.app_consumer(cancel.child_token()))
+    }
+
+    /// The vehicle list, WUAS first (wire ordering).
+    pub fn vehicles(&self) -> Vec<String> {
+        self.config.vehicles()
+    }
+
+    /// The searcher id.
+    pub fn wuas_id(&self) -> String {
+        self.config.wuas_id.clone()
+    }
+
+    /// Run a closure under the mission lock.
+    pub fn with_mission<R>(&self, f: impl FnOnce(&mut Mission) -> R) -> R {
+        f(&mut lock(&self.mission))
+    }
+
+    /// Current mission state string.
+    pub fn mission_state(&self) -> String {
+        lock(&self.mission).state.clone()
+    }
+
+    /// `(detects_pending, detects_done)` for the search-status banner.
+    pub fn detect_counters(&self) -> (u64, u64) {
+        let m = lock(&self.mission);
+        (m.detects_pending, m.detects_done)
+    }
+
+    pub(crate) fn set_last_sample(&self, vehicle: &str, sample: Value) {
+        lock(&self.last_sample).insert(vehicle.to_string(), sample);
+    }
+
+    /// The v2 hello message a new WS client receives.
+    pub fn hello(&self) -> Value {
+        let m = lock(&self.mission);
+        let enabled: serde_json::Map<String, Value> = m
+            .enabled
+            .iter()
+            .map(|(k, v)| (k.clone(), json!(v)))
+            .collect();
+        let capabilities: serde_json::Map<String, Value> = m
+            .capabilities
+            .iter()
+            .map(|(k, v)| (k.clone(), json!(v.iter().cloned().collect::<Vec<_>>())))
+            .collect();
+        json!({
+            "type": "hello",
+            "vehicles": self.vehicles(),
+            "enabled": enabled,
+            "capabilities": capabilities,
+            "sensor_data": *lock(&self.sensor_data),
+            "mission": m.hello_mission(),
+        })
+    }
+
+    /// Broadcast a v2-shaped event (`{"type":"event","kind",...,"t"}`).
+    pub fn emit_event(&self, kind: &str, fields: Value) {
+        let mut m = json!({ "type": "event", "kind": kind, "t": now_s() });
+        if let (Some(dst), Some(src)) = (m.as_object_mut(), fields.as_object()) {
+            for (k, v) in src {
+                dst.insert(k.clone(), v.clone());
+            }
+        }
+        tracing::info!(target: "dash", kind, "event");
+        self.hub.broadcast(&m);
+    }
+
+    /// Register + broadcast a captured-data item (dedup by name, cap 500 —
+    /// the v2 sensor-data registry).
+    pub fn add_sensor_data(&self, item: Value) {
+        {
+            let mut data = lock(&self.sensor_data);
+            let name = item.get("name").cloned().unwrap_or(Value::Null);
+            if data.iter().any(|d| d.get("name") == Some(&name)) {
+                return;
+            }
+            data.push(item.clone());
+            let excess = data.len().saturating_sub(500);
+            if excess > 0 {
+                data.drain(..excess);
+            }
+        }
+        self.hub.broadcast(&json!({ "type": "sensor_data", "item": item }));
+    }
+
+    // ── action executor ─────────────────────────────────────────────────────
+
+    /// Execute the mission machine's actions: broadcast emissions, fan out
+    /// detections, dispatch jobs, start searches.
+    pub fn apply_actions(self: &Arc<Self>, actions: Vec<Action>) {
+        for action in actions {
+            match action {
+                Action::Emit(message) => {
+                    if message.get("type") == Some(&json!("event")) {
+                        let kind = message.get("kind").and_then(Value::as_str).unwrap_or("");
+                        tracing::info!(target: "dash", kind, "event");
+                    }
+                    self.hub.broadcast(&message);
+                }
+                Action::SensorData(item) => self.add_sensor_data(item),
+                Action::Detect { mission_id, frame, seq: _, object_query } => {
+                    let dash = self.clone();
+                    let timeout = Duration::from_millis(dash.config.detect_timeout_ms);
+                    tokio::spawn(async move {
+                        let fut = dash.detector.detect(mission_id, frame.clone(), object_query);
+                        let outcome = match tokio::time::timeout(timeout, fut).await {
+                            Ok(outcome) => outcome,
+                            Err(_) => DetectOutcome::Timeout,
+                        };
+                        let actions =
+                            dash.with_mission(|m| m.on_detect_outcome(&frame, outcome));
+                        dash.apply_actions(actions);
+                    });
+                }
+                Action::StartSearch { vehicle, order } => {
+                    let dash = self.clone();
+                    tokio::spawn(async move {
+                        let deadline = Duration::from_secs_f64(order.timeout_s.max(1.0));
+                        let mission_id = order.mission_id.clone();
+                        let result =
+                            dash.commander.raster_search(vehicle.clone(), order).await;
+                        let actions = match result {
+                            CmdResult::Ack(ack) if ack.accepted => {
+                                // The v3 raster ack returns immediately;
+                                // completion rides the search/status stream.
+                                // Arm the v2-sized deadline as the backstop.
+                                let dash2 = dash.clone();
+                                tokio::spawn(async move {
+                                    tokio::time::sleep(deadline).await;
+                                    let actions = dash2.with_mission(|m| {
+                                        if m.mission_id == mission_id {
+                                            m.on_search_timeout()
+                                        } else {
+                                            Vec::new()
+                                        }
+                                    });
+                                    dash2.apply_actions(actions);
+                                });
+                                Vec::new()
+                            }
+                            CmdResult::Ack(ack) => dash.with_mission(|m| {
+                                m.on_search_response(false, "", 0, &ack.detail)
+                            }),
+                            CmdResult::Timeout => {
+                                dash.with_mission(mission::Mission::on_search_timeout)
+                            }
+                            CmdResult::Error(err) => dash
+                                .with_mission(|m| m.on_search_response(false, "", 0, &err)),
+                        };
+                        dash.apply_actions(actions);
+                    });
+                }
+                Action::Dispatch { target_index, sensor, vehicle, order } => {
+                    let dash = self.clone();
+                    tokio::spawn(async move {
+                        let result = dash.commander.investigate(vehicle, order).await;
+                        // v3 deviation (documented): `investigate` returns a
+                        // typed Ack (intent accepted/rejected), not v2's
+                        // blocking FlightTaskResult with artifacts — job
+                        // outcome maps from the Ack; artifacts arrive via
+                        // the data plane once agent-side capture lands.
+                        let job = match result {
+                            CmdResult::Ack(ack) => JobResult {
+                                target_index,
+                                sensor,
+                                ok: ack.accepted,
+                                artifacts: Vec::new(),
+                                note: ack.detail,
+                                artifact_items: Vec::new(),
+                            },
+                            CmdResult::Timeout => JobResult {
+                                target_index,
+                                sensor,
+                                ok: false,
+                                artifacts: Vec::new(),
+                                note: "timeout".into(),
+                                artifact_items: Vec::new(),
+                            },
+                            CmdResult::Error(err) => JobResult {
+                                target_index,
+                                sensor,
+                                ok: false,
+                                artifacts: Vec::new(),
+                                note: err,
+                                artifact_items: Vec::new(),
+                            },
+                        };
+                        let actions = dash.with_mission(|m| m.on_job_result(job));
+                        dash.apply_actions(actions);
+                    });
+                }
+            }
+        }
+    }
+
+    // ── operator commands (from the WS) ─────────────────────────────────────
+
+    /// v2 `handle_command`: one parsed WS text message. A `Some` return is
+    /// replied to the requesting client only (`raster_preview`).
+    pub fn handle_command(self: &Arc<Self>, message: &Value) -> Option<Value> {
+        let cmd = message.get("cmd").and_then(Value::as_str).unwrap_or("");
+        match cmd {
+            "preview_raster" => {
+                let f = |k: &str, d: f64| message.get(k).and_then(Value::as_f64).unwrap_or(d);
+                return Some(raster::preview_message(
+                    message.get("area").unwrap_or(&Value::Null),
+                    f("leg_spacing_m", 5.0),
+                    f("capture_every_m", 4.0),
+                    f("speed_m_s", 2.0),
+                ));
+            }
+            "start_mission" => {
+                let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
+                let actions = self.with_mission(|m| m.start_mission(params));
+                self.apply_actions(actions);
+            }
+            "set_enabled" => {
+                let vid = message.get("vehicle").and_then(Value::as_str).unwrap_or("");
+                let enabled = message.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+                let actions = self.with_mission(|m| m.set_enabled(vid, enabled));
+                self.apply_actions(actions);
+            }
+            "flight" => self.cmd_flight(message),
+            "all" => self.cmd_all(message),
+            "video" => self.cmd_video(message),
+            "sensor" => self.cmd_sensor(message),
+            "system" => self.cmd_system(message),
+            _ => {}
+        }
+        None
+    }
+
+    fn vehicle_of(&self, message: &Value) -> Option<String> {
+        let vid = message.get("vehicle").and_then(Value::as_str)?;
+        self.vehicles().contains(&vid.to_string()).then(|| vid.to_string())
+    }
+
+    fn enabled(&self, vehicle: &str) -> bool {
+        lock(&self.mission).enabled.get(vehicle).copied().unwrap_or(true)
+    }
+
+    fn cmd_flight(self: &Arc<Self>, message: &Value) {
+        let Some(vid) = self.vehicle_of(message) else { return };
+        let command = message.get("command").and_then(Value::as_str).unwrap_or("");
+        if !matches!(command, "rtl" | "land" | "hold" | "takeoff") {
+            return;
+        }
+        // Safety actions (rtl/land/hold) are ALWAYS allowed, even to a
+        // disabled vehicle — disable must never trap an aircraft in the
+        // air. Only takeoff is blocked.
+        if !self.enabled(&vid) && command == "takeoff" {
+            self.emit_event(
+                "command.rejected",
+                json!({ "vehicle": vid, "command": command, "reason": "vehicle disabled" }),
+            );
+            return;
+        }
+        self.with_mission(|m| m.note_flight_command(&vid, command));
+        self.send_flight(vid, command.to_string(), message.get("params").cloned());
+    }
+
+    fn send_flight(self: &Arc<Self>, vid: String, command: String, params: Option<Value>) {
+        self.emit_event("command.sent", json!({ "vehicle": vid, "command": command }));
+        let agl = params
+            .as_ref()
+            .and_then(|p| p.get("target_agl_m"))
+            .and_then(Value::as_f64);
+        let dash = self.clone();
+        tokio::spawn(async move {
+            match dash.commander.flight(vid.clone(), command.clone(), agl).await {
+                CmdResult::Ack(ack) => dash.emit_event(
+                    "command.result",
+                    json!({
+                        "vehicle": vid,
+                        "command": command,
+                        "ok": ack.accepted,
+                        "error": ack.detail,
+                    }),
+                ),
+                CmdResult::Timeout => dash.emit_event(
+                    "command.timeout",
+                    json!({ "vehicle": vid, "command": command }),
+                ),
+                CmdResult::Error(err) => dash.emit_event(
+                    "command.result",
+                    json!({ "vehicle": vid, "command": command, "ok": false, "error": err }),
+                ),
+            }
+        });
+    }
+
+    fn cmd_all(self: &Arc<Self>, message: &Value) {
+        let command = message.get("command").and_then(Value::as_str).unwrap_or("");
+        if !matches!(command, "rtl" | "land" | "hold") {
+            return;
+        }
+        self.with_mission(mission::Mission::note_all_command);
+        for vid in self.vehicles() {
+            self.send_flight(vid, command.to_string(), None);
+        }
+    }
+
+    fn cmd_video(self: &Arc<Self>, message: &Value) {
+        let Some(vid) = self.vehicle_of(message) else { return };
+        let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
+        let enable = params.get("enable").and_then(Value::as_bool).unwrap_or(false);
+        let u = |k: &str, d: u64| params.get(k).and_then(Value::as_u64).unwrap_or(d);
+        let request = muas_contracts::services::VideoRequest {
+            enabled: enable,
+            width: u("width", 320) as u32,
+            height: u("height", 240) as u32,
+            fps: params.get("fps").and_then(Value::as_f64).unwrap_or(5.0) as u32,
+            quality: u("quality", 40) as u32,
+        };
+        // Flag first so a running relay stops promptly on disable.
+        let flag = {
+            let mut flags = lock(&self.video_flags);
+            let flag = flags
+                .entry(vid.clone())
+                .or_insert_with(|| Arc::new(AtomicBool::new(false)))
+                .clone();
+            flag.store(enable, Ordering::Relaxed);
+            flag
+        };
+        self.emit_event("video.control", json!({ "vehicle": vid, "enable": enable }));
+        let dash = self.clone();
+        tokio::spawn(async move {
+            match dash.commander.video_control(vid.clone(), request).await {
+                CmdResult::Ack(ack) if ack.accepted => {
+                    if enable {
+                        dash.spawn_video_relay(&vid, flag);
+                    }
+                }
+                CmdResult::Ack(ack) => dash.emit_event(
+                    "video.control_failed",
+                    json!({ "vehicle": vid, "error": ack.detail }),
+                ),
+                CmdResult::Timeout => {
+                    dash.emit_event("video.control_timeout", json!({ "vehicle": vid }));
+                }
+                CmdResult::Error(err) => dash.emit_event(
+                    "video.control_failed",
+                    json!({ "vehicle": vid, "error": err }),
+                ),
+            }
+        });
+    }
+
+    fn spawn_video_relay(self: &Arc<Self>, vehicle: &str, flag: Arc<AtomicBool>) {
+        let Some((engine, cancel)) = self.engine.get() else { return };
+        let Some(index) = self.vehicles().iter().position(|v| v == vehicle) else { return };
+        let consumer = engine.app_consumer(cancel.child_token());
+        tokio::spawn(ndn::video_relay(
+            self.clone(),
+            consumer,
+            vehicle.to_string(),
+            index as u8,
+            flag,
+            cancel.clone(),
+        ));
+    }
+
+    fn cmd_sensor(self: &Arc<Self>, message: &Value) {
+        let Some(vid) = self.vehicle_of(message) else { return };
+        if !self.enabled(&vid) {
+            self.emit_event(
+                "sensor.rejected",
+                json!({ "vehicle": vid, "reason": "vehicle disabled" }),
+            );
+            return;
+        }
+        let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
+        let s = |k: &str, d: &str| {
+            params.get(k).and_then(Value::as_str).unwrap_or(d).to_string()
+        };
+        let f = |k: &str, d: f64| params.get(k).and_then(Value::as_f64).unwrap_or(d);
+        let target = params.get("target");
+        let tf = |k: &str| target.and_then(|t| t.get(k)).and_then(Value::as_f64);
+        let request_id = format!("cap-{}", (hub::now_ns() / 1_000_000) % 100_000_000);
+        let request = muas_contracts::services::SensorRequest {
+            sensor: s("sensor", "camera"),
+            mode: s("mode", "now"),
+            lat_deg: tf("lat").unwrap_or(0.0),
+            lon_deg: tf("lon").unwrap_or(0.0),
+            radius_m: f("radius_m", 6.0),
+            expiry_s: f("expires_s", 600.0),
+            duration_s: f("duration_s", 6.0),
+            mission_id: String::new(),
+        };
+        let mut fields = json!({
+            "vehicle": vid,
+            "request": request_id,
+            "sensor": request.sensor,
+            "mode": request.mode,
+        });
+        if let (Some(lat), Some(lon)) = (tf("lat"), tf("lon")) {
+            fields["lat"] = json!(lat);
+            fields["lon"] = json!(lon);
+        }
+        self.emit_event("sensor.request", fields);
+        let dash = self.clone();
+        let sensor = request.sensor.clone();
+        tokio::spawn(async move {
+            match dash.commander.sensor_capture(vid.clone(), request).await {
+                // v3 deviation (documented): the sensor ack is the typed
+                // intent decision; capture results + artifacts arrive via
+                // the data plane once agent-side capture execution lands.
+                CmdResult::Ack(ack) => dash.emit_event(
+                    "sensor.result",
+                    json!({
+                        "vehicle": vid,
+                        "request": request_id,
+                        "sensor": sensor,
+                        "status": if ack.accepted { "accepted" } else { "rejected" },
+                        "message": ack.detail,
+                    }),
+                ),
+                CmdResult::Timeout => dash.emit_event(
+                    "sensor.timeout",
+                    json!({ "vehicle": vid, "request": request_id }),
+                ),
+                CmdResult::Error(err) => dash.emit_event(
+                    "sensor.failed",
+                    json!({ "vehicle": vid, "request": request_id, "error": err }),
+                ),
+            }
+        });
+    }
+
+    fn cmd_system(self: &Arc<Self>, message: &Value) {
+        let Some(vid) = self.vehicle_of(message) else { return };
+        if message.get("command").and_then(Value::as_str) != Some("shutdown") {
+            return;
+        }
+        // Double authorization: the UI already made the operator type the
+        // vehicle id; the agent re-verifies it AND its own armed/busy state
+        // before doing anything.
+        if message.get("confirm").and_then(Value::as_str) != Some(vid.as_str()) {
+            self.emit_event(
+                "system.rejected",
+                json!({ "vehicle": vid, "reason": "confirm phrase mismatch" }),
+            );
+            return;
+        }
+        let armed = lock(&self.last_sample)
+            .get(&vid)
+            .and_then(|s| s.get("armed"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if armed {
+            self.emit_event(
+                "system.rejected",
+                json!({ "vehicle": vid, "reason": "vehicle is armed" }),
+            );
+            return;
+        }
+        self.emit_event("system.shutdown_sent", json!({ "vehicle": vid }));
+        self.hub.sync(); // the recording should hold this moment
+        let dash = self.clone();
+        tokio::spawn(async move {
+            match dash.commander.system_shutdown(vid.clone(), vid.clone()).await {
+                CmdResult::Ack(ack) => dash.emit_event(
+                    "system.shutdown_result",
+                    json!({
+                        "vehicle": vid,
+                        "status": if ack.accepted { "accepted" } else { "rejected" },
+                        "message": ack.detail,
+                    }),
+                ),
+                CmdResult::Timeout => {
+                    dash.emit_event("system.shutdown_timeout", json!({ "vehicle": vid }));
+                }
+                CmdResult::Error(err) => dash.emit_event(
+                    "system.shutdown_failed",
+                    json!({ "vehicle": vid, "error": err }),
+                ),
+            }
+        });
+    }
+}
+
+// ───────────────────────────── bring-up ─────────────────────────────────────
+
+/// A running dashboard: HTTP server + pollers over one engine.
+pub struct Running {
+    pub dash: Arc<Dashboard>,
+    /// The actual bound address (`--http-port 0` binds ephemerally).
+    pub addr: std::net::SocketAddr,
+    pub cancel: CancellationToken,
+    engine_shutdown: Option<ShutdownHandle>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+    server: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Running {
+    /// Resolves when the dashboard is cancelled (ctrl-c handler etc.).
+    pub async fn cancelled(&self) {
+        self.cancel.cancelled().await;
+    }
+
+    /// Cancel + drain: sync the recording, stop the pollers and server,
+    /// shut the engine down.
+    pub async fn shutdown(mut self) {
+        self.cancel.cancel();
+        self.dash.hub.sync();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        for task in self.tasks.drain(..) {
+            task.abort();
+            let _ = task.await;
+        }
+        if let Some(server) = self.server.take() {
+            let _ = server.await;
+        }
+        if let Some(shutdown) = self.engine_shutdown.take() {
+            shutdown.shutdown().await;
+        }
+    }
+}
+
+/// Bring the whole dashboard up: engine + faces, commander, pollers, web
+/// server. The production `main` calls this with [`providers::StubDetector`].
+pub async fn start(
+    config: DashConfig,
+    detector: Arc<dyn DetectionProvider>,
+) -> Result<Running, String> {
+    let cancel = CancellationToken::new();
+    let (engine, engine_shutdown) = ndn::bring_up(&config.links, &cancel).await?;
+    let commander = Arc::new(ndn::NdnCommander::new(
+        &engine,
+        &cancel,
+        &config.vehicles(),
+        Duration::from_millis(config.investigate_timeout_ms),
+    ));
+    let dash = Arc::new(Dashboard::new(config.clone(), detector, commander));
+    dash.attach_engine(engine.clone(), cancel.clone());
+    let tasks = ndn::spawn_pollers(&dash, &engine, &cancel);
+
+    let listener =
+        tokio::net::TcpListener::bind((config.http_host.as_str(), config.http_port))
+            .await
+            .map_err(|e| format!("http bind {}:{}: {e}", config.http_host, config.http_port))?;
+    let addr = listener.local_addr().map_err(|e| format!("local addr: {e}"))?;
+    let router = server::router(dash.clone());
+    let shutdown_signal = cancel.clone();
+    let server = tokio::spawn(async move {
+        let serve = axum::serve(listener, router)
+            .with_graceful_shutdown(async move { shutdown_signal.cancelled().await });
+        if let Err(err) = serve.await {
+            tracing::warn!(%err, "http server ended");
+        }
+    });
+    tracing::info!(%addr, "dash.serving");
+    Ok(Running {
+        dash,
+        addr,
+        cancel,
+        engine_shutdown: Some(engine_shutdown),
+        tasks,
+        server: Some(server),
+    })
+}
