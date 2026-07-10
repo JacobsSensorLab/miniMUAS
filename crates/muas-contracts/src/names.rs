@@ -11,6 +11,15 @@ pub const APP_PREFIX: &str = "/muas/v3";
 /// silently breaks group sync.
 pub const GROUP_PREFIX: &str = "/muas/v3/group";
 
+/// Root prefix of one vehicle's namespace — the [`ServiceId`] the v3
+/// vehicle service (`crate::services::VehicleService`) is hosted under; op
+/// names (`flight_rtl`, ...) append as one component.
+///
+/// [`ServiceId`]: ndn_service_core::ServiceId
+pub fn vehicle_prefix(vehicle_id: &str) -> String {
+    format!("{APP_PREFIX}/{vehicle_id}")
+}
+
 /// Service name under a vehicle, e.g. `flight/rtl`, `sensor/capture`,
 /// `video/control`, `system/shutdown`.
 pub fn vehicle_service(vehicle_id: &str, service: &str) -> String {

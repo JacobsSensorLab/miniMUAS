@@ -6,10 +6,42 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+# Library + thin binary so muas-sim can embed the agent in co-simulation.
+[lib]
+name = "muas_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "muas-agent"
+path = "src/main.rs"
+
 [dependencies]
-uas-flight = { workspace = true }
-uas-fleet-node = { workspace = true }
 muas-contracts = { workspace = true }
+uas-flight = { workspace = true }
+uas-mavlink = { workspace = true }
+uas-fleet-data = { workspace = true }
+uas-fleet-node = { workspace = true }
+
+# NDN stack: engine + faces + app SDK + service carriers.
+ndn-engine = { workspace = true }
+ndn-app = { workspace = true }
+ndn-face = { workspace = true }
+ndn-packet = { workspace = true }
+ndn-transport = { workspace = true }
+ndn-sync = { workspace = true }
+ndn-service-core = { workspace = true }
+ndn-rpc = { workspace = true }
+ndn-ndnsf = { workspace = true }
+
+# NDF: journal Block chains + Spark telemetry lane.
+ndf-apps = { workspace = true }
+ndf-spark = { workspace = true }
+ed25519-dalek = { workspace = true }
+
 tokio = { workspace = true }
+tokio-util = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

@@ -30,6 +30,18 @@ uas-console = { path = "../uas-console/crates/uas-console" }
 manifest = { path = "../ndn-workspace/flotilla/crates/core/manifest" }
 render-contract = { path = "../ndn-workspace/flotilla/crates/core/render-contract" }
 ndf-core = { path = "../ndf-rs/refounding/ndf-core" }
+ndf-apps = { path = "../ndf-rs/refounding/ndf-apps" }
+ndf-spark = { path = "../ndf-rs/refounding/ndf-spark" }
+ndn-engine = { path = "../ndn-workspace/ndn-rs/crates/forwarding/ndn-engine" }
+ndn-app = { path = "../ndn-workspace/ndn-rs/crates/app/ndn-app" }
+ndn-face = { path = "../ndn-workspace/ndn-rs/crates/faces/ndn-face" }
+ndn-packet = { path = "../ndn-workspace/ndn-rs/crates/core/ndn-packet", features = ["std"] }
+ndn-transport = { path = "../ndn-workspace/ndn-rs/crates/core/ndn-transport" }
+ndn-sync = { path = "../ndn-workspace/ndn-rs/crates/protocols/ndn-sync" }
+ndn-service-core = { path = "../ndn-workspace/ndn-ext/crates/service/ndn-service-core" }
+ndn-service-macro = { path = "../ndn-workspace/ndn-ext/crates/service/ndn-service-macro" }
+ndn-rpc = { path = "../ndn-workspace/ndn-ext/crates/service/ndn-rpc", features = ["engine"] }
+ndn-ndnsf = { path = "../ndn-workspace/ndn-ext/crates/service/ndn-ndnsf", features = ["driver"] }
 
 # common third-party
 serde = { version = "1", features = ["derive"] }
@@ -38,3 +50,6 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
+tokio-util = "0.7"
+bytes = "1"
+ed25519-dalek = { version = "2", features = ["std"] }

@@ -11,6 +11,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+bytes = { workspace = true }
+# The service seam: `#[ndn_service]` definitions over ndn-service-core's
+# contract⇄carrier split (ndn-rpc / ndn-ndnsf carriers plug in at the agent).
+ndn-service-core = { workspace = true }
+ndn-service-macro = { workspace = true }
 # Sibling-checkout deps (the meaning-of-bytes layer). These double as the
 # canary that our ndn-workspace/ndf-rs checkouts stay build-compatible.
 manifest = { workspace = true }
