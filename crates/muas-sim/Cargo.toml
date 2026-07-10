@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-muas-flight = { workspace = true }
+uas-flight = { workspace = true }
 muas-contracts = { workspace = true }
 tracing = { workspace = true }
 # ndn-sim (features mavlink+geometry) is added when the first scenario lands

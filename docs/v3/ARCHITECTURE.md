@@ -5,57 +5,52 @@ surveys under `surveys/` (v2 parity bible, ndn-workspace/ndf-rs crate map,
 UAS-IPBRC primitive inventory, NDF/waterline docs digest). Read those for the
 underlying evidence; this doc is the decisions.
 
+**Structural rule (see `REPO-TOPOLOGY.md`):** miniMUAS is one *app* on a
+use-case-agnostic multi-repo stack — `uas-flight` (vehicle plane) ←
+`uas-fleet` (NDN fleet plane) ← `uas-console` (operator plane) ← miniMUAS.
+Generic capability goes in the layer repos; this repo holds only the
+search-and-investigate use case: mission choreography, app contracts, the
+composed binaries, scenarios, and field doctrine.
+
 ## Layering (mirrors the D-47 axiom)
 
 ```
- muas-cyd (ESP32)   muas-dashboard        muas-rc          field tools
-        \                |                  /
-         `------ muas-contracts (names, wire types, manifests, services)
-                         |
-   muas-agent ---- muas-flight (primitives) ---- muas-mavlink (vehicle adapter)
-                         |
+ muas-agent · muas-dashboard · muas-sim     (this repo: the use case)
+        │
+ uas-console (view framework)   uas-fleet (data kinds, node fw, coord, RC)
+        │                            │
+        └──── uas-flight (primitives) ──── uas-mavlink (vehicle adapter)
+                         │
       ndf-apps / ndf-spark / ndf-core          (meaning of bytes)
-                         |
+                         │
       ndn-engine / ndn-service / faces / sync  (moving bytes)
 ```
 
-Rule of thumb carried from UAS-IPBRC: **muas-flight never touches MAVLink or
-NDN**; muas-mavlink never contains mission logic; muas-agent wires them.
+Rule of thumb carried from UAS-IPBRC: **uas-flight never touches MAVLink or
+NDN**; uas-mavlink never contains mission logic; the fleet-node framework
+hosts both; the app wires them.
 
-## Workspace layout (repo root, branch v3)
+## This repo's workspace (branch v3)
 
 ```
-Cargo.toml            # workspace
+Cargo.toml            # workspace; sibling path deps (dev) — REPO-TOPOLOGY.md
 crates/
-  muas-flight/        # flight/motion primitive library (the UAS-IPBRC extraction)
-  muas-mavlink/       # MAVLink vehicle adapter (rust-mavlink; ArduPilot first)
-  muas-contracts/     # names, wire types, L1 manifests, service definitions
-  muas-agent/         # per-drone agent binary
-  muas-dashboard/     # GCS console binary
-  muas-rc/            # 1-to-many RC-over-NDN (M6)
-  muas-sim/           # ndn-sim + SITL co-simulation scenarios & verification
+  muas-contracts/     # /muas/v3 names, mission kinds, service definitions
+  muas-agent/         # per-drone agent binary (composes uas-fleet-node)
+  muas-dashboard/     # GCS console binary (composes uas-console)
+  muas-sim/           # mission-level co-sim scenarios & verification
 ```
 
-Path deps assume sibling checkouts under `~/Documents/Dev/` (same convention
-the refounding crates use):
+Sibling checkouts assumed under `~/Documents/Dev/`: `uas-flight`,
+`uas-fleet`, `uas-console`, `ndn-workspace`, `ndf-rs`.
 
-```toml
-ndf-core   = { path = "../ndf-rs/refounding/ndf-core" }
-ndf-apps   = { path = "../ndf-rs/refounding/ndf-apps" }
-ndf-spark  = { path = "../ndf-rs/refounding/ndf-spark" }
-manifest        = { path = "../ndn-workspace/flotilla/crates/core/manifest" }
-render-contract = { path = "../ndn-workspace/flotilla/crates/core/render-contract" }
-ndn-engine       = { path = "../ndn-workspace/ndn-rs/crates/forwarding/ndn-engine" }
-ndn-service-core = { path = "../ndn-workspace/ndn-ext/crates/service/ndn-service-core" }
-ndn-sim          = { path = "../ndn-workspace/ndn-sim/crates/ndn-sim", features = ["mavlink"] }
-```
+Risk to watch: `ndf-rs/refounding` is "design-draft, not ratified" and pins
+ndn-workspace HEAD `5798fa3f` (checkout is ahead). Scaffold-depth deps
+(`manifest`, `render-contract`, `ndf-core`) compile clean; the deeper
+`ndf-apps`/`ndn-engine` graph gets its first exercise at M3 — log breakage
+in FEEDBACK.md.
 
-Risk to watch: `refounding/` is "design-draft, not ratified" and pins
-ndn-workspace HEAD `5798fa3f` — first build must verify the current checkout
-still satisfies the path deps (log any breakage in FEEDBACK.md; that's exactly
-the feedback they want).
-
-## muas-flight — the primitive library (VISION §1)
+## uas-flight — the primitive library (VISION §1)
 
 Port of UAS-IPBRC `relay/flight` + `relay/core/{geo,placement}` +
 miniMUAS-specific behaviors, refactored per the survey's upgrade list:
@@ -84,8 +79,11 @@ miniMUAS-specific behaviors, refactored per the survey's upgrade list:
 - Porting oracle: translate UAS-IPBRC `tests/test_flight_*.py` into Rust unit
   tests as each module lands.
 - Every primitive tick and constraint decision is a `tracing` span/event.
+- **Future big capabilities land here** (autonomous navigation, trajectory
+  planning, obstacle-aware planners) behind the same primitive/planner seam —
+  no app rework.
 
-## muas-mavlink — vehicle adapter (VISION §1 "MAVLink everywhere")
+## uas-mavlink — vehicle adapter (VISION §1 "MAVLink everywhere")
 
 `rust-mavlink` (or `mavio`) with a typed ArduPilot mode map (PX4 addable).
 Reimplements the field-hardened v2/IPBRC behaviors as explicit, tested logic:
@@ -100,20 +98,35 @@ Reimplements the field-hardened v2/IPBRC behaviors as explicit, tested logic:
   avoidance bias**.
 - Heading with velocity-course fallback; rangefinder; battery; attitude.
 
-## muas-contracts — names, wire, manifests, services
+## uas-fleet — the NDN fleet plane
+
+- **uas-fleet-data**: generic published kinds + their L1 semantic manifests
+  (telemetry sample, coord status, capability profile, journal chain entries,
+  segmented artifacts). App-specific kinds (detection evidence) stay in
+  muas-contracts.
+- **uas-fleet-node**: the agent framework — service hosting over
+  **ndn-service-core**'s contract⇄carrier seam (VISION §3: carriers `ndn-rpc`
+  default, **`ndn-ndnsf`** for the NDNSF comparison, `ndn-nacabe` where
+  ABE-gated; selected by config → head-to-head comparisons), the
+  flight-backend seam (sim + MAVLink behind one trait), the **PeerGuard**
+  coordination loop (v2 semantics exactly: adaptive polling, CPA, cooperative/
+  uncooperative escalation with 2.5 s grace, altitude-bias overlay clamped
+  −4..+8 with climb-wins, smart RTL slots, fleet flight floor; transport
+  injected so it tests without NDN), bearer selection, journals, authorized
+  shutdown.
+- **uas-rc**: RC subsumption (VISION §7) — USB controller → per-vehicle or
+  broadcast Spark streams (`<app>/<vid>/rc`) → RC_CHANNELS_OVERRIDE /
+  MANUAL_CONTROL. Loss-honest; failsafe by stream silence + autopilot RC-loss
+  ladder; rate/e-stop per P11. ESP32 (CRSF/ndn-espnow) and LoRa bridges as
+  alternate PHYs; latency budget measured via OTLP before real flight.
+
+## muas-contracts — the app's names, kinds, services
 
 - The v2 name tree carried forward as `/muas/v3/...` (same shape: services,
-  latest-wins data, mission objects).
-- Service definitions as `#[ndn_service]` traits over **ndn-service-core** —
-  the contract⇄carrier seam IS the pluggable-backend requirement (VISION §3):
-  - carriers: `ndn-rpc` (Tier-0, default), **`ndn-ndnsf`** (faithful NDNSF
-    four-phase over SVS — the C++-NDNSF-comparable backend), `ndn-nacabe`
-    where ABE-gated. Backend selected by config → head-to-head comparisons.
-- **L1 semantic manifests** (flotilla `manifest`) for every published kind:
-  telemetry sample, coord status, search status, capability profile, frame
-  container, sensor artifact, detection/evidence. Units, precision, datum,
-  thresholds signed once. The v2 `MUASFRAME1` container's embedded capture
-  pose becomes manifest-described fields.
+  latest-wins data, mission objects) — parity audits map one-to-one.
+- Service definitions as `#[ndn_service]` traits; mission-specific kinds
+  (frame container with embedded capture pose, detection/evidence) as L1
+  manifests.
 - v2 ack-gating rules (range guard, AGL guard, busy guard, confirm-phrase
   shutdown) become typed policy in one place.
 
@@ -128,32 +141,31 @@ Reimplements the field-hardened v2/IPBRC behaviors as explicit, tested logic:
   preserved). Keep a local fsync JSONL mirror as the belt-and-suspenders
   field fallback.
 - Segmented artifacts (frames, wav) = content-addressed Blocks with
-  payload-location; integrity comes from the envelope instead of hand-rolled
+  payload-location; integrity from the envelope instead of hand-rolled
   body_sha256.
-- Fleet coordination stays **data-plane symmetric** (no request/response):
-  `coord/status` published + peers watched, exactly the v2 semantics,
-  transport injected so the loop tests without NDN.
+- Fleet coordination stays **data-plane symmetric** (no request/response).
 
-## muas-dashboard (VISION §2)
+## muas-dashboard on uas-console (VISION §2)
 
 Backend: mission state machine (detect→confirm→queue→dispatch, confirm-count,
-best-localized-sighting positioning, multi-target multi-sensor jobs), recorder,
-web server. Frontend: v2's canvas map/Carbon g100 UI ported for parity first.
+best-localized-sighting positioning, multi-target multi-sensor jobs),
+recorder, web server. Frontend: v2's canvas map/Carbon g100 UI ported for
+parity first.
 
-The flotilla integration (per the survey caveat that the render host is
-design-only in flotilla, real in ndf-surface):
+The flotilla integration lives in **uas-console** (generic) with miniMUAS
+panels registered on top:
 
 1. Every dashboard-visible kind gets an L1 manifest + L2 edges (provenance:
    detection is-derived-from frame is-measured-by camera authorized-by GCS).
-2. Dashboard views declare **render contracts**; binding is
-   match → authorize → instantiate via the Keel matcher
-   (`render-contract`), dispatching `Via::Native` ids against an in-process
-   renderer registry (map layer, vehicle tile, video panel, event log…).
+2. Views declare **render contracts**; binding is match → authorize →
+   instantiate via the Keel matcher, dispatching `Via::Native` ids against
+   the console's renderer registry (map layer, vehicle tile, video panel,
+   event log…).
 3. Where mature enough, ride `ndf-surface`'s RenderDaemon/Surface Authority
    instead of our own registry — evaluate and feed back.
-4. Present miniMUAS to the waterline suite as **instruments**: the agent and
-   dashboard publish measurement/control namespaces + three-layer manifests so
-   Sextant/Capstan panels appear with zero suite changes.
+4. Present agent and dashboard to the waterline suite as **instruments**
+   (namespaces + three-layer manifests) so Sextant/Capstan panels appear
+   with zero suite changes.
 
 Parity is audited against `surveys/minimuas-v2.md` feature-by-feature.
 
@@ -171,80 +183,66 @@ Parity is audited against `surveys/minimuas-v2.md` feature-by-feature.
 
 ## Simulation & verification (VISION §5)
 
-`muas-sim` scenarios on **ndn-sim (ndn-lab)** with features `mavlink` +
-`geometry` (+`lora` later):
+`muas-sim` holds *mission-level* scenarios on **ndn-sim (ndn-lab)** with
+features `mavlink` + `geometry` (+`lora` later); layer repos keep their own
+unit/property tests:
 
 - ArduPilot SITL co-sim: real ForwarderEngines + real vehicle mobility from
   SITL — the full v3 stack (agent, coord, dashboard headless) under test.
-- Line-of-sight/terrain propagation for realistic link loss during missions;
-  `adversary` module for security scenarios.
+- Line-of-sight/terrain propagation for realistic link loss; `adversary`
+  module for security scenarios.
 - Regression suite: the v2 SITL validations (goto floor, avoidance bias lead
-  cap, smart RTL slots, cooperative avoidance grace/escalation) as scripted
-  scenarios with OTLP traces as the assertion substrate.
-- Radio-mode comparison harness (below) runs in sim first, field second.
+  cap, smart RTL slots, cooperative grace/escalation) as scripted scenarios
+  with OTLP traces as the assertion substrate.
+- Radio-mode comparison harness runs in sim first, field second.
 
 ## Wireless & security (VISION §6)
 
-- **Bearer abstraction from day one**: agent/dashboard bind faces by config —
-  `udp/tcp` (AP/STA mode, v2 parity) vs `ndn-face-monitor-wifi` over
-  `ndn-radio-drivers` (rtl8812eu ×2 per node) vs `ndn-nan` vs `ndn-face-ble-adv`
-  / ESP32 bridges. Comparison = same mission, different bearer, same OTLP
-  metrics (latency, loss, sync convergence, video throughput).
-- `ndn-radio-cognition` for the named-data-radio MAC control plane;
-  `ndn-coding` FEC on lossy bearers.
+- **Bearer abstraction from day one** (uas-fleet-node): faces bound by
+  config — `udp/tcp` (AP/STA, v2 parity) vs `ndn-face-monitor-wifi` over
+  `ndn-radio-drivers` (rtl8812eu ×2 per node) vs `ndn-nan` vs
+  `ndn-face-ble-adv` / ESP32 bridges. Comparison = same mission, different
+  bearer, same OTLP metrics (latency, loss, sync convergence, throughput).
+- `ndn-radio-cognition` for the named-data-radio MAC; `ndn-coding` FEC on
+  lossy bearers.
 - Trust: `ndn-security` trust schema + `ndn-cert`/`ndn-identity` fleet
   zero-touch provisioning replaces v2's policies files; onboarding via
   `ndn-trust-envelope` QR/NFC join ceremonies (C2 proximity-tap tier).
   Expiry-by-default keys = field revocation story.
 - Command authorization adopts the **P11 actuation-safety record** danger
-  tiers: RTL/Hold = D1 (C1), takeoff/mission dispatch = D2 (C2, non-delegable),
-  companion shutdown = D3-style confirm (v2's type-the-vehicle-id ceremony
-  maps cleanly onto the ceremony vocabulary).
+  tiers: RTL/Hold = D1 (C1), takeoff/mission dispatch = D2 (C2,
+  non-delegable), companion shutdown = D3-style confirm (v2's
+  type-the-vehicle-id ceremony maps cleanly).
 - Named-time: `ndn-time`/`ndn-timekeeper` with GNSS + monitor-wifi TSFT
   sources; dashboard shows holdover/±uncertainty per node (v2's clock-skew
   tile, upgraded to honest intervals).
 
-## RC subsumption (VISION §7)
-
-`muas-rc`: USB game controller on the GCS → per-vehicle or broadcast control
-streams over NDN.
-
-- Transport: **Sparks** (ephemeral, sequenced, loss-honest — exactly the RC
-  profile). MAVLink `RC_CHANNELS_OVERRIDE`/`MANUAL_CONTROL` at the vehicle end
-  = "MAVLink over NDN" with Sparks as the light framing; evaluate whether a
-  general MAVLink-over-NDN mapping (all message types) is worth a spec doc.
-- 1-to-many: name-addressed (`/muas/v3/<vid>/rc`), selector on the dashboard
-  chooses target(s); broadcast bearer means N vehicles hear one transmission.
-- Failsafe by construction: Spark stream stops → autopilot RC-loss failsafe +
-  agent-level hold/RTL ladder. Rate/e-stop per P11.
-- Bridges: ESP32 (ndn-espnow / CRSF out) and LoRa as alternate PHYs;
-  DroneBridge/ELRS studied for latency + arming semantics.
-- Latency budget measured end-to-end via OTLP before any real flight; sim +
-  bench first, RC-into-SITL second, field last.
-
 ## Field QoL (VISION §8)
 
 - **ESP32 CYD fleet node**: `ndn-embedded` + monitor-mode/BLE face; palm view
-  of fleet stats (telemetry Sparks are 52 B — MCU-friendly by design) + C1/C2
-  ceremony surface for enrollment. Track as its own mini-project once M3 data
-  plane is stable.
-- Deployment: v3 gets its own config-repo branch + flake wiring mirroring the
-  v2 flow (push before flake bump).
+  of fleet stats (telemetry Sparks are 52 B — MCU-friendly by design) +
+  C1/C2 ceremony surface for enrollment. Generic parts belong in uas-fleet;
+  track as its own mini-project once M3 data plane is stable.
+- Deployment: per-repo flakes + config-repo composition per
+  `REPO-TOPOLOGY.md` (repos own packaging; config repo owns hosts).
 
 ## Milestones
 
-- **M0** (now): branch, docs, surveys, workspace scaffold compiling.
-- **M1**: muas-flight port with translated test oracle (deconflict → geo/
+- **M0** (done): branch, docs, surveys, multi-repo scaffold, all workspaces
+  green.
+- **M1**: uas-flight port with translated test oracle (deconflict → geo/
   patterns/placement → tick core → constraints → orbit ladder).
-- **M2**: muas-mavlink + SITL: takeoff/goto/raster/carrot-orbit/RTL parity,
+- **M2**: uas-mavlink + SITL: takeoff/goto/raster/carrot-orbit/RTL parity,
   goto-floor and ensure_airborne regressions green.
-- **M3**: muas-contracts + muas-agent on ndn-service (rpc carrier), telemetry/
-  coord as Sparks, journals as chains, fleet coordination parity in ndn-sim
-  co-sim; NDNSF carrier comparison.
-- **M4**: dashboard parity (audited against surveys/minimuas-v2.md), manifests
-  + render-contract binding, replay-from-chain, OTLP end-to-end.
+- **M3**: uas-fleet-data/-node + muas-contracts + muas-agent on ndn-service
+  (rpc carrier), telemetry/coord as Sparks, journals as chains, coordination
+  parity in ndn-sim co-sim; NDNSF carrier comparison.
+- **M4**: uas-console + muas-dashboard parity (audited against
+  surveys/minimuas-v2.md), manifests + render-contract binding,
+  replay-from-chain, OTLP end-to-end.
+- **M-deploy**: per-repo flakes; config-repo v3 branch composing them.
 - **M5**: named-data-radio bearer + AP/STA comparison harness (sim → field).
-- **M6**: RC subsumption (bench → SITL → field).
+- **M6**: uas-rc RC subsumption (bench → SITL → field).
 - **M7**: CYD + field QoL; waterline instrument polish.
 
 Every milestone feeds FEEDBACK.md (framework friction) and WATERLINE-INPUT.md

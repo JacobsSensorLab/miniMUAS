@@ -1,12 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/muas-flight",
-    "crates/muas-mavlink",
     "crates/muas-contracts",
     "crates/muas-agent",
     "crates/muas-dashboard",
-    "crates/muas-rc",
     "crates/muas-sim",
 ]
 
@@ -14,15 +11,22 @@ members = [
 version = "3.0.0-alpha.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/Quarmire/miniMUAS"
+repository = "https://github.com/JacobsSensorLab/miniMUAS"
 
 [workspace.dependencies]
 # intra-workspace
-muas-flight = { path = "crates/muas-flight" }
-muas-mavlink = { path = "crates/muas-mavlink" }
 muas-contracts = { path = "crates/muas-contracts" }
 
-# sibling checkouts under ~/Documents/Dev (same convention as ndf-rs refounding)
+# UAS stack sibling repos (dev linkage = path deps; deploys pin by rev —
+# see docs/v3/REPO-TOPOLOGY.md)
+uas-flight = { path = "../uas-flight/crates/uas-flight" }
+uas-mavlink = { path = "../uas-flight/crates/uas-mavlink" }
+uas-fleet-data = { path = "../uas-fleet/crates/uas-fleet-data" }
+uas-fleet-node = { path = "../uas-fleet/crates/uas-fleet-node" }
+uas-rc = { path = "../uas-fleet/crates/uas-rc" }
+uas-console = { path = "../uas-console/crates/uas-console" }
+
+# ndn-workspace / ndf-rs sibling checkouts
 manifest = { path = "../ndn-workspace/flotilla/crates/core/manifest" }
 render-contract = { path = "../ndn-workspace/flotilla/crates/core/render-contract" }
 ndf-core = { path = "../ndf-rs/refounding/ndf-core" }

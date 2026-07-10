@@ -293,10 +293,11 @@ name = "muas-agent"
 version = "3.0.0-alpha.0"
 dependencies = [
  "muas-contracts",
- "muas-flight",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uas-fleet-node",
+ "uas-flight",
 ]
 
 [[package]]
@@ -320,32 +321,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "muas-flight"
-version = "3.0.0-alpha.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror",
- "tracing",
-]
-
-[[package]]
-name = "muas-mavlink"
-version = "3.0.0-alpha.0"
-dependencies = [
- "muas-flight",
- "thiserror",
- "tracing",
-]
-
-[[package]]
-name = "muas-rc"
-version = "3.0.0-alpha.0"
-dependencies = [
- "tracing",
+ "uas-console",
 ]
 
 [[package]]
@@ -353,8 +329,8 @@ name = "muas-sim"
 version = "3.0.0-alpha.0"
 dependencies = [
  "muas-contracts",
- "muas-flight",
  "tracing",
+ "uas-flight",
 ]
 
 [[package]]
@@ -740,6 +716,52 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+
+[[package]]
+name = "uas-console"
+version = "0.1.0-alpha.0"
+dependencies = [
+ "manifest",
+ "render-contract",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tracing",
+ "uas-fleet-data",
+]
+
+[[package]]
+name = "uas-fleet-data"
+version = "0.1.0-alpha.0"
+dependencies = [
+ "manifest",
+ "ndf-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "uas-fleet-node"
+version = "0.1.0-alpha.0"
+dependencies = [
+ "serde",
+ "thiserror",
+ "tracing",
+ "uas-fleet-data",
+ "uas-flight",
+]
+
+[[package]]
+name = "uas-flight"
+version = "0.1.0-alpha.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tracing",
+]
 
 [[package]]
 name = "unicode-ident"
