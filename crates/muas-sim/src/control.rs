@@ -103,6 +103,25 @@ async fn clear_anomalies(State(state): State<ControlState>) -> Json<Value> {
     Json(json!({ "cleared": state.field.clear() }))
 }
 
+/// Assemble the deployment's 1 Hz network snapshot — the ONE document that
+/// is both broadcast to the dashboard as the WS `net` message and served
+/// verbatim at `GET /netstats`. `gcs` is the ground-station position the
+/// network layer anchors its GCS node to.
+///
+/// Positioning note: with the current STATIC link profiles this position
+/// is visualization truth only — no propagation model consumes it. When
+/// geometry-based propagation lands, this same exported value feeds it,
+/// so the flag/plumbing shape stays put.
+pub fn net_snapshot(t_s: f64, profile: &Value, gcs: (f64, f64), links: Vec<Value>) -> Value {
+    json!({
+        "type": "net",
+        "t": t_s,
+        "profile": profile,
+        "gcs": { "lat": gcs.0, "lon": gcs.1 },
+        "links": links,
+    })
+}
+
 async fn netstats(State(state): State<ControlState>) -> Json<Value> {
     Json(
         state
@@ -243,12 +262,33 @@ mod tests {
         let listed = http_json("GET", &format!("{base}/anomalies"), None).await.unwrap();
         assert_eq!(listed["anomalies"].as_array().unwrap().len(), 2);
 
-        *net.lock().unwrap() = json!({ "links": [{ "from": "a", "to": "b" }] });
+        // The deployment's snapshot (net_snapshot) carries the GCS anchor
+        // through /netstats verbatim — the network layer's position source.
+        *net.lock().unwrap() = net_snapshot(
+            12.5,
+            &json!({ "name": "apsta" }),
+            (-35.3635, 149.1652),
+            vec![json!({ "from": "a", "to": "b" })],
+        );
         let stats = http_json("GET", &format!("{base}/netstats"), None).await.unwrap();
         assert_eq!(stats["links"].as_array().unwrap().len(), 1);
+        assert_eq!(stats["gcs"], json!({ "lat": -35.3635, "lon": 149.1652 }));
+        assert_eq!(stats["type"], json!("net"));
 
-        http_json("DELETE", &format!("{base}/anomalies/{id}"), None).await.expect("remove");
-        assert_eq!(field.snapshot().len(), 1);
+        // Single-anomaly removal through the dashboard seam (the UI's ✕):
+        // remove_anomaly(id) → DELETE /anomalies/{id} → field truth.
+        let removed = control
+            .call("remove_anomaly".into(), json!({ "id": id }))
+            .await
+            .expect("seam remove");
+        assert_eq!(removed["removed"], json!(id));
+        assert_eq!(field.snapshot().len(), 1, "only the named anomaly went");
+        // Unknown ids surface a typed 404, not a silent no-op.
+        let err = control
+            .call("remove_anomaly".into(), json!({ "id": "anom-nope" }))
+            .await
+            .unwrap_err();
+        assert!(err.contains("404"), "{err}");
         let cleared = control.call("clear_anomalies".into(), json!({})).await.unwrap();
         assert_eq!(cleared["cleared"], 1);
         assert!(field.snapshot().is_empty());

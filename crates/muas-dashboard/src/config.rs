@@ -40,6 +40,12 @@ pub struct DashConfig {
     pub run_name: String,
     /// Point-to-point UDP faces toward vehicles / forwarders.
     pub links: Vec<UdpLink>,
+    /// Surveyed GCS antenna position `(lat_deg, lon_deg)` (`--gcs`); rides
+    /// the hello message as `gcs:{lat,lon,source:"manual"}` so the map's
+    /// network layer anchors the GCS node to ground truth instead of the
+    /// first-telemetry-fix heuristic. Field path: manual survey entry; a
+    /// pluggable positioning backend is a later increment.
+    pub gcs: Option<(f64, f64)>,
 }
 
 impl Default for DashConfig {
@@ -60,6 +66,7 @@ impl Default for DashConfig {
             record_dir: Some(PathBuf::from("/var/lib/minimuas/replays")),
             run_name: String::new(),
             links: Vec::new(),
+            gcs: None,
         }
     }
 }
@@ -105,6 +112,16 @@ MISSION:
     --search-margin-s <S>      raster deadline margin over max_duration_s
                                (default 60)
     --investigate-timeout-ms <MS>  investigation timeout (default 120000)
+
+GCS POSITION:
+    --gcs <LAT,LON>            surveyed GCS antenna position (decimal
+                               degrees, manual survey entry). Advertised to
+                               the UI (hello gcs:{lat,lon,source:\"manual\"})
+                               so the map's network layer anchors the GCS
+                               node to ground truth instead of inferring it
+                               from the first telemetry fix. A pluggable
+                               positioning-backend source is a later
+                               increment.
 
 MAP / RECORDER:
     --tiles-dir <DIR>          local tile cache served at /tiles/{z}/{x}/{y}
@@ -194,6 +211,16 @@ pub fn parse_args(args: &[String]) -> Result<ParseOutcome, String> {
                 config.record_dir = if dir.is_empty() { None } else { Some(PathBuf::from(dir)) };
             }
             "--run-name" => config.run_name = next(arg, &mut it)?,
+            "--gcs" => {
+                let value = next(arg, &mut it)?;
+                let (lat, lon) = split_pair(&value, ',', arg)?;
+                let parse = |s: &str| -> Result<f64, String> {
+                    s.trim()
+                        .parse()
+                        .map_err(|e| format!("{arg}: bad coordinate '{s}': {e}"))
+                };
+                config.gcs = Some((parse(lat)?, parse(lon)?));
+            }
             "--vehicle" => {
                 let value = next(arg, &mut it)?;
                 let (vid, addrs) = split_pair(&value, '=', arg)?;
@@ -253,6 +280,22 @@ mod tests {
         assert_eq!(c.vehicles(), vec!["wuas-01".to_string(), "iuas-01".to_string()]);
         assert_eq!(c.confirm_count, 2);
         assert!(c.tile_upstream.contains("{z}"));
+    }
+
+    #[test]
+    fn gcs_flag_parses_and_defaults_off() {
+        let ParseOutcome::Run(c) = parse_args(&[]).unwrap() else { panic!("run") };
+        assert_eq!(c.gcs, None, "no flag: first-fix/NET fallback chain applies");
+
+        let ParseOutcome::Run(c) =
+            parse_args(&args(&["--gcs", "-35.3635, 149.1652"])).unwrap()
+        else {
+            panic!("run")
+        };
+        assert_eq!(c.gcs, Some((-35.3635, 149.1652)));
+
+        assert!(parse_args(&args(&["--gcs", "nope"])).is_err());
+        assert!(parse_args(&args(&["--gcs", "12.0,east"])).is_err());
     }
 
     #[test]

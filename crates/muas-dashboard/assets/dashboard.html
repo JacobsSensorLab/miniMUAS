@@ -371,6 +371,22 @@ h3.sech .chev { display: inline-block; width: 14px; color: var(--cds-text-helper
 #cmdlog .n.warn { border-left-color: var(--cds-support-warning); }
 #cmdlog .st { font-weight: 600; }
 
+/* ---- scoped cancel (✕) affordances + sim anomaly list ----------------------- */
+.xabort {
+  background: none; border: 1px solid var(--cds-border-subtle, #393939);
+  color: var(--cds-text-secondary); cursor: pointer; font-size: 10px;
+  line-height: 1; padding: 1px 4px; margin-left: 6px; vertical-align: 1px;
+}
+.xabort:hover { color: var(--cds-support-error); border-color: var(--cds-support-error); }
+#cmdlog .n .xabort { float: right; }
+#alist { max-height: 130px; overflow-y: auto; }
+#alist .arow {
+  display: flex; justify-content: space-between; align-items: center;
+  background: var(--cds-layer-01); padding: 2px var(--sp-03);
+  margin-bottom: 2px; font-size: 11px;
+}
+#alist .arow.sel { outline: 1px dashed var(--cds-text-primary); }
+
 /* ---- display (viz config) panel -------------------------------------------- */
 #dispPanel .row { display: grid; grid-template-columns: 1fr 76px 34px;
   gap: var(--sp-03); align-items: center; margin-bottom: 6px; }
@@ -530,6 +546,9 @@ opportunistic: fire whenever the vehicle happens to pass within range.">
         title="Click the map to drop this anomaly into the running simulation (via the deployment control endpoint)">Place on map</button>
       <button class="cds-btn cds-btn--danger-tertiary" id="aclear">Clear all</button>
     </div>
+    <div class="field"><label>Active anomalies (click a ground-truth marker
+      to select; ✕ removes just that one)</label>
+      <div id="alist"></div></div>
   </div>
 
   <h3>Detection</h3>
@@ -708,7 +727,11 @@ function dispatch(m){
   else if (m.type === "sensor_data") pushSensorData(m.item);
   else if (m.type === "video_stats") onVideoStats(m);
   else if (m.type === "net") NET = m;
-  else if (m.type === "sim_anomalies") simAnoms = m.items || [];
+  else if (m.type === "sim_anomalies"){
+    simAnoms = m.items || [];
+    if (selAnom && !simAnoms.some(a => a.id === selAnom)) selAnom = null;
+    renderAnomList();
+  }
 }
 const send = obj => {
   if (REPLAY.active){
@@ -997,9 +1020,11 @@ let SMETA = {};               // vid -> sensor_meta object (or null)
 // radio telemetry) ride the same message — see docs/v3/NETWORK-VIZ.md.
 let showNet = false;
 let NET = null;
+let GCS = null;               // hello.gcs {lat,lon,source:"manual"} (--gcs)
 // ---------- simulation plane (virtual deployments only) ----------
 let SIM = null;               // hello.sim capability object
 let simAnoms = [];            // ground-truth anomalies (drawn while sim)
+let selAnom = null;           // selected ground-truth anomaly id (delete flow)
 function pushSensorData(item){
   if (!item || sensorData.some(d => d.name === item.name)) return;
   sensorData.push(item);
@@ -1043,8 +1068,9 @@ const fmtClock = s => {
 function resetUIState(){
   drones = {}; targets = []; mapEvents = []; sensorData = [];
   hoverEvt = null; plan = null;
-  SMETA = {}; NET = null; simAnoms = [];
+  SMETA = {}; NET = null; GCS = null; simAnoms = []; selAnom = null;
   covTrack = []; gcsHome = null;
+  renderAnomList();
   CMDS.list = []; CMDS.byId = {}; renderCmdLog();
   log.innerHTML = "";
   mframes.textContent = "0"; mleg.textContent = "–";
@@ -1473,15 +1499,14 @@ const ageOf = id => {
 // GCS world anchor (round-3 fix: the GCS node used to be screen-anchored
 // and "moved" whenever the map panned — it must pan/zoom/rotate with the
 // world like every other geo entity). Position source, in preference
-// order: an explicit NET.gcs {lat, lon} if the deployment ever exports
-// one, else the first good telemetry fix seen (the fleet launches beside
-// the GCS, so home ≈ the GCS position). Captured once, then fixed.
+// order: the surveyed hello.gcs (--gcs manual entry), then the
+// deployment's NET.gcs export, else the first good telemetry fix seen
+// (the fleet launches beside the GCS, so home ≈ the GCS position).
 let gcsHome = null;
-const gcsLL = () => {
-  if (NET && NET.gcs && typeof NET.gcs.lat === "number"
-      && typeof NET.gcs.lon === "number") return [NET.gcs.lat, NET.gcs.lon];
-  return gcsHome;
-};
+const llOf = o => (o && typeof o.lat === "number" && typeof o.lon === "number")
+  ? [o.lat, o.lon] : null;
+const gcsLL = () =>
+  llOf(GCS) || llOf(NET && NET.gcs) || gcsHome;
 function drawNet(){
   if (!showNet || !NET || DISP.op.net <= 0) return;
   ctx.save(); ctx.globalAlpha = DISP.op.net;
@@ -1581,6 +1606,12 @@ function drawSimAnoms(){
         ctx.stroke();
       }
       ctx.fillStyle = "#ff832b";
+    }
+    if (a.id && a.id === selAnom){
+      // selected for deletion: a second click (or the list ✕) removes it
+      ctx.strokeStyle = "#f4f4f4"; ctx.lineWidth = 1.5; ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.arc(p[0], p[1], 16, 0, 7); ctx.stroke();
+      ctx.setLineDash([]);
     }
     ctx.fillText(`sim ${a.kind}${a.id ? " " + a.id : ""}`, p[0] + 8, p[1] + 14);
   }
@@ -1687,9 +1718,10 @@ function draw(){
       ctx.fillText(text, bx, by+2);
     }
   }
-  // targets: yellow=queued, pulsing blue=investigating, green=done, red=failed
+  // targets: yellow=queued, pulsing blue=investigating, green=done,
+  // red=failed, gray=cancelled
   const TGT = { queued:"#f1c21b", investigating:"#4589ff",
-                done:"#42be65", failed:"#fa4d56" };
+                done:"#42be65", failed:"#fa4d56", cancelled:"#6f6f6f" };
   const tr = iconPx(0.7, 3, 11);
   for (const t of targets){
     const p = toPx(t.lat, t.lon);
@@ -1824,6 +1856,23 @@ cv.addEventListener("click", e => {
     if (hit) toggleFleetSel(hit, !MAP.selected.has(hit));
     return;
   }
+  if (!picking && SIM && simAnoms.length){
+    // ground-truth markers are clickable while the sim tools are up:
+    // first click selects (map ring + list highlight), clicking the
+    // selected marker again deletes it — the same control-endpoint door
+    // as the list's ✕.
+    let bestA = 225, hitA = null;   // 15 px pick radius, squared
+    for (const a of simAnoms){
+      const p = toPx(a.lat_deg, a.lon_deg);
+      const d = (p[0]-e.offsetX)**2 + (p[1]-e.offsetY)**2;
+      if (d < bestA){ bestA = d; hitA = a; }
+    }
+    if (hitA){
+      if (selAnom === hitA.id) removeAnom(hitA.id);
+      else selectAnom(hitA.id);
+      return;
+    }
+  }
   if (!picking){
     // clicking a sensor-data point opens its playback/details modal
     if (!showData) return;
@@ -1910,6 +1959,27 @@ syncSimForm();
 aplace.onclick = () => pick("anomaly",
   `the ${akind.value} anomaly's location`);
 aclear.onclick = () => send({cmd:"sim", op:"clear_anomalies", params:{}});
+// Active-anomaly list: one row per ground-truth anomaly with a ✕ that
+// removes JUST that one (WS sim op → DELETE /anomalies/{id}); the updated
+// truth returns via the sim_anomalies broadcast, which re-renders this.
+function renderAnomList(){
+  if (!SIM){ alist.innerHTML = ""; return; }
+  alist.innerHTML = simAnoms.length ? simAnoms.map(a => `
+    <div class="arow${a.id === selAnom ? " sel" : ""}">
+      <span class="mono" style="cursor:pointer"
+        onclick="selectAnom('${a.id}')"
+        title="select (its marker highlights on the map)">${a.id} · ${a.kind}${
+          a.signature ? " · " + a.signature : ""}</span>
+      <button class="xabort" title="remove ${a.id} from the simulation"
+        onclick="removeAnom('${a.id}')">✕</button>
+    </div>`).join("")
+    : "<span style='color:#6f6f6f;font-size:12px'>none placed</span>";
+}
+function selectAnom(id){ selAnom = selAnom === id ? null : id; renderAnomList(); }
+function removeAnom(id){
+  if (selAnom === id) selAnom = null;
+  send({cmd:"sim", op:"remove_anomaly", params:{id}});
+}
 modalClose.onclick = closeModal;
 modal.onclick = e => { if (e.target === modal) closeModal(); };
 window.addEventListener("keydown", e => {
@@ -2049,10 +2119,13 @@ function onHello(m){
   }
   (m.sensor_data || []).forEach(pushSensorData);
   SMETA = m.sensor_meta || {};
+  // surveyed GCS position (--gcs): anchors the network layer's GCS node
+  GCS = m.gcs || null;
   // sim tools appear ONLY when a virtual deployment advertised itself
   SIM = m.sim || null;
   simPanel.style.display = SIM ? "" : "none";
-  if (!SIM){ simAnoms = []; NET = null; }
+  if (!SIM){ simAnoms = []; NET = null; selAnom = null; }
+  renderAnomList();
   VEHICLES.forEach((v,i) => COLORS[v] = PALETTE[i % PALETTE.length]);
   tvid.innerHTML = VEHICLES.map(v => `<option value="${v}">${v}</option>`).join("");
   cards.innerHTML = ""; videos.innerHTML = "";
@@ -2197,7 +2270,25 @@ function onTelemetry(m){
   const aglEl = document.getElementById(`agl-${vid}`);
   if (aglEl) aglEl.style.color = s.agl_alarm ? "var(--cds-support-error)" : "";
   set(`armed-${vid}`, s.armed ? "yes" : "no");
-  set(`busy-${vid}`, s.busy || "idle");
+  // Task chip with a scoped-cancel ✕: aborts ONLY the named task via
+  // task_abort (the vehicle idles under its idle policy — no RTL; the
+  // RTL/Land/Hold ladder stays the blanket stop).
+  const busyEl = document.getElementById(`busy-${vid}`);
+  if (busyEl){
+    const label = s.busy || "";
+    if (!label){ busyEl.textContent = "idle"; }
+    else if (busyEl.dataset.label !== label){
+      busyEl.textContent = "";
+      busyEl.append(label);
+      const x = document.createElement("button");
+      x.className = "xabort";
+      x.textContent = "✕";
+      x.title = `Cancel '${label}' on ${vid} (scoped abort — vehicle idles, no RTL)`;
+      x.onclick = () => send({cmd:"task_abort", vehicle:vid, label});
+      busyEl.appendChild(x);
+    }
+    busyEl.dataset.label = label;
+  }
   set(`src-${vid}`, s.source);
   const batt = document.getElementById(`batt-${vid}`);
   if (batt){
@@ -2282,17 +2373,43 @@ function toast(text, cls){
   setTimeout(() => { el.classList.add("out");
     setTimeout(() => el.remove(), 350); }, 4000);
 }
+// Scoped-cancel label for an acked long-running entry (✕ in the mini-log):
+// takeoff/rtl map to their busy labels, an accepted override detour to
+// `sensor-override`, an armed watchpoint to `watchpoint:<id>` (the id
+// rides the ack detail: "watchpoint wp-3 armed: …"). Raster/investigate
+// long ops are mission-dispatched (no mini-log entry) — their ✕ lives on
+// the vehicle tile's task chip and the detection panel.
+function abortableOf(c){
+  if (c.state !== "acked" || !c.vehicle) return null;
+  if (c.command === "takeoff") return "takeoff";
+  if (c.command === "rtl") return "rtl";
+  if (/^sensor .*\boverride\b/.test(c.command)) return "sensor-override";
+  if (/^sensor /.test(c.command)){
+    const wp = (c.detail || "").match(/\bwp-\d+\b/);
+    if (wp) return `watchpoint:${wp[0]}`;
+  }
+  return null;
+}
 function renderCmdLog(){
   cmdlog.innerHTML = CMDS.list.map(c => {
     const cls = c.state === "refused" || c.state === "failed" ? "err"
       : c.state === "timeout" ? "warn"
       : c.state === "acked" || c.state === "done" ? "ok" : "";
     const when = new Date(c.t * 1000).toLocaleTimeString();
-    return `<div class="n ${cls}"><span class="t">${when}</span>` +
+    const ab = abortableOf(c);
+    const x = ab ? `<button class="xabort" data-vid="${c.vehicle}"` +
+      ` data-label="${ab}" title="Cancel ${ab} on ${c.vehicle}` +
+      ` (scoped abort — no RTL)">✕</button>` : "";
+    return `<div class="n ${cls}">${x}<span class="t">${when}</span>` +
       `${c.vehicle || ""} ${c.command} <span class="st">${c.state}</span>` +
       `${c.detail ? " — " + c.detail : ""}</div>`;
   }).join("") || "<span style='color:#6f6f6f;font-size:12px'>no commands yet</span>";
 }
+// One delegated handler survives the innerHTML rebuilds above.
+cmdlog.addEventListener("click", e => {
+  const b = e.target.closest(".xabort");
+  if (b) send({cmd:"task_abort", vehicle:b.dataset.vid, label:b.dataset.label});
+});
 function cmdUpsert(id, fields){
   let c = CMDS.byId[id];
   if (!c){
@@ -2397,7 +2514,21 @@ function setState(state){
 }
 // ---------- targets panel ----------
 const TGT_TAG = { queued:"cds-tag--yellow", investigating:"cds-tag--blue",
-                  done:"cds-tag--green", failed:"cds-tag--red" };
+                  done:"cds-tag--green", failed:"cds-tag--red",
+                  cancelled:"cds-tag--gray" };
+// Job ✕ in the detection panel: a QUEUED job is removed purely in the
+// mission machine (job_cancel → target.job_cancelled); an ACTIVE job is
+// aborted at its assigned vehicle (task_abort investigate) and completes
+// through the vehicle's busy→idle transition.
+function cancelJob(index, sensor){
+  const t = targets.find(x => x.index === index);
+  const j = t && (t.jobs || []).find(x => x.sensor === sensor);
+  if (!j) return;
+  if (j.status === "queued")
+    send({cmd:"job_cancel", index, sensor});
+  else if (j.status === "investigating" && j.vehicle)
+    send({cmd:"task_abort", vehicle:j.vehicle, label:"investigate"});
+}
 function renderTargets(){
   mtargets.textContent = targets.length;
   if (!targets.length){
@@ -2414,6 +2545,12 @@ function renderTargets(){
         <div>${(t.jobs || []).map(j => `
           <span class="cds-tag ${TGT_TAG[j.status]||'cds-tag--gray'}"
                 title="${j.vehicle || 'not assigned yet'}">${j.sensor} ${j.status}</span>
+          ${j.status === "queued" || j.status === "investigating"
+            ? `<button class="xabort" onclick="cancelJob(${t.index},'${j.sensor}')"
+                 title="${j.status === "queued"
+                   ? `remove this queued ${j.sensor} job (never dispatches)`
+                   : `abort ${j.vehicle}'s investigation (scoped — no RTL)`}">✕</button>`
+            : ""}
           ${(j.artifacts || []).map(a => `<a target="_blank"
             href="/artifact?name=${encodeURIComponent(a)}">${j.sensor === "audio"
               ? "audio" : "capture"} ↗</a>`).join(" ")}`).join(" ")}
@@ -2504,6 +2641,19 @@ function onEvent(m){
                const j = jobOf(tg, m.sensor);
                if (j){ j.status = "investigating"; j.vehicle = m.vehicle; }
                renderTargets(); }
+      break; }
+    case "target.job_cancelled": {
+      const tg = byIndex(m.index);
+      if (tg){
+        const j = jobOf(tg, m.sensor);
+        if (j) j.status = "cancelled";
+        const done = s => ["done","failed","cancelled"].includes(s);
+        if ((tg.jobs || []).every(x => done(x.status)))
+          tg.status = tg.jobs.some(x => x.status === "failed") ? "failed"
+            : tg.jobs.some(x => x.status === "done") ? "done" : "cancelled";
+        renderTargets();
+      }
+      toast(`target #${m.index} ${m.sensor} job cancelled`, "ok");
       break; }
     case "target.job_completed":
     case "target.job_failed": {

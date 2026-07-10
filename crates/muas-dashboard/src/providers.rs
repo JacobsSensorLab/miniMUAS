@@ -115,6 +115,10 @@ pub trait Commander: Send + Sync {
     fn raster_search(&self, vehicle: String, order: RasterOrder) -> BoxFuture<CmdResult>;
     /// `investigate` toward an IUAS.
     fn investigate(&self, vehicle: String, order: InvestigateOrder) -> BoxFuture<CmdResult>;
+    /// Scoped cancel of one named task (`task_abort`): `label` is the
+    /// vehicle's busy label (`raster-search`, `investigate`,
+    /// `sensor-override`, `takeoff`, `rtl`) or `watchpoint:<id>`.
+    fn task_abort(&self, vehicle: String, label: String) -> BoxFuture<CmdResult>;
     /// `sensor/capture`.
     fn sensor_capture(
         &self,
@@ -165,6 +169,10 @@ impl Commander for ScriptedCommander {
     }
     fn investigate(&self, vehicle: String, _order: InvestigateOrder) -> BoxFuture<CmdResult> {
         self.answer(vehicle, "investigate")
+    }
+    fn task_abort(&self, vehicle: String, label: String) -> BoxFuture<CmdResult> {
+        let op = format!("task_abort/{label}");
+        self.answer(vehicle, &op)
     }
     fn sensor_capture(
         &self,

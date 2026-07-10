@@ -192,6 +192,11 @@ impl Dashboard {
             "mission": m.hello_mission(),
             "recording": self.hub.is_recording(),
         });
+        // Surveyed GCS position (--gcs): the map's network layer prefers
+        // this over the NET.gcs export and the first-fix heuristic.
+        if let Some((lat, lon)) = self.config.gcs {
+            hello["gcs"] = json!({ "lat": lat, "lon": lon, "source": "manual" });
+        }
         // Sim capability flag: present ONLY when a virtual deployment
         // attached itself — gates the UI's anomaly-placement tool.
         if let Some((info, _)) = self.sim.get() {
@@ -361,38 +366,34 @@ impl Dashboard {
                     let dash = self.clone();
                     tokio::spawn(async move {
                         let result = dash.commander.investigate(vehicle, order).await;
-                        // v3 deviation (documented): `investigate` returns a
-                        // typed Ack (intent accepted/rejected), not v2's
-                        // blocking FlightTaskResult with artifacts — job
-                        // outcome maps from the Ack; artifacts arrive via
-                        // the data plane once agent-side capture lands.
-                        let job = match result {
-                            CmdResult::Ack(ack) => JobResult {
-                                target_index,
-                                sensor,
-                                ok: ack.accepted,
-                                artifacts: Vec::new(),
-                                note: ack.detail,
-                                artifact_items: Vec::new(),
-                            },
-                            CmdResult::Timeout => JobResult {
-                                target_index,
-                                sensor,
-                                ok: false,
-                                artifacts: Vec::new(),
-                                note: "timeout".into(),
-                                artifact_items: Vec::new(),
-                            },
-                            CmdResult::Error(err) => JobResult {
-                                target_index,
-                                sensor,
-                                ok: false,
-                                artifacts: Vec::new(),
-                                note: err,
-                                artifact_items: Vec::new(),
-                            },
+                        // The investigate ACK is the typed intent decision,
+                        // not the outcome: an ACCEPT leaves the job
+                        // `investigating` (in flight) — it completes on the
+                        // vehicle's busy→idle transition, fed by the
+                        // telemetry poller into Mission::set_vehicle_busy.
+                        // Refusals/timeouts keep the terminal mapping
+                        // (busy-refusal requeues inside on_job_result).
+                        let failed = |note: String| JobResult {
+                            target_index,
+                            sensor: sensor.clone(),
+                            ok: false,
+                            artifacts: Vec::new(),
+                            note,
+                            artifact_items: Vec::new(),
                         };
-                        let actions = dash.with_mission(|m| m.on_job_result(job));
+                        let actions = match result {
+                            CmdResult::Ack(ack) if ack.accepted => dash.with_mission(|m| {
+                                m.on_job_accepted(target_index, &sensor, &ack.detail)
+                            }),
+                            CmdResult::Ack(ack) => {
+                                dash.with_mission(|m| m.on_job_result(failed(ack.detail)))
+                            }
+                            CmdResult::Timeout => dash
+                                .with_mission(|m| m.on_job_result(failed("timeout".into()))),
+                            CmdResult::Error(err) => {
+                                dash.with_mission(|m| m.on_job_result(failed(err)))
+                            }
+                        };
                         dash.apply_actions(actions);
                     });
                 }
@@ -436,6 +437,16 @@ impl Dashboard {
                 }
             }
             "flight" => self.cmd_flight(message),
+            "task_abort" => self.cmd_task_abort(message),
+            "job_cancel" => {
+                // Queued (not yet dispatched) job removal is pure mission-
+                // machine state; in-flight jobs are cancelled by task_abort
+                // at their vehicle instead (the UI picks the right path).
+                let index = message.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let sensor = message.get("sensor").and_then(Value::as_str).unwrap_or("");
+                let actions = self.with_mission(|m| m.cancel_job(index, sensor));
+                self.apply_actions(actions);
+            }
             "all" => self.cmd_all(message),
             "video" => self.cmd_video(message),
             "sensor" => self.cmd_sensor(message),
@@ -498,6 +509,66 @@ impl Dashboard {
             // an accepted ack's note must never render as an error.
             match dash.commander.flight(vid.clone(), command.clone(), agl).await {
                 CmdResult::Ack(ack) => {
+                    let mut m = json!({
+                        "id": id,
+                        "vehicle": vid,
+                        "command": command,
+                        "ok": ack.accepted,
+                        "detail": ack.detail,
+                    });
+                    if !ack.accepted {
+                        m["error"] = json!(ack.detail);
+                    }
+                    dash.emit_event("command.result", m);
+                }
+                CmdResult::Timeout => dash.emit_event(
+                    "command.timeout",
+                    json!({ "id": id, "vehicle": vid, "command": command }),
+                ),
+                CmdResult::Error(err) => dash.emit_event(
+                    "command.result",
+                    json!({
+                        "id": id,
+                        "vehicle": vid,
+                        "command": command,
+                        "ok": false,
+                        "detail": err,
+                        "error": err,
+                    }),
+                ),
+            }
+        });
+    }
+
+    /// Scoped cancel of one named task on one vehicle (`task_abort`): the
+    /// surgical alternative to the RTL/Land/Hold ladder. Full command
+    /// lifecycle (sent → acked/refused → toast) like any flight command.
+    fn cmd_task_abort(self: &Arc<Self>, message: &Value) {
+        let Some(vid) = self.vehicle_of(message) else { return };
+        let Some(label) = message
+            .get("label")
+            .and_then(Value::as_str)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+        else {
+            return;
+        };
+        let id = format!("cmd-{}", hub::now_ns() / 1_000_000 % 100_000_000_000);
+        let command = format!("abort {label}");
+        self.emit_event(
+            "command.sent",
+            json!({ "id": id, "vehicle": vid, "command": command }),
+        );
+        let dash = self.clone();
+        tokio::spawn(async move {
+            match dash.commander.task_abort(vid.clone(), label.clone()).await {
+                CmdResult::Ack(ack) => {
+                    if ack.accepted && label == "investigate" {
+                        // The busy→idle transition will complete this
+                        // vehicle's job; note the abort so the outcome
+                        // reads "aborted", not "completed".
+                        dash.with_mission(|m| m.note_task_abort(&vid));
+                    }
                     let mut m = json!({
                         "id": id,
                         "vehicle": vid,

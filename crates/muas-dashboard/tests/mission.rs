@@ -308,6 +308,148 @@ fn unserviceable_jobs_do_not_hold_the_mission_open() {
     assert_eq!(m.state, "done");
 }
 
+/// The real completion fix: accept acks only mark jobs in flight; each job
+/// completes on its assigned vehicle's busy→idle transition, so a raster
+/// that finishes first leaves the mission open until BOTH investigations'
+/// vehicles actually go idle.
+#[test]
+fn mission_stays_open_until_both_investigating_vehicles_go_idle() {
+    let mut m = machine(&["iuas-01", "iuas-02"], 1);
+    caps(&mut m, "iuas-01", &["camera"]);
+    caps(&mut m, "iuas-02", &["camera"]);
+    start(&mut m, &["camera"]);
+
+    // Two targets, one job each, on the two inspectors.
+    let a1 = hit(&mut m, "/f/1", LAT, LON, 0.9, 1.0);
+    assert_eq!(dispatches(&a1), vec![(0, "camera".into(), "iuas-01".into())]);
+    m.on_job_accepted(0, "camera", "carrot-orbit accepted");
+    m.set_vehicle_busy("iuas-01", true);
+    let a2 = hit(&mut m, "/f/2", LAT + 20.0 * M_LAT, LON, 0.9, 1.0);
+    assert_eq!(dispatches(&a2), vec![(1, "camera".into(), "iuas-02".into())]);
+    m.on_job_accepted(1, "camera", "carrot-orbit accepted");
+    m.set_vehicle_busy("iuas-02", true);
+
+    // Raster completes FIRST: both jobs still in flight — the mission must
+    // stay open (the old accept-ack⇒done mapping completed it right here).
+    let a = m.on_search_response(true, "done", 9, "");
+    assert!(!kinds(&a).contains(&"mission.completed".into()));
+    assert_eq!(m.state, "investigating");
+    assert!(m
+        .targets
+        .iter()
+        .all(|t| t.jobs[0].status == "investigating"));
+
+    // First vehicle idles: its job completes, the mission is STILL open.
+    let a = m.set_vehicle_busy("iuas-01", false);
+    let k = kinds(&a);
+    assert!(k.contains(&"target.job_completed".into()));
+    assert!(!k.contains(&"mission.completed".into()), "one investigation still flying");
+    assert_eq!(m.targets[0].jobs[0].status, "done");
+    assert_eq!(m.targets[1].jobs[0].status, "investigating");
+
+    // Second vehicle idles: now — and only now — the mission completes.
+    let a = m.set_vehicle_busy("iuas-02", false);
+    let k = kinds(&a);
+    assert!(k.contains(&"target.job_completed".into()));
+    assert!(k.contains(&"mission.completed".into()));
+    assert_eq!(m.state, "done");
+}
+
+/// A busy hint that never saw the vehicle busy (telemetry lag right after
+/// dispatch) must not complete the job: completion requires a REAL
+/// busy→idle transition.
+#[test]
+fn idle_report_without_prior_busy_never_completes_a_job() {
+    let mut m = machine(&["iuas-01"], 1);
+    start(&mut m, &["camera"]);
+    hit(&mut m, "/f/1", LAT, LON, 0.9, 1.0);
+    m.on_job_accepted(0, "camera", "accepted");
+    // Poller reports idle (stale sample from before the flight started).
+    m.set_vehicle_busy("iuas-01", false);
+    assert_eq!(m.targets[0].jobs[0].status, "investigating", "no prior busy: no completion");
+    // The real flight shows up, then ends.
+    m.set_vehicle_busy("iuas-01", true);
+    let a = m.set_vehicle_busy("iuas-01", false);
+    assert!(kinds(&a).contains(&"target.job_completed".into()));
+    assert_eq!(m.targets[0].jobs[0].status, "done");
+}
+
+/// Single-target abort path: operator task_abort at the vehicle →
+/// busy→idle → the job lands `done` with the aborted note → the mission
+/// completes truthfully.
+#[test]
+fn task_abort_completes_the_job_with_an_aborted_note() {
+    let mut m = machine(&["iuas-01"], 1);
+    start(&mut m, &["camera"]);
+    hit(&mut m, "/f/1", LAT, LON, 0.9, 1.0);
+    m.on_job_accepted(0, "camera", "accepted");
+    m.set_vehicle_busy("iuas-01", true);
+    let a = m.on_search_response(true, "done", 3, "");
+    assert!(!kinds(&a).contains(&"mission.completed".into()));
+
+    // The dashboard sent task_abort("investigate") and the agent acked it;
+    // the vehicle's busy label clears within one cycle.
+    m.note_task_abort("iuas-01");
+    let a = m.set_vehicle_busy("iuas-01", false);
+    let completed = a
+        .iter()
+        .find_map(|x| match x {
+            Action::Emit(v) if v.get("kind") == Some(&json!("target.job_completed")) => Some(v),
+            _ => None,
+        })
+        .expect("job completes on busy→idle");
+    assert!(
+        completed["note"].as_str().unwrap().contains("aborted"),
+        "outcome notes the operator abort: {}",
+        completed["note"]
+    );
+    assert!(kinds(&a).contains(&"mission.completed".into()));
+    assert_eq!(m.state, "done");
+    assert_eq!(m.targets[0].jobs[0].status, "done");
+}
+
+/// Detection-panel ✕ on a QUEUED job: pure mission-machine cancellation —
+/// the job leaves the queue (`cancelled`, `target.job_cancelled`) and no
+/// longer blocks the completion predicate; non-queued jobs are untouched.
+#[test]
+fn queued_job_cancel_removes_it_from_queue_and_completion() {
+    let mut m = machine(&["iuas-01"], 1);
+    caps(&mut m, "iuas-01", &["audio", "camera"]);
+    start(&mut m, &["camera", "audio"]);
+
+    // One dual-sensor drone: camera flies, audio queues behind it.
+    hit(&mut m, "/f/1", LAT, LON, 0.9, 1.0);
+    m.on_job_accepted(0, "camera", "accepted");
+    m.set_vehicle_busy("iuas-01", true);
+    assert_eq!(m.targets[0].jobs[1].status, "queued");
+
+    // Cancelling the IN-FLIGHT camera job here is a no-op (that path is
+    // task_abort at the vehicle, not a queue edit).
+    assert!(m.cancel_job(0, "camera").is_empty());
+    assert_eq!(m.targets[0].jobs[0].status, "investigating");
+
+    // Cancel the queued audio job: event + cancelled state.
+    let a = m.cancel_job(0, "audio");
+    assert!(kinds(&a).contains(&"target.job_cancelled".into()));
+    assert_eq!(m.targets[0].jobs[1].status, "cancelled");
+    // Idempotent: a second cancel finds nothing queued.
+    assert!(m.cancel_job(0, "audio").is_empty());
+
+    // Raster done + camera lands: the cancelled job neither dispatches
+    // nor blocks completion (it was the only remaining queued work).
+    m.on_search_response(true, "done", 2, "");
+    let a = m.set_vehicle_busy("iuas-01", false);
+    let k = kinds(&a);
+    assert!(
+        !a.iter().any(|x| matches!(x, Action::Dispatch { .. })),
+        "a cancelled job must never dispatch"
+    );
+    assert!(k.contains(&"mission.completed".into()));
+    assert_eq!(m.targets[0].jobs[0].status, "done");
+    assert_eq!(m.targets[0].jobs[1].status, "cancelled");
+    assert_eq!(m.targets[0].status, "done", "one done job carries the target");
+}
+
 #[test]
 fn empty_mission_completes_on_search_end() {
     let mut m = machine(&["iuas-01"], 2);
@@ -390,16 +532,35 @@ async fn scripted_detection_drives_dispatch_through_the_executor() {
     });
     dash.apply_actions(actions);
 
-    // Detect → hit → target → dispatch → ack'd job → target done.
+    // Detect → hit → target → dispatch → ACCEPT ack. The job is now in
+    // flight (`investigating`) — the accept ack is NOT completion.
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
-        let status = dash.with_mission(|m| m.targets.first().map(|t| t.status.clone()));
-        if status.as_deref() == Some("done") {
+        let dispatched = {
+            let calls = commander.calls.lock().unwrap().clone();
+            calls.contains(&("iuas-01".to_string(), "investigate".to_string()))
+        };
+        if dispatched {
             break;
         }
-        assert!(tokio::time::Instant::now() < deadline, "job never completed: {status:?}");
+        assert!(tokio::time::Instant::now() < deadline, "job never dispatched");
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await; // ack lands
+    assert_eq!(
+        dash.with_mission(|m| m.targets[0].jobs[0].status.clone()),
+        "investigating",
+        "accept ack leaves the job in flight, not done"
+    );
+
+    // Completion rides the vehicle's busy→idle transition (the telemetry
+    // poller feeds set_vehicle_busy in production).
+    let actions = dash.with_mission(|m| m.set_vehicle_busy("iuas-01", true));
+    dash.apply_actions(actions);
+    let actions = dash.with_mission(|m| m.set_vehicle_busy("iuas-01", false));
+    dash.apply_actions(actions);
+    assert_eq!(dash.with_mission(|m| m.targets[0].status.clone()), "done");
+
     // Raster ends → completion predicate closes the mission.
     let actions = dash.with_mission(|m| m.on_search_response(true, "done", 1, ""));
     dash.apply_actions(actions);
@@ -460,6 +621,32 @@ async fn recording_sessions_are_mission_scoped() {
     let second = dash.hub.recording_path().expect("second session arms");
     assert_ne!(second, path, "each mission gets its own recording");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--gcs lat,lon` rides the hello message as `gcs:{lat,lon,source:"manual"}`
+/// (the frontend's gcsLL() prefers it over NET.gcs and the first-fix
+/// heuristic); without the flag the key is absent.
+#[test]
+fn hello_carries_the_surveyed_gcs_position() {
+    let commander = Arc::new(ScriptedCommander::answering(CmdResult::Ack(Ack::ok())));
+    let config = DashConfig {
+        record_dir: None,
+        gcs: Some((-35.3635, 149.1652)),
+        ..DashConfig::default()
+    };
+    let dash = Dashboard::new(config, Arc::new(ScriptedDetector::default()), commander.clone());
+    let hello = dash.hello();
+    assert_eq!(
+        hello["gcs"],
+        json!({ "lat": -35.3635, "lon": 149.1652, "source": "manual" })
+    );
+
+    let bare = Dashboard::new(
+        DashConfig { record_dir: None, ..DashConfig::default() },
+        Arc::new(ScriptedDetector::default()),
+        commander,
+    );
+    assert!(bare.hello().get("gcs").is_none(), "no flag: no gcs key");
 }
 
 // ───────────────────────────── wire shapes ──────────────────────────────────

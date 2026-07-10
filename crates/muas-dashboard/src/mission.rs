@@ -178,9 +178,27 @@ struct Candidate {
 pub struct Job {
     pub sensor: String,
     pub vehicle: String,
-    /// `queued | investigating | done | failed`.
+    /// `queued | investigating | done | failed | cancelled`.
     pub status: String,
     pub artifacts: Vec<String>,
+}
+
+/// Job statuses that will never change again (nothing in flight, nothing
+/// serviceable).
+fn job_terminal(status: &str) -> bool {
+    matches!(status, "done" | "failed" | "cancelled")
+}
+
+/// Target status once every job is terminal: a failure taints the target,
+/// otherwise any completed job counts, otherwise everything was cancelled.
+fn terminal_target_status(jobs: &[Job]) -> String {
+    if jobs.iter().any(|j| j.status == "failed") {
+        "failed".into()
+    } else if jobs.iter().any(|j| j.status == "done") {
+        "done".into()
+    } else {
+        "cancelled".into()
+    }
 }
 
 /// A confirmed target and its per-sensor job queue.
@@ -247,18 +265,21 @@ pub struct Mission {
     /// Investigation sensors each vehicle advertises (from its
     /// CapabilityProfile extras); absent ⇒ legacy assumption `camera`.
     pub capabilities: HashMap<String, BTreeSet<String>>,
-    /// ROUND-3 second-target dispatch fix: externally observed per-vehicle
-    /// busy state (from the `busy` field the telemetry poller already
-    /// fetches). Needed because the async layer maps the investigate
-    /// ACCEPTANCE ack to job completion (`lib.rs` `Action::Dispatch` — the
-    /// v3 typed-Ack deviation), so job statuses alone no longer say who is
-    /// actually flying. `pump_dispatch` skips hinted-busy vehicles; a
-    /// busy→idle transition ([`Mission::set_vehicle_busy`]) pumps the queue.
+    /// Externally observed per-vehicle busy state (from the `busy` field
+    /// the telemetry poller already fetches). `pump_dispatch` skips
+    /// hinted-busy vehicles; a busy→idle transition
+    /// ([`Mission::set_vehicle_busy`]) completes that vehicle's in-flight
+    /// jobs (the real completion signal — the investigate ACCEPT ack only
+    /// marks the job in flight) and pumps the queue.
     pub vehicle_busy: HashMap<String, bool>,
     /// The additive `sensor_meta` object each vehicle advertises (hfov /
     /// DRI / audio reach — the map sensor layer renders from it); `Null`
     /// for legacy vehicles.
     pub sensor_meta: HashMap<String, Value>,
+    /// Vehicles whose in-flight job was operator-aborted (`task_abort`
+    /// acked); consumed at the busy→idle completion so the job's outcome
+    /// note says "aborted" instead of "completed".
+    aborted_vehicles: HashSet<String>,
     seen_frames: HashSet<String>,
     pub detects_pending: u64,
     pub detects_done: u64,
@@ -284,6 +305,7 @@ impl Mission {
             capabilities: HashMap::new(),
             vehicle_busy: HashMap::new(),
             sensor_meta: HashMap::new(),
+            aborted_vehicles: HashSet::new(),
             seen_frames: HashSet::new(),
             detects_pending: 0,
             detects_done: 0,
@@ -462,15 +484,16 @@ impl Mission {
         actions
     }
 
-    /// ROUND-3 (SURGICAL, see `vehicle_busy`): the vehicle's live busy
-    /// state, as read off the telemetry the dashboard already polls
-    /// (`busy` non-empty ⇒ occupied). A busy→idle transition pumps the
-    /// queue — this is how "job 2 dispatches when job 1 completes" works
-    /// now that dispatch acks return at ACCEPTANCE, not completion.
+    /// The vehicle's live busy state, as read off the telemetry the
+    /// dashboard already polls (`busy` non-empty ⇒ occupied).
     ///
-    /// Wiring note for the dashboard owner: call this from the telemetry
-    /// poller (`ndn.rs::telemetry_poller`) with
-    /// `sample["busy"].as_str() != ""` for each IUAS.
+    /// The busy→idle transition is BOTH the queue pump ("job 2 dispatches
+    /// when job 1 completes") and, since the completion fix, the job
+    /// completion signal itself: the investigate ACCEPT ack only says the
+    /// vehicle took the job (status stays `investigating`); the job is
+    /// done when its assigned vehicle's telemetry goes idle again. The
+    /// transition requires a PRIOR busy observation, so telemetry lag
+    /// right after dispatch can never complete a job instantly.
     pub fn set_vehicle_busy(&mut self, vehicle: &str, busy: bool) -> Vec<Action> {
         if !self.enabled.contains_key(vehicle) {
             return Vec::new();
@@ -479,8 +502,106 @@ impl Mission {
         if previous == Some(busy) || busy {
             return Vec::new();
         }
-        // Busy → idle: a finishing IUAS takes the next serviceable job.
-        self.pump_dispatch()
+        // Busy → idle: complete this vehicle's in-flight jobs (outcome
+        // noted from the operator-abort ledger when task_abort landed
+        // here, else the honest "completed (vehicle idle)")…
+        let mut actions = Vec::new();
+        if previous == Some(true) {
+            let aborted = self.aborted_vehicles.remove(vehicle);
+            let flying: Vec<(usize, String)> = self
+                .targets
+                .iter()
+                .flat_map(|t| {
+                    t.jobs
+                        .iter()
+                        .filter(|j| j.status == "investigating" && j.vehicle == vehicle)
+                        .map(move |j| (t.index, j.sensor.clone()))
+                })
+                .collect();
+            for (target_index, sensor) in flying {
+                actions.extend(self.on_job_result(JobResult {
+                    target_index,
+                    sensor,
+                    ok: true,
+                    artifacts: Vec::new(),
+                    note: if aborted {
+                        "aborted (operator task_abort; vehicle idle)".into()
+                    } else {
+                        "completed (vehicle idle)".into()
+                    },
+                    artifact_items: Vec::new(),
+                }));
+            }
+        }
+        // …then a finishing IUAS takes the next serviceable job
+        // (on_job_result pumps too; a second pump is a cheap no-op).
+        actions.extend(self.pump_dispatch());
+        actions
+    }
+
+    /// A `task_abort` for `vehicle`'s active investigation was ACCEPTED by
+    /// the agent: remember it so the busy→idle completion notes the job
+    /// as aborted rather than completed.
+    pub fn note_task_abort(&mut self, vehicle: &str) {
+        self.aborted_vehicles.insert(vehicle.to_string());
+    }
+
+    /// The investigate ACCEPT ack arrived (v3 typed-Ack: intent accepted,
+    /// flight just starting). The job was already `investigating` since
+    /// dispatch — record nothing terminal, just surface the acceptance;
+    /// completion rides the vehicle's busy→idle transition
+    /// ([`Self::set_vehicle_busy`]), with the dispatch deadline as the
+    /// timeout backstop.
+    pub fn on_job_accepted(&mut self, target_index: usize, sensor: &str, note: &str) -> Vec<Action> {
+        let Some(target) = self.targets.iter().find(|t| t.index == target_index) else {
+            return Vec::new();
+        };
+        let Some(job) = target.jobs.iter().find(|j| j.sensor == sensor) else {
+            return Vec::new();
+        };
+        let payload = json!({
+            "index": target_index,
+            "sensor": sensor,
+            "vehicle": job.vehicle,
+            "note": note,
+        });
+        vec![Action::Emit(self.event("target.job_accepted", payload))]
+    }
+
+    /// Operator removed a QUEUED (not yet dispatched) job from the
+    /// detection panel: pure state-machine cancellation — the job goes to
+    /// `cancelled`, `target.job_cancelled` is emitted, and the completion
+    /// predicate re-runs (a cancelled job neither flies nor blocks the
+    /// mission). Non-queued jobs are ignored here: an in-flight job is
+    /// cancelled by `task_abort` at its vehicle, and completion then rides
+    /// the busy→idle transition.
+    pub fn cancel_job(&mut self, target_index: usize, sensor: &str) -> Vec<Action> {
+        let Some(ti) = self.targets.iter().position(|t| t.index == target_index) else {
+            return Vec::new();
+        };
+        {
+            let target = &mut self.targets[ti];
+            let Some(job) = target
+                .jobs
+                .iter_mut()
+                .find(|j| j.sensor == sensor && j.status == "queued")
+            else {
+                return Vec::new();
+            };
+            job.status = "cancelled".into();
+            if target.jobs.iter().all(|j| job_terminal(&j.status)) {
+                target.status = terminal_target_status(&target.jobs);
+            }
+        }
+        let payload = json!({
+            "index": target_index,
+            "sensor": sensor,
+            "lat": self.targets[ti].lat,
+            "lon": self.targets[ti].lon,
+        });
+        let mut actions = vec![Action::Emit(self.event("target.job_cancelled", payload))];
+        actions.extend(self.pump_dispatch());
+        actions
     }
 
     /// v2 `handle_command` abort semantics: RTL/Land of the searcher during
@@ -940,16 +1061,8 @@ impl Mission {
                 .iter()
                 .flat_map(|j| j.artifacts.iter().cloned())
                 .collect();
-            let terminal = target
-                .jobs
-                .iter()
-                .all(|j| j.status == "done" || j.status == "failed");
-            if terminal {
-                target.status = if target.jobs.iter().all(|j| j.status == "done") {
-                    "done".into()
-                } else {
-                    "failed".into()
-                };
+            if target.jobs.iter().all(|j| job_terminal(&j.status)) {
+                target.status = terminal_target_status(&target.jobs);
             }
         }
         let target = self.targets[ti].clone();

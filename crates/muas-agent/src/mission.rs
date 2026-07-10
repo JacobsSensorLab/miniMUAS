@@ -1000,6 +1000,11 @@ pub(crate) async fn takeoff_task(shared: Arc<AgentShared>, agl_m: f64) {
         serde_json::json!({ "agl_m": agl_m, "airborne": airborne }),
     );
     clear_busy(&shared, "takeoff");
+    if !airborne {
+        // task_abort("takeoff") mid-climb: same scoped-cancel handoff as
+        // the mission runners (a plain refusal never set operator_abort).
+        operator_abort_handoff(&shared, "takeoff");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1017,6 +1022,19 @@ fn clear_busy(shared: &AgentShared, label: &str) {
 
 fn interrupted(shared: &AgentShared, label: &str) -> bool {
     shared.abort.load(Ordering::Relaxed) || *lock(&shared.busy) != label
+}
+
+/// A runner just ended `Aborted`. Ladder aborts (rtl/land/hold) mean the
+/// interrupting command owns the vehicle — do nothing. A SCOPED operator
+/// abort (`task_abort`, which raised `operator_abort` alongside `abort`)
+/// means the vehicle is simply idle again: consume the flag, lower the
+/// abort, and let the configured post-task idle policy take over — never
+/// an automatic RTL (that remains the ladder's job).
+pub(crate) fn operator_abort_handoff(shared: &Arc<AgentShared>, after_task: &'static str) {
+    if shared.operator_abort.swap(false, Ordering::Relaxed) {
+        shared.abort.store(false, Ordering::Relaxed);
+        apply_idle_policy(shared, after_task);
+    }
 }
 
 /// Publish one `search/status` sample into the latest-wins buffer.
@@ -1207,6 +1225,8 @@ pub(crate) async fn run_raster(shared: Arc<AgentShared>, req: RasterRequest, pla
     clear_busy(&shared, LABEL);
     if matches!(outcome, FlightOutcome::Completed | FlightOutcome::TimedOut) {
         apply_idle_policy(&shared, LABEL);
+    } else {
+        operator_abort_handoff(&shared, LABEL);
     }
 }
 
@@ -1261,6 +1281,8 @@ pub(crate) async fn run_investigate(shared: Arc<AgentShared>, req: InvestigateRe
     clear_busy(&shared, LABEL);
     if matches!(outcome, FlightOutcome::Completed | FlightOutcome::TimedOut) {
         apply_idle_policy(&shared, LABEL);
+    } else {
+        operator_abort_handoff(&shared, LABEL);
     }
 }
 
@@ -2034,7 +2056,11 @@ mod tests {
             })
             .await;
         assert!(ack.accepted);
-        assert!(ack.detail.contains("watchpoint armed"), "detail: {}", ack.detail);
+        assert!(
+            ack.detail.contains("watchpoint") && ack.detail.contains("armed"),
+            "detail: {}",
+            ack.detail
+        );
         // Fly a leg straight through the watchpoint.
         lock(&backend)
             .as_dyn()
@@ -2085,6 +2111,153 @@ mod tests {
         assert!(journal_lines(&dir)
             .iter()
             .any(|l| l["kind"] == "sensor.watchpoint.expired"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Scoped cancel (`task_abort`): aborting the named raster terminates
+    /// it within one control cycle, releases the vehicle, journals the
+    /// operator abort, and hands over to the idle policy — NO automatic
+    /// RTL (that stays the ladder's job). A mismatched label refuses with
+    /// `no-such-task` and leaves the task flying.
+    #[tokio::test(start_paused = true)]
+    async fn task_abort_cancels_only_the_named_task_without_rtl() {
+        use muas_contracts::services::VehicleService;
+
+        let dir = temp_log_dir("task-abort");
+        let (shared, backend) =
+            bench_shared_with("wuas-95", "raster-search", Some(dir.clone()), |_| {});
+        let req = raster_req(300.0, 200.0, 25.0, 20.0); // big: stays running
+        let plan = plan_raster(&req).unwrap();
+        let runner = tokio::spawn(run_raster(shared.clone(), req, plan));
+        assert!(
+            wait_until(60.0, || {
+                lock(&shared.latest_search)
+                    .as_ref()
+                    .and_then(|b| serde_json::from_slice::<SearchStatus>(b).ok())
+                    .is_some_and(|s| s.state == search_state::SEARCHING)
+            })
+            .await,
+            "raster never started searching"
+        );
+        let service = crate::service_impl::VehicleServiceImpl::new(shared.clone());
+
+        // Wrong label: refused, the raster keeps flying.
+        let miss = service.task_abort("investigate".into()).await;
+        assert!(!miss.accepted);
+        assert_eq!(miss.code, "no-such-task");
+        assert!(miss.detail.contains("raster-search"), "detail: {}", miss.detail);
+        assert!(!runner.is_finished(), "mismatched label must not abort");
+        // Idle vehicles refuse too.
+        assert_eq!(*lock(&shared.busy), "raster-search");
+
+        // Right label: the task dies within one cycle, the vehicle idles.
+        let ack = service.task_abort("raster-search".into()).await;
+        assert!(ack.accepted, "detail: {}", ack.detail);
+        tokio::time::sleep(CONTROL_TICK * 2).await;
+        assert!(runner.is_finished(), "abort honored within one cycle");
+        assert_eq!(*lock(&shared.busy), "", "vehicle released");
+        assert!(
+            !shared.abort.load(Ordering::Relaxed),
+            "scoped abort is consumed — the vehicle is cleanly idle"
+        );
+        let mode = lock(&backend).as_dyn_ref().telemetry().mode;
+        assert_ne!(mode, "RTL", "task_abort must never RTL (ladder's job)");
+        let status: SearchStatus =
+            serde_json::from_slice(lock(&shared.latest_search).as_ref().unwrap()).unwrap();
+        assert_eq!(status.state, search_state::ABORTED);
+
+        // A now-idle vehicle refuses a second abort of the same label.
+        let idle = service.task_abort("raster-search".into()).await;
+        assert!(!idle.accepted);
+        assert_eq!(idle.code, "no-such-task");
+
+        shared.journal.sync().await;
+        let lines = journal_lines(&dir);
+        let aborted = lines
+            .iter()
+            .find(|l| l["kind"] == "task.aborted")
+            .expect("task.aborted journaled");
+        assert_eq!(aborted["label"], "raster-search");
+        assert_eq!(aborted["by"], "operator");
+        // The idle policy took over (bench default: hold, journaled).
+        assert!(
+            lines
+                .iter()
+                .any(|l| l["kind"] == "idle.policy" && l["after_task"] == "raster-search"),
+            "idle policy must take over after a scoped abort"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `task_abort("watchpoint:<id>")` removes ONE armed watchpoint by id
+    /// while the active task keeps flying untouched; unknown ids refuse.
+    #[tokio::test(start_paused = true)]
+    async fn watchpoint_is_removable_by_id_without_touching_the_active_task() {
+        use muas_contracts::services::{sensor_mode, SensorRequest, VehicleService};
+
+        let dir = temp_log_dir("wp-abort");
+        let (shared, _backend) =
+            bench_shared_with("wuas-96", "raster-search", Some(dir.clone()), |s| {
+                let feed = crate::sensor::SyntheticFeed::new(
+                    &crate::sensor::SensorFeedConfig::synthetic(),
+                    false,
+                    30.0,
+                )
+                .unwrap();
+                s.sensor_feed = Some(Arc::new(feed));
+            });
+        let req = raster_req(300.0, 200.0, 25.0, 20.0);
+        let plan = plan_raster(&req).unwrap();
+        let runner = tokio::spawn(run_raster(shared.clone(), req, plan));
+
+        // Arm a far-away watchpoint that will neither fire nor expire soon.
+        let service = crate::service_impl::VehicleServiceImpl::new(shared.clone());
+        let ack = service
+            .sensor_capture(SensorRequest {
+                sensor: "camera".into(),
+                mode: sensor_mode::OPPORTUNISTIC.into(),
+                lat_deg: ORIGIN.0 + 900.0 / EARTH_M_PER_DEG_LAT,
+                lon_deg: ORIGIN.1,
+                radius_m: 10.0,
+                expiry_s: 600.0,
+                ..SensorRequest::default()
+            })
+            .await;
+        assert!(ack.accepted);
+        // The ack names the id (`watchpoint wp-1 armed: …`) — the UI's ✕
+        // parses it back out of the detail.
+        assert!(ack.detail.contains("watchpoint wp-1 armed"), "detail: {}", ack.detail);
+        assert!(
+            wait_until(10.0, || !lock(&shared.watchpoints).is_empty()).await,
+            "watchpoint never registered"
+        );
+
+        // Unknown id refuses; nothing changes.
+        let miss = service.task_abort("watchpoint:wp-999".into()).await;
+        assert!(!miss.accepted);
+        assert_eq!(miss.code, "no-such-task");
+
+        // Cancel by id: the watchpoint unregisters and surfaces its
+        // outcome; the raster never notices.
+        let ack = service.task_abort("watchpoint:wp-1".into()).await;
+        assert!(ack.accepted, "detail: {}", ack.detail);
+        assert!(
+            wait_until(10.0, || lock(&shared.watchpoints).is_empty()).await,
+            "watchpoint never unregistered"
+        );
+        let result: serde_json::Value =
+            serde_json::from_slice(lock(&shared.latest_sensor).as_ref().unwrap()).unwrap();
+        assert_eq!(result["status"], "cancelled");
+        assert!(!runner.is_finished(), "the active raster must keep flying");
+        assert_eq!(*lock(&shared.busy), "raster-search");
+
+        shared.abort.store(true, Ordering::Relaxed); // wind the bench down
+        shared.journal.sync().await;
+        let lines = journal_lines(&dir);
+        assert!(lines.iter().any(|l| l["kind"] == "sensor.watchpoint.cancelled"));
+        assert!(lines
+            .iter()
+            .any(|l| l["kind"] == "task.aborted" && l["label"] == "watchpoint:wp-1"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

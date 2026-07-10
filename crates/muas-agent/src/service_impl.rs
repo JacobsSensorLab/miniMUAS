@@ -72,8 +72,11 @@ impl VehicleServiceImpl {
 
     /// Abort ladder entry: raise the abort flag (running mission loops
     /// terminate within one control cycle), clear the busy label, cancel
-    /// smart RTL.
+    /// smart RTL. The ladder is a blanket stop, never a scoped operator
+    /// cancel — lower `operator_abort` so the interrupted runner does NOT
+    /// hand the vehicle to the idle policy (the ladder command owns it).
     fn abort_running_task(&self) {
+        self.shared.operator_abort.store(false, Ordering::Relaxed);
         self.shared.abort.store(true, Ordering::Relaxed);
         lock(&self.shared.busy).clear();
         let _ = self.shared.commands.send(AgentCommand::AbortRtl);
@@ -85,6 +88,7 @@ impl VehicleServiceImpl {
     fn occupy(&self, label: &str) {
         *lock(&self.shared.busy) = label.to_string();
         self.shared.abort.store(false, Ordering::Relaxed);
+        self.shared.operator_abort.store(false, Ordering::Relaxed);
     }
 
     /// What an override detour resumes afterwards, for the ack detail
@@ -112,6 +116,8 @@ impl VehicleService for VehicleServiceImpl {
         let _span = tracing::info_span!("service-invocation", op = "flight_rtl").entered();
         // RTL is the abort ladder — never busy-gated; the running task
         // terminates within one cycle (abort flag raised, label cleared).
+        // A blanket ladder stop, not a scoped cancel (see abort_running_task).
+        self.shared.operator_abort.store(false, Ordering::Relaxed);
         self.shared.abort.store(true, Ordering::Relaxed);
         lock(&self.shared.busy).clear();
         let ack = if self.shared.smart_rtl {
@@ -338,12 +344,29 @@ impl VehicleService for VehicleServiceImpl {
                 }
             }
             // Mode `opportunistic`: arm a watchpoint that fires in passing.
+            // Registered by id so `task_abort("watchpoint:<id>")` can remove
+            // it without touching whatever task owns the vehicle.
             Ok(()) if req.mode == sensor_mode::OPPORTUNISTIC => {
                 let radius_m = if req.radius_m > 0.0 { req.radius_m } else { 15.0 };
                 let expiry_s = if req.expiry_s > 0.0 { req.expiry_s } else { 120.0 };
-                tokio::spawn(crate::sensor::watchpoint_task(self.shared.clone(), req.clone()));
+                let id = format!(
+                    "wp-{}",
+                    self.shared.watchpoint_seq.fetch_add(1, Ordering::Relaxed) + 1
+                );
+                let session = self.shared.cancel.child_token();
+                lock(&self.shared.watchpoints).push(crate::Watchpoint {
+                    id: id.clone(),
+                    sensor: req.sensor.clone(),
+                    cancel: session.clone(),
+                });
+                tokio::spawn(crate::sensor::watchpoint_task(
+                    self.shared.clone(),
+                    req.clone(),
+                    id.clone(),
+                    session,
+                ));
                 Ack::ok_detail(format!(
-                    "watchpoint armed: {} fires within {radius_m:.0} m, expires in {expiry_s:.0} s",
+                    "watchpoint {id} armed: {} fires within {radius_m:.0} m, expires in {expiry_s:.0} s",
                     req.sensor
                 ))
             }
@@ -390,6 +413,76 @@ impl VehicleService for VehicleServiceImpl {
             serde_json::to_value(&req).unwrap_or_default(),
             &ack,
         );
+        ack
+    }
+
+    async fn task_abort(&self, label: String) -> Ack {
+        let _span = tracing::info_span!("service-invocation", op = "task_abort").entered();
+        let ack = if let Some(id) = label.strip_prefix("watchpoint:") {
+            // Watchpoints ride along with whatever the vehicle is doing —
+            // cancelling one by id never touches the active task. The
+            // watchpoint task unregisters itself when the token fires.
+            let token = lock(&self.shared.watchpoints)
+                .iter()
+                .find(|w| w.id == id)
+                .map(|w| w.cancel.clone());
+            match token {
+                Some(token) => {
+                    token.cancel();
+                    self.shared.journal.event(
+                        "task.aborted",
+                        serde_json::json!({ "label": label, "by": "operator" }),
+                    );
+                    Ack::ok_detail(format!("watchpoint {id} cancelled"))
+                }
+                None => Ack::refuse("no-such-task", format!("no armed watchpoint '{id}'")),
+            }
+        } else {
+            // Scoped cancel of the ACTIVE task: the label must match the
+            // current busy label exactly — a mismatch means the task the
+            // operator is looking at already ended (or was re-labelled),
+            // and blind aborts of "whatever runs now" are refused.
+            let matched = {
+                let mut busy = lock(&self.shared.busy);
+                if label.is_empty() || *busy != label {
+                    Err(busy.clone())
+                } else {
+                    // Order matters (all under the busy lock): the runner's
+                    // interrupt check reads `abort || busy != label`, so
+                    // both abort flags are up before the label clears —
+                    // whoever observes the release also sees the operator
+                    // provenance and hands over to the idle policy.
+                    self.shared.operator_abort.store(true, Ordering::Relaxed);
+                    self.shared.abort.store(true, Ordering::Relaxed);
+                    busy.clear();
+                    Ok(())
+                }
+            };
+            match matched {
+                Err(current) if current.is_empty() => {
+                    Ack::refuse("no-such-task", format!("no active task '{label}' (vehicle idle)"))
+                }
+                Err(current) => Ack::refuse(
+                    "no-such-task",
+                    format!("active task is '{current}', not '{label}'"),
+                ),
+                Ok(()) => {
+                    if label == "rtl" {
+                        // The only busy label whose loop lives on the coord
+                        // thread: tell it to stand down its smart RTL.
+                        let _ = self.shared.commands.send(AgentCommand::AbortRtl);
+                    }
+                    self.shared.journal.event(
+                        "task.aborted",
+                        serde_json::json!({ "label": label, "by": "operator" }),
+                    );
+                    Ack::ok_detail(format!(
+                        "task '{label}' aborted; vehicle idle (idle policy takes over, no RTL)"
+                    ))
+                }
+            }
+        };
+        self.journal_ack("task_abort", serde_json::json!({ "label": label }), &ack);
         ack
     }
 

@@ -1,12 +1,15 @@
 //! Second-target dispatch regression (ROUND-3 §1 item 2), integration-level:
 //! the dashboard's mission state machine (`muas_dashboard::mission`, used as
 //! a library — the muas-dashboard tests directory is owned by the dashboard
-//! wave) driving TWO REAL agent service implementations over sim backends,
-//! with the async layer simulated exactly as `muas-dashboard/src/lib.rs`
-//! executes `Action::Dispatch` (accept-ack ⇒ `JobResult`), PLUS the busy
-//! wiring the fix requires: `Mission::set_vehicle_busy` fed from each
-//! vehicle's busy label — the same fact the dashboard's telemetry poller
-//! already fetches on every sample.
+//! wave) driving TWO REAL agent service implementations over sim backends.
+//! This harness deliberately keeps the WORST-CASE async mapping (accept-ack
+//! fed straight into `on_job_result`) to pin the requeue + busy-hint
+//! machinery in isolation; production `lib.rs` has since moved to the
+//! truthful mapping (accept ⇒ in-flight, completion on the vehicle's
+//! busy→idle transition — see muas-dashboard/tests/mission.rs). The busy
+//! wiring under test: `Mission::set_vehicle_busy` fed from each vehicle's
+//! busy label — the same fact the dashboard's telemetry poller already
+//! fetches on every sample.
 //!
 //! Defect being pinned (2026-07-10 eval, `deployment-run/journals/
 //! agent-iuas-0*-17837086*.jsonl`): the accept-ack was mapped to job
@@ -113,7 +116,8 @@ async fn apply_actions(
             } else if ack.accepted {
                 wire.dispatched.push((target_index, vehicle.clone()));
             }
-            // The lib.rs mapping under scrutiny: the ack IS the job result.
+            // Worst-case mapping kept on purpose (see module docs): the
+            // ack fed straight in as the job result.
             let followup = mission.on_job_result(JobResult {
                 target_index,
                 sensor,

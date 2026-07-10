@@ -301,6 +301,17 @@ pub trait VehicleService {
     async fn investigate(&self, req: InvestigateRequest) -> Ack;
     /// Tasked sensor capture.
     async fn sensor_capture(&self, req: SensorRequest) -> Ack;
+    /// Scoped cancellation of ONE named task — the surgical alternative to
+    /// the blanket RTL/Land/Hold ladder. `label` must equal the vehicle's
+    /// current busy label (`raster-search`, `investigate`,
+    /// `sensor-override`, `takeoff`, `rtl`) or name an armed watchpoint as
+    /// `watchpoint:<id>`. The task terminates within one control cycle,
+    /// the vehicle is released, and the post-task idle policy takes over —
+    /// no automatic RTL (that stays the ladder's job). A label that
+    /// matches nothing is refused with code `no-such-task`. Watchpoints
+    /// ride along with whatever the vehicle is doing, so removing one
+    /// never touches the active task.
+    async fn task_abort(&self, label: String) -> Ack;
     /// Live video stream control.
     async fn video_control(&self, req: VideoRequest) -> Ack;
     /// Authorized companion shutdown; `confirm` must equal the vehicle id.

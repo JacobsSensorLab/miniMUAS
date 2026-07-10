@@ -208,6 +208,14 @@ impl Commander for NdnCommander {
         })
     }
 
+    fn task_abort(&self, vehicle: String, label: String) -> BoxFuture<CmdResult> {
+        let clients = self.short.clone();
+        Box::pin(async move {
+            let Some(client) = clients.get(&vehicle) else { return no_vehicle(&vehicle) };
+            to_result(client.task_abort(label).await)
+        })
+    }
+
     fn sensor_capture(&self, vehicle: String, request: SensorRequest) -> BoxFuture<CmdResult> {
         let clients = self.long.clone();
         Box::pin(async move {

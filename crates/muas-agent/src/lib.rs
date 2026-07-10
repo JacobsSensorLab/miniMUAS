@@ -193,6 +193,19 @@ pub enum AgentCommand {
     Shutdown,
 }
 
+/// One armed opportunistic watchpoint (mode `opportunistic` capture),
+/// registered so `task_abort("watchpoint:<id>")` can cancel it by id
+/// without touching whatever task owns the vehicle.
+pub struct Watchpoint {
+    /// Registry id (`wp-<n>`, unique per boot).
+    pub id: String,
+    /// Which sensor fires (`"camera"` / `"audio"`).
+    pub sensor: String,
+    /// Cancels the watchpoint task; the task unregisters itself on every
+    /// exit path (fired / expired / cancelled / shutdown).
+    pub cancel: CancellationToken,
+}
+
 /// State shared between service handlers, loops, and the coord thread.
 pub struct AgentShared {
     pub vehicle_id: String,
@@ -206,6 +219,18 @@ pub struct AgentShared {
     /// The v2 abort flag: raised by rtl/land/hold, cleared when a new task
     /// starts; every mission loop honors it within one control cycle.
     pub abort: std::sync::atomic::AtomicBool,
+    /// Raised together with `abort` by `task_abort` (scoped operator
+    /// cancel) and lowered by the ladder / a new task. A mission runner
+    /// whose flight ends `Aborted` consumes it (swap) to hand the idle
+    /// vehicle to the post-task idle policy instead of assuming another
+    /// command owns the aircraft — the ladder never sets it, so ladder
+    /// aborts keep the old "interrupting command owns the vehicle" rule.
+    pub operator_abort: std::sync::atomic::AtomicBool,
+    /// Armed opportunistic watchpoints, removable by id via
+    /// `task_abort("watchpoint:<id>")`.
+    pub watchpoints: Mutex<Vec<Watchpoint>>,
+    /// Monotonic watchpoint id counter (`wp-<n>`).
+    pub watchpoint_seq: std::sync::atomic::AtomicU64,
     pub agl_bounds: AglBounds,
     pub max_range_m: f64,
     pub audio_range_m: f64,
@@ -278,6 +303,9 @@ impl AgentShared {
             backend,
             busy: Mutex::new(String::new()),
             abort: std::sync::atomic::AtomicBool::new(false),
+            operator_abort: std::sync::atomic::AtomicBool::new(false),
+            watchpoints: Mutex::new(Vec::new()),
+            watchpoint_seq: std::sync::atomic::AtomicU64::new(0),
             agl_bounds: AglBounds::default(),
             max_range_m: muas_contracts::policy::DEFAULT_MAX_RANGE_M,
             audio_range_m: 30.0,
@@ -465,6 +493,9 @@ impl Agent {
             backend: backend.clone(),
             busy: Mutex::new(String::new()),
             abort: std::sync::atomic::AtomicBool::new(false),
+            operator_abort: std::sync::atomic::AtomicBool::new(false),
+            watchpoints: Mutex::new(Vec::new()),
+            watchpoint_seq: std::sync::atomic::AtomicU64::new(0),
             agl_bounds: config.agl_bounds,
             max_range_m: config.max_range_m,
             audio_range_m: config.audio_range_m,

@@ -105,6 +105,13 @@ struct Args {
     http_port: u16,
     control_port: u16,
     run_dir: PathBuf,
+    /// GCS antenna position (`--gcs lat,lon`); default 30 m south of home.
+    /// Exported on /netstats + the WS `net` message so the dashboard's
+    /// network layer anchors its GCS node to it, and passed to the
+    /// dashboard config (hello `gcs`). With the static link profiles the
+    /// position is visualization truth only; when geometry-based
+    /// propagation lands, this same value feeds it.
+    gcs: Option<(f64, f64)>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -114,6 +121,7 @@ fn parse_args() -> Result<Args, String> {
         http_port: 8080,
         control_port: 8081,
         run_dir: PathBuf::from("./deployment-run"),
+        gcs: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -143,11 +151,24 @@ fn parse_args() -> Result<Args, String> {
                     .map_err(|e| format!("--control-port: {e}"))?;
             }
             "--run-dir" => args.run_dir = PathBuf::from(it.next().ok_or("--run-dir: missing value")?),
+            "--gcs" => {
+                let value = it.next().ok_or("--gcs: missing value")?;
+                let (lat, lon) = value
+                    .split_once(',')
+                    .ok_or_else(|| format!("--gcs: expected 'lat,lon', got '{value}'"))?;
+                args.gcs = Some((
+                    lat.trim().parse().map_err(|e| format!("--gcs: bad lat: {e}"))?,
+                    lon.trim().parse().map_err(|e| format!("--gcs: bad lon: {e}"))?,
+                ));
+            }
             "--help" | "-h" => {
                 println!(
                     "virtual_deployment — 3×SITL + 3×muas-agent + ndn-sim fabric + dashboard\n\n\
                      USAGE: virtual_deployment [--verify] [--profile apsta|ndr-good|ndr-contested]\n\
-                            [--http-port 8080] [--control-port 8081] [--run-dir ./deployment-run]\n\n\
+                            [--http-port 8080] [--control-port 8081] [--run-dir ./deployment-run]\n\
+                            [--gcs lat,lon]  GCS antenna position (default 30 m south of home);\n\
+                                             exported on /netstats + the WS net message and the\n\
+                                             dashboard hello so the network layer anchors to it\n\n\
                      Default: interactive (dashboard at :8080, sim control at :8081,\n\
                      Ctrl-C tears down). The control endpoint places/clears anomalies\n\
                      (POST/DELETE /anomalies) and serves 1 Hz net stats (GET /netstats).\n\
@@ -417,6 +438,10 @@ async fn net_export_loop(
     field: Arc<AnomalyField>,
     net: NetSnapshot,
     profile: Value,
+    // GCS position exported with every snapshot (`gcs` field): with the
+    // static link profiles this is visualization truth only; when
+    // geometry-based propagation lands, this same value feeds it.
+    gcs: (f64, f64),
     cancel: CancellationToken,
 ) {
     let label_of = |raw: usize| -> Option<String> {
@@ -476,12 +501,8 @@ async fn net_export_loop(
                 }));
             }
         }
-        let snapshot = json!({
-            "type": "net",
-            "t": now_ns() as f64 / 1e9,
-            "profile": profile,
-            "links": links,
-        });
+        let snapshot =
+            muas_sim::control::net_snapshot(now_ns() as f64 / 1e9, &profile, gcs, links);
         *net.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot.clone();
         dash.hub.broadcast(&snapshot);
 
@@ -1125,6 +1146,12 @@ async fn run(args: Args) -> Result<i32, String> {
     // 3 — dashboard over the console bridge.
     println!("[3/4] starting the dashboard …");
     let (client_addr, bridge_addr) = fleet.bridge_client().await?;
+    // GCS antenna position: surveyed via --gcs, else 30 m south of home
+    // (where an operator tent would plausibly sit). Fed to the dashboard
+    // config (hello gcs) AND the net exporter (/netstats + WS `net`).
+    let gcs = args
+        .gcs
+        .unwrap_or((HOME.0 - 30.0 / M_PER_DEG_LAT, HOME.1));
     let dash_config = muas_dashboard::DashConfig {
         http_host: "0.0.0.0".into(),
         http_port: args.http_port,
@@ -1137,6 +1164,7 @@ async fn run(args: Args) -> Result<i32, String> {
             remote: bridge_addr,
             route: Some(muas_contracts::names::APP_PREFIX.to_string()),
         }],
+        gcs: Some(gcs),
         ..muas_dashboard::DashConfig::default()
     };
     // SimpleDetector: real detection over fabric-fetched frames; the NDN
@@ -1168,6 +1196,7 @@ async fn run(args: Args) -> Result<i32, String> {
         field.clone(),
         net.clone(),
         link_profile_json,
+        gcs,
         deploy_cancel.child_token(),
     ));
     println!("[4/4] up.");

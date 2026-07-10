@@ -780,21 +780,39 @@ pub(crate) async fn override_capture_task(
             "resumed_task": if resume_task == "sensor-override" { "" } else { resume_task.as_str() },
         }),
     );
+    // Scoped operator cancel of an idle-vehicle override (task_abort
+    // "sensor-override"): the detour is dead and nothing else owns the
+    // aircraft — lower the abort and let the idle policy take over. When
+    // the detour rode a raster (`resume_task == "raster-search"`), the
+    // raster runner owns this handoff instead.
+    if resume_task == "sensor-override"
+        && shared
+            .operator_abort
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+    {
+        shared.abort.store(false, std::sync::atomic::Ordering::Relaxed);
+        crate::mission::apply_idle_policy(&shared, "sensor-override");
+    }
 }
 
 /// Execute mode `opportunistic`: arm a watchpoint that fires a capture the
 /// moment the vehicle passes within `radius_m` of the point (riding along
 /// with whatever the vehicle is doing — no detour), and expires after
-/// `expiry_s` without a pass.
+/// `expiry_s` without a pass. Registered in `shared.watchpoints` under
+/// `id`; `cancel` (fired by `task_abort("watchpoint:<id>")`) removes it
+/// without touching the active task, and every exit path unregisters.
 pub(crate) async fn watchpoint_task(
     shared: Arc<crate::AgentShared>,
     req: muas_contracts::services::SensorRequest,
+    id: String,
+    cancel: CancellationToken,
 ) {
     let radius_m = if req.radius_m > 0.0 { req.radius_m } else { 15.0 };
     let expiry_s = if req.expiry_s > 0.0 { req.expiry_s } else { 120.0 };
     shared.journal.event(
         "sensor.watchpoint.armed",
         serde_json::json!({
+            "id": id,
             "sensor": req.sensor,
             "lat_deg": req.lat_deg,
             "lon_deg": req.lon_deg,
@@ -805,7 +823,27 @@ pub(crate) async fn watchpoint_task(
     let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(expiry_s);
     loop {
         tokio::select! {
-            () = shared.cancel.cancelled() => return,
+            () = shared.cancel.cancelled() => break,
+            () = cancel.cancelled() => {
+                // Operator removed this watchpoint by id (task_abort):
+                // surface the outcome like an expiry, but honest.
+                shared.journal.event(
+                    "sensor.watchpoint.cancelled",
+                    serde_json::json!({ "id": id, "sensor": req.sensor }),
+                );
+                publish_sensor_result(
+                    &shared,
+                    serde_json::json!({
+                        "request_id": format!("cap-{}", (crate::telemetry::gps_time_ns() / 1_000_000) % 100_000_000),
+                        "sensor": req.sensor,
+                        "status": "cancelled",
+                        "message": format!("watchpoint {id} cancelled by operator"),
+                        "gps_time_ns": crate::telemetry::gps_time_ns(),
+                        "artifacts": [],
+                    }),
+                );
+                break;
+            }
             _ = tokio::time::sleep(TASKING_TICK) => {}
         }
         let here = lock(&shared.backend).as_dyn_ref().position();
@@ -814,16 +852,16 @@ pub(crate) async fn watchpoint_task(
             {
                 shared.journal.event(
                     "sensor.watchpoint.fired",
-                    serde_json::json!({ "sensor": req.sensor, "radius_m": radius_m }),
+                    serde_json::json!({ "id": id, "sensor": req.sensor, "radius_m": radius_m }),
                 );
                 execute_capture(&shared, &req, "opportunistic").await;
-                return;
+                break;
             }
         }
         if tokio::time::Instant::now() > deadline {
             shared.journal.event(
                 "sensor.watchpoint.expired",
-                serde_json::json!({ "sensor": req.sensor, "expiry_s": expiry_s }),
+                serde_json::json!({ "id": id, "sensor": req.sensor, "expiry_s": expiry_s }),
             );
             publish_sensor_result(
                 &shared,
@@ -836,9 +874,10 @@ pub(crate) async fn watchpoint_task(
                     "artifacts": [],
                 }),
             );
-            return;
+            break;
         }
     }
+    lock(&shared.watchpoints).retain(|w| w.id != id);
 }
 
 /// The live-video loop: render at `fps`, stamp a millisecond sequence
