@@ -124,6 +124,15 @@ into a feature/data silo. Target architecture ("builder mode"):
    works, and absence degrades gracefully: Express → Approximate (loss
    chips) → Refuse/Unresolved → the render-contract text+value baseline —
    never a broken widget.
+3½. **The surface catalog (practicality requirement, round-3½)**: the
+   dashboard must publish a catalog of ITSELF — the render contracts it
+   can Express, the data kinds it understands, and its **surface-native
+   widgets**: ready-to-use, zero-authoring, zero-network-pull building
+   blocks (gauge, dial, sparkline, tile, log strip, map layer slots).
+   Malleability without a stocked shelf is a blank-page problem; the
+   catalog IS a manifested document (the instrument descriptor grown
+   inward), so browsing "what can this surface do" uses the same
+   machinery as browsing "what does this drone publish".
 4. **Manifest-powered help**: every placed element supports inspection —
    what am I, what do I show, from which chain, under which contract,
    with which losses — via element lookup on the manifests. This is how a
@@ -137,6 +146,18 @@ into a feature/data silo. Target architecture ("builder mode"):
    route consuming uas-console bindings), so we never regress field
    readiness while escaping the silo shape. The WS schema becomes an
    implementation detail behind bindings, not the product.
+
+## 3¾. Network layer redesign (round-3½)
+
+The owner's critique: phase-1 lines re-commit the unicast fallacy
+visually on a broadcast medium; per-line stats are useful but the form is
+misleading. Full revision recorded in `NETWORK-VIZ.md` "Revision 2":
+lines demoted to an earned, toggleable overlay-bearer sub-layer; broadcast
+media render as fields; the data-centric backlog (interest/data heatmaps
+by namespace, span-fed named-data traceroute, data-centric ping, namespace
+lens, real-radio stats under the never-synthesize rule); GCS position as
+pluggable data (sim export / field positioning backend / manual survey),
+never chrome.
 
 ## 4. Fleet lifecycle surfacing (queued)
 

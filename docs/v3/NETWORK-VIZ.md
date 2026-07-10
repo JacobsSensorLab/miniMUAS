@@ -115,3 +115,47 @@ never synthesized.
 - No historical charting on the map; the map shows *now*. History belongs
   to `/netstats` scrapes.
 - No topology editing from the UI; the fabric is the deployment's.
+
+## Revision 2 (2026-07-10, owner's round-3½ critique) — draw the medium, not the link
+
+Phase 1's per-pair lines were called out, correctly, as **the unicast trap
+applied visually to a broadcast medium**. The rule going forward (identical
+to the waterline suite's founding doctrine, which we relayed to them and
+must now hold ourselves to):
+
+1. **Lines are earned, not default.** A line means a genuine point-to-point
+   bearer: a wire, or a unicast/IP-overlay face — and even then it renders
+   on its own toggleable "overlay bearers" sub-layer, visually
+   differentiated (thin, squared ends, labeled as overlay) so it can never
+   be mistaken for the medium. The current UDP-face lines move to this
+   sub-layer verbatim.
+2. **Broadcast media render as fields.** A radio is a *region*, not an
+   edge: coverage/activity as soft fields around emitters, emissions as
+   attributable events, contention as field overlap. No pairwise geometry
+   for anything a third party could have heard.
+3. **The data-centric gem list** (the real backlog, all namespace-aware —
+   this is where NDN's semantic richness pays):
+   - **Interest/data heatmaps** — spatial and per-namespace volume, split
+     by direction, windowed; "what is being asked for, where".
+   - **Data traffic paths** — named-data traceroute: reconstruct the path
+     a Data actually took from per-hop OTel spans (ndn-observability /
+     ndn-otel-bridge feed), rendered as an ephemeral ribbon on demand,
+     per-name or per-prefix.
+   - **Data-centric ping** — round-trip freshness per name prefix as a
+     first-class probe tool from the console.
+   - **Namespace lens** — every network element filterable/colorable by
+     name prefix (fleet coord vs video vs journal replication look
+     different because they ARE different).
+   - **Radio stats/parameters** (phase 3 rule unchanged: only from real
+     radio stacks — ndn-radio-cognition / ndn-signal-sources — never
+     synthesized): channel, MCS, airtime, per-node radio capability cards.
+4. **GCS position is data, not chrome**: world-anchored always; source
+   pluggable — virtual deployment exports it; field deployments supply it
+   from a positioning backend or manual survey entry (config + UI set
+   affordance). (Corner-pinning was a phase-1 bug; the world-anchor fix
+   shipped in the round-3 dashboard wave.)
+
+Phasing: R2a = line demotion to the overlay sub-layer + field rendering for
+the sim fabric's broadcast profile + namespace coloring on the heatmap
+counters we already export. R2b = span-fed traffic paths + data-centric
+ping. Phase 3 (real radio) unchanged.

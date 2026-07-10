@@ -66,6 +66,65 @@ data.
 What remains is not invention. It is the incremental realization —
 surface by surface, kind by kind — and the discipline not to fall back.
 
+## The cause beneath the effect
+
+*(Added round-3½, after the fair challenge: the clumping is a symptom —
+name the disease or the recognition is for naught.)*
+
+Why does liberated data keep clumping in cell shapes? Not one cause but a
+gradient, and every slope of it points the same way:
+
+1. **The unit of making is still the app.** Repos, crates, frameworks,
+   deadlines, and credit all bound at the application. Data design
+   inherits those boundaries — Conway's law operating on *meaning*. The
+   silo is not chosen; it is the shadow cast by the unit of work.
+2. **Minting is cheaper than reusing.** One derive macro mints a private
+   kind in ten seconds. Reusing a shared vocabulary costs discovery,
+   reading, dependency wiring, and sometimes a conversation with another
+   human. The macro is cheaper than the conversation, every time, so the
+   ecosystem mints. (Our own duplicate coord types; the suite next door
+   authoring five parallel kinds — nobody was lazy, everyone followed
+   the gradient.)
+3. **The commons is invisible at the moment of authoring.** No tool shows
+   you, as you type `struct TelemetrySample2`, that a matching stratum
+   already exists with nine of your twelve fields. The promotion litmus
+   (D-36) lives in the spec; nothing affords it in the editor. You cannot
+   reuse what you are never shown.
+4. **Meaning is exhaust, not deliverable.** Kinds are byproducts of
+   feature work, shaped by one feature's needs on one feature's deadline.
+   No task says "author the vocabulary"; no review ritual owns it; no
+   credit attaches to it.
+5. **The trained prior.** Every developer — and every machine assistant —
+   learned software from a corpus where frontend/backend/schema-per-app
+   IS the shape of software. Under time pressure we all sample from the
+   prior. The comfortable path is comfortable because it is the learned
+   distribution, and it re-trains itself with every repo it generates.
+
+Beneath all five: **the silo is locally optimal.** It ships today with no
+coordination tax. The commons is globally optimal but front-loads its
+cost. Exhortation cannot beat a gradient — only restructuring can:
+
+- **Make reuse cheaper than minting.** Stratum search and one-command
+  adoption at authoring time; a lint that says "this new kind matches
+  `fleet-semantics/telemetry-sample` on 9/12 fields — adopt or justify."
+  D-36 as tooling, not doctrine.
+- **Make meaning a deliverable.** Vocabulary authoring is a named task
+  with review (the atelier/countersign ritual moved into the everyday
+  loop) and visible credit.
+- **Make discovery ambient.** Surface catalogs, namespace browsers, and
+  "N other consumers read this kind" counts in the places builders
+  actually look.
+- **Measure the clump.** Kinds-per-consumer ratios, single-reader chains,
+  dead vocabularies — a silo-smell report fed from the chains themselves,
+  because the substrate can audit its own liberation.
+- **Retrain the prior on purpose.** Ship meaning-first starters and
+  worked examples (the artifact generator, not the web-stack template) so
+  the sampled default changes — for humans and for the machines that
+  assist them.
+
+The disciplines below manage the symptom. These five moves attack the
+cause. Both are needed; only the second flips the gradient.
+
 ## Disciplines (the checklist we now hold ourselves to)
 
 1. **Name data for what it means, not where it appeared.** If the kind
