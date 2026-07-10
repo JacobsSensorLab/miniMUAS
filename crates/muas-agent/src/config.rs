@@ -77,6 +77,12 @@ pub struct AgentConfig {
     /// Mirror journal events into an ndf-apps Block chain.
     pub journal_chain: bool,
 
+    // -- sensor feed (pluggable; see muas_agent::sensor) --
+    /// Which sensor feed backs captures/video (`None` = no sensors, the
+    /// pre-v3.1 behavior; `Synthetic` renders from the deployment's anomaly
+    /// ground truth fetched over the network).
+    pub sensor_feed: crate::sensor::SensorFeedConfig,
+
     // -- spark telemetry lane --
     /// Emit every telemetry sample as an ndf-spark Spark over UDP to this
     /// destination (the real_socket_twin binding).
@@ -113,6 +119,7 @@ impl Default for AgentConfig {
             rtl_sep_m: 3.0,
             log_dir: None,
             journal_chain: false,
+            sensor_feed: crate::sensor::SensorFeedConfig::None,
             spark_udp: None,
             ndnsf_listen: None,
             ndnsf_peers: Vec::new(),
@@ -180,6 +187,12 @@ COORDINATION:
     --floor-agl-m <M>          fleet flight floor (default 3.5; SAME fleet-wide)
     --rtl-base-agl-m <M>       lowest smart-RTL slot (default 8)
     --rtl-sep-m <M>            slot separation (default 3)
+
+SENSORS:
+    --sensor-feed <S>          none (default) | synthetic — synthetic renders
+                               nadir frames / audio from the deployment's
+                               anomaly ground truth, fetched over the network
+                               (embedders pass a full SensorFeedConfig instead)
 
 JOURNALS / TELEMETRY LANES:
     --log-dir <DIR>            power-loss-safe JSONL journal directory
@@ -315,6 +328,15 @@ pub fn parse_args(args: &[String]) -> Result<ParseOutcome, String> {
             "--floor-agl-m" => floor = Some(parse_f64(&next(arg, &mut it)?, arg)?),
             "--rtl-base-agl-m" => config.rtl_base_agl_m = parse_f64(&next(arg, &mut it)?, arg)?,
             "--rtl-sep-m" => config.rtl_sep_m = parse_f64(&next(arg, &mut it)?, arg)?,
+            "--sensor-feed" => {
+                config.sensor_feed = match next(arg, &mut it)?.as_str() {
+                    "none" => crate::sensor::SensorFeedConfig::None,
+                    "synthetic" => crate::sensor::SensorFeedConfig::synthetic(),
+                    other => {
+                        return Err(format!("--sensor-feed: expected none|synthetic, got '{other}'"))
+                    }
+                };
+            }
             "--log-dir" => config.log_dir = Some(PathBuf::from(next(arg, &mut it)?)),
             "--journal-chain" => config.journal_chain = true,
             "--spark-udp" => config.spark_udp = Some(parse_addr(&next(arg, &mut it)?, arg)?),

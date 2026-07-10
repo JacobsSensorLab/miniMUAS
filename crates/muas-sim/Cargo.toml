@@ -38,6 +38,9 @@ ndf-spark = { workspace = true }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The deployment control endpoint (anomaly placement + net stats) — same
+# axum the dashboard already builds.
+axum = "0.8"
 # `process` + `net`/`io-util`/`fs`: the virtual deployment spawns SITL
 # children, tails their logs, and writes the run-config record.
 tokio = { workspace = true, features = ["process", "net", "io-util", "fs"] }

@@ -17,7 +17,7 @@
 //!   escalation scenario, data-plane only.
 
 use std::net::SocketAddr;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use muas_agent::{Agent, AgentConfig, AgentHandle, BackendExt, Endpoint, UdpLink};
@@ -70,8 +70,10 @@ fn reserve_udp_port() -> Result<u16, String> {
 }
 
 /// A running fleet: the fabric, its nodes, and one real agent per vehicle.
+/// The fabric is `Arc`-shared so background exporters (net-stats at 1 Hz)
+/// can read `face_stats` while the harness owns the fleet.
 pub struct FleetSim {
-    pub fabric: RunningSimulation,
+    pub fabric: Arc<RunningSimulation>,
     pub nodes: Vec<NodeId>,
     /// Blackhole node (all links to it drop 100%), when built with one.
     pub sink: Option<NodeId>,
@@ -166,7 +168,7 @@ impl FleetSim {
         } else {
             None
         };
-        let fabric = sim.start().await.map_err(|e| format!("fabric start: {e}"))?;
+        let fabric = Arc::new(sim.start().await.map_err(|e| format!("fabric start: {e}"))?);
 
         // -- bridges (fabric edge, lossless loopback UDP) ----------------------
         let mut agent_links = Vec::with_capacity(specs.len());
@@ -251,6 +253,36 @@ impl FleetSim {
             .bridge_udp_socket(console, bridge_socket, client_addr)
             .map_err(|e| format!("console bridge: {e}"))?;
         Ok((client_addr, bridge_addr))
+    }
+
+    /// The console node's engine — the deployment-side attachment point
+    /// for services the fleet consumes (e.g. the sim anomaly ground truth).
+    pub fn console_engine(&self) -> Option<ndn_engine::ForwarderEngine> {
+        self.fabric.engine_of(self.console?)
+    }
+
+    /// Route `prefix` from EVERY vehicle node toward the console node, so
+    /// agent-side fetches of deployment-served names (the sim ground
+    /// truth) cross the same lossy SimLinks as fleet traffic.
+    pub fn route_vehicles_to_console(&self, prefix: &str) -> Result<(), String> {
+        let console = self
+            .console
+            .ok_or("fleet built without a console node (use start_with_console)")?;
+        let name: Name = prefix
+            .parse()
+            .map_err(|e| format!("console route prefix '{prefix}': {e:?}"))?;
+        for &node in &self.nodes {
+            let face = self
+                .fabric
+                .face_between(node, console)
+                .ok_or("no link between vehicle node and console")?;
+            self.fabric
+                .engine_of(node)
+                .ok_or("no engine for vehicle node")?
+                .fib()
+                .add_nexthop(&name, face, 0);
+        }
+        Ok(())
     }
 
     /// Blackhole `target`'s `coord/status` name as seen from `viewer`'s

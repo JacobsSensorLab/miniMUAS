@@ -247,6 +247,10 @@ pub struct Mission {
     /// Investigation sensors each vehicle advertises (from its
     /// CapabilityProfile extras); absent ⇒ legacy assumption `camera`.
     pub capabilities: HashMap<String, BTreeSet<String>>,
+    /// The additive `sensor_meta` object each vehicle advertises (hfov /
+    /// DRI / audio reach — the map sensor layer renders from it); `Null`
+    /// for legacy vehicles.
+    pub sensor_meta: HashMap<String, Value>,
     seen_frames: HashSet<String>,
     pub detects_pending: u64,
     pub detects_done: u64,
@@ -270,6 +274,7 @@ impl Mission {
             candidates: Vec::new(),
             enabled,
             capabilities: HashMap::new(),
+            sensor_meta: HashMap::new(),
             seen_frames: HashSet::new(),
             detects_pending: 0,
             detects_done: 0,
@@ -421,17 +426,28 @@ impl Mission {
     }
 
     /// Capability advertisement changed (poller). A new capability may
-    /// unblock a queued job.
-    pub fn set_capabilities(&mut self, vehicle: &str, sensors: BTreeSet<String>) -> Vec<Action> {
-        if self.capabilities.get(vehicle) == Some(&sensors) {
+    /// unblock a queued job. `sensor_meta` is the vehicle's additive
+    /// sensor-metadata object (`Null` for legacy profiles); it rides the
+    /// broadcast so the map sensor layer stays current.
+    pub fn set_capabilities(
+        &mut self,
+        vehicle: &str,
+        sensors: BTreeSet<String>,
+        sensor_meta: Value,
+    ) -> Vec<Action> {
+        if self.capabilities.get(vehicle) == Some(&sensors)
+            && self.sensor_meta.get(vehicle) == Some(&sensor_meta)
+        {
             return Vec::new();
         }
         let msg = json!({
             "type": "capabilities",
             "vehicle": vehicle,
             "sensors": sensors.iter().cloned().collect::<Vec<_>>(),
+            "sensor_meta": sensor_meta,
         });
         self.capabilities.insert(vehicle.to_string(), sensors);
+        self.sensor_meta.insert(vehicle.to_string(), sensor_meta);
         let mut actions = vec![Action::Emit(msg)];
         actions.extend(self.pump_dispatch());
         actions

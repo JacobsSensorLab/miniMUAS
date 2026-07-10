@@ -28,16 +28,20 @@
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use muas_agent::{AgentConfig, Endpoint};
+use muas_contracts::names;
+use muas_sim::control::{http_json, serve_control, HttpSimControl, NetSnapshot};
 use muas_sim::run_config::{git_rev, LinkProfileConfig, SitlRunConfig, VehicleRunConfig};
-use muas_sim::{FleetSim, RunConfig, VehicleSpec};
-use ndn_sim::LinkConfig;
+use muas_sim::{AnomalyField, AnomalySource, AnomalySourceConfig, FleetSim, RunConfig, VehicleSpec};
+use ndn_app::EngineAppExt;
+use ndn_sim::{FaceKind, LinkConfig, NodeId, RunningSimulation};
 use serde_json::{json, Value};
 use tokio_tungstenite::tungstenite::Message;
+use tokio_util::sync::CancellationToken;
 
 // ───────────────────────────── fixed layout ─────────────────────────────────
 
@@ -95,6 +99,7 @@ struct Args {
     verify: bool,
     profile: String,
     http_port: u16,
+    control_port: u16,
     run_dir: PathBuf,
 }
 
@@ -103,6 +108,7 @@ fn parse_args() -> Result<Args, String> {
         verify: false,
         profile: "apsta".into(),
         http_port: 8080,
+        control_port: 8081,
         run_dir: PathBuf::from("./deployment-run"),
     };
     let mut it = std::env::args().skip(1);
@@ -125,14 +131,24 @@ fn parse_args() -> Result<Args, String> {
                     .parse()
                     .map_err(|e| format!("--http-port: {e}"))?;
             }
+            "--control-port" => {
+                args.control_port = it
+                    .next()
+                    .ok_or("--control-port: missing value")?
+                    .parse()
+                    .map_err(|e| format!("--control-port: {e}"))?;
+            }
             "--run-dir" => args.run_dir = PathBuf::from(it.next().ok_or("--run-dir: missing value")?),
             "--help" | "-h" => {
                 println!(
                     "virtual_deployment — 3×SITL + 3×muas-agent + ndn-sim fabric + dashboard\n\n\
                      USAGE: virtual_deployment [--verify] [--profile apsta|ndr-good|ndr-contested]\n\
-                            [--http-port 8080] [--run-dir ./deployment-run]\n\n\
-                     Default: interactive (dashboard at :8080, Ctrl-C tears down).\n\
-                     --verify: headless scripted mission via the dashboard WS API;\n\
+                            [--http-port 8080] [--control-port 8081] [--run-dir ./deployment-run]\n\n\
+                     Default: interactive (dashboard at :8080, sim control at :8081,\n\
+                     Ctrl-C tears down). The control endpoint places/clears anomalies\n\
+                     (POST/DELETE /anomalies) and serves 1 Hz net stats (GET /netstats).\n\
+                     --verify: headless scripted mission via the dashboard WS API —\n\
+                               including anomaly place → detect → confirm → dispatch —\n\
                                exits 0 with JSON verdicts when every check passes."
                 );
                 std::process::exit(0);
@@ -271,6 +287,9 @@ fn agent_config_for(index: usize, run_id: &str, run_dir: &Path, config: &mut Age
         1 => vec!["orbit".into(), "camera".into()],
         _ => vec!["orbit".into(), "camera".into(), "audio".into()],
     };
+    // Synthetic sensors on every vehicle: frames/audio render from the
+    // anomaly ground truth the agent fetches OVER the fabric.
+    config.sensor_feed = muas_agent::SensorFeedConfig::synthetic();
 }
 
 fn build_run_config(run_id: &str, profile: &str, link: &LinkConfig, configs: &[AgentConfig]) -> RunConfig {
@@ -305,7 +324,7 @@ fn build_run_config(run_id: &str, profile: &str, link: &LinkConfig, configs: &[A
     }
 }
 
-fn banner(addr: std::net::SocketAddr, profile: &str, run_id: &str) {
+fn banner(addr: std::net::SocketAddr, profile: &str, run_id: &str, control: &str) {
     println!(
         "\n══════════════════════════════════════════════════════════════════════\n\
          miniMUAS v3 VIRTUAL DEPLOYMENT is up                     (run {run_id})\n\
@@ -316,6 +335,9 @@ fn banner(addr: std::net::SocketAddr, profile: &str, run_id: &str) {
                      iuas-01  inspector  SITL tcp:5770   (orbit, camera)\n\
                      iuas-02  inspector  SITL tcp:5780   (orbit, camera, mic)\n\
          Artifacts   ./deployment-run/  (journals/, replays/, sitl-*/, run-config)\n\
+         Sim control {control}  (POST/GET/DELETE /anomalies, GET /netstats)\n\
+                     Dashboard: Simulation panel places anomalies; layer\n\
+                     toggles show Sensors (FoV + DRI) and Network (links)\n\
          \n\
          Suggested drive script\n\
          ----------------------\n\
@@ -338,6 +360,133 @@ fn banner(addr: std::net::SocketAddr, profile: &str, run_id: &str) {
          ══════════════════════════════════════════════════════════════════════\n",
         port = addr.port(),
     );
+}
+
+// ───────────────────────────── sim plane ────────────────────────────────────
+
+/// Serve the anomaly ground truth as a latest-wins name on the CONSOLE
+/// node's engine and route it from every vehicle node: agent-side
+/// synthetic sensors fetch `/muas/v3/sim/anomalies` across their UDP
+/// bridge and the lossy SimLinks — the same path as any peer stream.
+async fn serve_anomaly_truth(
+    fleet: &FleetSim,
+    field: Arc<AnomalyField>,
+    cancel: &CancellationToken,
+) -> Result<ndn_app::ServeGuard, String> {
+    fleet.route_vehicles_to_console(names::SIM_PREFIX)?;
+    let node = fleet
+        .console_engine()
+        .ok_or("no console engine for the sim plane")?
+        .app_node(cancel.child_token());
+    let name: ndn_packet::Name = names::sim_stream("anomalies")
+        .parse()
+        .map_err(|e| format!("anomaly name: {e:?}"))?;
+    node.serve(name, move |interest, responder| {
+        let bytes = serde_json::to_vec(&field.snapshot()).unwrap_or_else(|_| b"[]".to_vec());
+        async move {
+            let _ = responder
+                .respond((*interest.name).clone(), bytes::Bytes::from(bytes))
+                .await;
+        }
+    })
+    .await
+    .map_err(|e| format!("serve anomaly truth: {e}"))
+}
+
+/// 1 Hz network + sim exporter: read every vehicle/console node's per-link
+/// face counters off the fabric (`RunningSimulation::face_stats`), compute
+/// byte/interest rates against the previous sample, publish the snapshot
+/// to `/netstats` and the dashboard hub (`type: "net"`), and broadcast the
+/// anomaly ground truth (`type: "sim_anomalies"`) when it changes.
+///
+/// Layering note (docs/v3/NETWORK-VIZ.md): these are FABRIC-layer truths
+/// exported by the deployment that owns the fabric. Radio-layer truths
+/// (spectrum, MCS, RSSI) come from the radio stack when it exists — they
+/// are deliberately NOT synthesized here.
+#[allow(clippy::too_many_arguments)]
+async fn net_export_loop(
+    fabric: Arc<RunningSimulation>,
+    nodes: Vec<NodeId>,
+    console: Option<NodeId>,
+    vehicle_ids: Vec<String>,
+    dash: Arc<muas_dashboard::Dashboard>,
+    field: Arc<AnomalyField>,
+    net: NetSnapshot,
+    profile: Value,
+    cancel: CancellationToken,
+) {
+    let label_of = |raw: usize| -> Option<String> {
+        if let Some(i) = nodes.iter().position(|n| n.0 == raw) {
+            return vehicle_ids.get(i).cloned();
+        }
+        (console.map(|c| c.0) == Some(raw)).then(|| "gcs".to_string())
+    };
+    let mut sources: Vec<(NodeId, String)> = nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, n)| vehicle_ids.get(i).map(|v| (*n, v.clone())))
+        .collect();
+    if let Some(c) = console {
+        sources.push((c, "gcs".to_string()));
+    }
+    let mut prev: HashMap<(String, String), (u64, u64, tokio::time::Instant)> = HashMap::new();
+    let mut last_anomalies = Vec::new();
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => break,
+            _ = interval.tick() => {}
+        }
+        let now = tokio::time::Instant::now();
+        let mut links = Vec::new();
+        for (node, from) in &sources {
+            let Ok(stats) = fabric.face_stats(*node) else { continue };
+            for s in stats {
+                let FaceKind::Link { toward } = s.kind else { continue };
+                let Some(to) = label_of(toward) else { continue }; // sink etc.
+                let key = (from.clone(), to.clone());
+                let (rate_bps, rate_interests_hz) = match prev.get(&key) {
+                    Some((bytes0, interests0, t0)) => {
+                        let dt = now.duration_since(*t0).as_secs_f64().max(1e-3);
+                        (
+                            (s.out_bytes.saturating_sub(*bytes0)) as f64 * 8.0 / dt,
+                            (s.out_interests.saturating_sub(*interests0)) as f64 / dt,
+                        )
+                    }
+                    None => (0.0, 0.0),
+                };
+                prev.insert(key, (s.out_bytes, s.out_interests, now));
+                links.push(json!({
+                    "from": from,
+                    "to": to,
+                    "out_interests": s.out_interests,
+                    "in_interests": s.in_interests,
+                    "out_data": s.out_data,
+                    "in_data": s.in_data,
+                    "out_bytes": s.out_bytes,
+                    "in_bytes": s.in_bytes,
+                    "out_drops": s.out_drops,
+                    "rate_out_bps": (rate_bps * 10.0).round() / 10.0,
+                    "rate_out_interests_hz": (rate_interests_hz * 10.0).round() / 10.0,
+                }));
+            }
+        }
+        let snapshot = json!({
+            "type": "net",
+            "t": now_ns() as f64 / 1e9,
+            "profile": profile,
+            "links": links,
+        });
+        *net.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot.clone();
+        dash.hub.broadcast(&snapshot);
+
+        let anomalies = field.snapshot();
+        if anomalies != last_anomalies {
+            last_anomalies = anomalies.clone();
+            dash.hub.broadcast(&json!({ "type": "sim_anomalies", "items": anomalies }));
+        }
+    }
 }
 
 // ───────────────────────────── verify mode ──────────────────────────────────
@@ -371,6 +520,14 @@ struct WsProbe {
     last_search: Option<Value>,
     coord: Vec<Value>,
     hello: Option<Value>,
+    /// All `type: "event"` broadcasts (mission machine progress).
+    events: Vec<Value>,
+    /// Latest `type: "net"` snapshot (network layer feed).
+    net: Option<Value>,
+    /// Latest per-vehicle `capabilities` messages (sensor layer feed).
+    capabilities: HashMap<String, Value>,
+    /// Binary WS frames seen (video relay output).
+    binary_frames: usize,
 }
 
 impl WsProbe {
@@ -384,6 +541,10 @@ impl WsProbe {
             last_search: None,
             coord: Vec::new(),
             hello: None,
+            events: Vec::new(),
+            net: None,
+            capabilities: HashMap::new(),
+            binary_frames: 0,
         })
     }
 
@@ -399,10 +560,39 @@ impl WsProbe {
         let Ok(Some(Ok(frame))) = tokio::time::timeout(timeout, self.ws.next()).await else {
             return;
         };
-        let Message::Text(text) = frame else { return };
+        let text = match frame {
+            Message::Text(text) => text,
+            Message::Binary(_) => {
+                self.binary_frames += 1; // video relay output
+                return;
+            }
+            _ => return,
+        };
         let Ok(message) = serde_json::from_str::<Value>(&text) else { return };
         match message.get("type").and_then(Value::as_str) {
-            Some("hello") => self.hello = Some(message),
+            Some("hello") => {
+                // Seed per-vehicle capabilities from the hello snapshot,
+                // exactly like the frontend's onHello does: the poller's
+                // first `capabilities` broadcast can predate this probe's
+                // connect, and dedup means it is never re-sent.
+                if let (Some(caps), meta) = (
+                    message.get("capabilities").and_then(Value::as_object),
+                    message.get("sensor_meta").cloned().unwrap_or_default(),
+                ) {
+                    for (vid, sensors) in caps {
+                        self.capabilities.insert(
+                            vid.clone(),
+                            serde_json::json!({
+                                "type": "capabilities",
+                                "vehicle": vid,
+                                "sensors": sensors,
+                                "sensor_meta": meta.get(vid).cloned().unwrap_or(Value::Null),
+                            }),
+                        );
+                    }
+                }
+                self.hello = Some(message);
+            }
             Some("telemetry") => {
                 if let Some(vid) = message.get("vehicle").and_then(Value::as_str) {
                     self.telemetry
@@ -419,8 +609,20 @@ impl WsProbe {
                     self.coord.push(message);
                 }
             }
+            Some("event") => self.events.push(message),
+            Some("net") => self.net = Some(message),
+            Some("capabilities") => {
+                if let Some(vid) = message.get("vehicle").and_then(Value::as_str) {
+                    self.capabilities.insert(vid.to_string(), message);
+                }
+            }
             _ => {}
         }
+    }
+
+    /// The first cached event of `kind`, if any.
+    fn event(&self, kind: &str) -> Option<&Value> {
+        self.events.iter().find(|e| e.get("kind").and_then(Value::as_str) == Some(kind))
     }
 
     /// Pump until `pred(self)` or the budget lapses; true on success.
@@ -486,20 +688,25 @@ async fn takeoff_until_airborne(
     false
 }
 
-/// The scripted mission (documented drive): hello → telemetry×3 →
-/// wuas takeoff (WS) → start_mission (WS) → search running ≥2 legs →
-/// iuas takeoffs (WS) + crossing gotos (DIRECT backend access — the
-/// dashboard has no raw-goto control, documented in the verdict) → coord
-/// entries on the WS feed → RTL ALL (WS) → all landed + disarmed.
+/// The scripted mission (documented drive): hello (+ sim capability) →
+/// telemetry×3 → wuas takeoff (WS) → iuas takeoffs (WS) → place a visual
+/// anomaly via the CONTROL ENDPOINT → start_mission over it (WS) → search
+/// running → crossing gotos (DIRECT backend access — the dashboard has no
+/// raw-goto control, documented in the verdict) → coord entries on the WS
+/// feed → live video relayed as binary WS frames → detect→confirm(2)→
+/// target_found → dispatch → an IUAS investigating → net/sensor feeds on
+/// the WS → RTL ALL (WS) → all landed + disarmed.
 async fn run_verify(
     addr: std::net::SocketAddr,
+    control_base: &str,
     fleet: &FleetSim,
     log: &mut DeployLog,
 ) -> Result<Vec<Check>, String> {
     let mut checks = Vec::new();
     let mut probe = WsProbe::connect(addr).await?;
 
-    // 1 — hello with the full roster.
+    // 1 — hello with the full roster + the sim capability flag that gates
+    // the dashboard's anomaly-placement tool.
     let hello_ok = probe
         .wait_until(Duration::from_secs(10), |p| p.hello.is_some())
         .await
@@ -508,6 +715,16 @@ async fn run_verify(
         name: "ws-hello-roster",
         pass: hello_ok,
         details: json!({ "vehicles": probe.hello.as_ref().map(|h| h["vehicles"].clone()) }),
+    });
+    let sim_flag = probe
+        .hello
+        .as_ref()
+        .map(|h| h["sim"]["anomalies"] == json!(true))
+        .unwrap_or(false);
+    checks.push(Check {
+        name: "sim-capability-flag",
+        pass: sim_flag,
+        details: json!({ "sim": probe.hello.as_ref().map(|h| h["sim"].clone()) }),
     });
 
     // 2 — live MAVLink telemetry for all three on the map feed.
@@ -541,20 +758,69 @@ async fn run_verify(
     });
     log.line("verify.progress", json!({ "stage": "wuas airborne", "ok": up }));
 
-    // 4 — start a small raster mission over ~150×100 m around the WUAS.
+    // 3b — both IUAS airborne EARLY (2 m vertical spacing) so the coord
+    // check runs during the raster's first leg, well before dispatch wants
+    // an idle inspector.
+    let iuas_up_1 =
+        takeoff_until_airborne(&mut probe, "iuas-01", 8.0, Duration::from_secs(150)).await;
+    let iuas_up_2 =
+        takeoff_until_airborne(&mut probe, "iuas-02", 6.0, Duration::from_secs(150)).await;
+
+    // 4 — place a visual anomaly at the WUAS position through the CONTROL
+    // ENDPOINT (the same door the dashboard's placement tool uses), then
+    // verify the field lists it.
     let center = probe.pos("wuas-01").unwrap_or((HOME.0, HOME.1));
+    let placed = http_json(
+        "POST",
+        &format!("{control_base}/anomalies"),
+        Some(&json!({
+            "kind": "visual",
+            "lat_deg": center.0,
+            "lon_deg": center.1,
+            "size_m": 4.0,
+            "signature": "red",
+        })),
+    )
+    .await;
+    let anomaly_id = placed
+        .as_ref()
+        .ok()
+        .and_then(|p| p["placed"]["id"].as_str())
+        .unwrap_or("")
+        .to_string();
+    let listed = http_json("GET", &format!("{control_base}/anomalies"), None).await;
+    let placement_ok = !anomaly_id.is_empty()
+        && listed
+            .as_ref()
+            .ok()
+            .and_then(|l| l["anomalies"].as_array())
+            .map(|a| a.iter().any(|x| x["id"] == json!(anomaly_id)))
+            .unwrap_or(false);
+    checks.push(Check {
+        name: "anomaly-placed-via-control",
+        pass: placement_ok,
+        details: json!({ "placed": placed.ok(), "err": listed.err() }),
+    });
+    log.line("verify.progress", json!({ "stage": "anomaly placed", "ok": placement_ok }));
+
+    // 5 — raster mission OVER the anomaly: 120×40 m at 20 m spacing puts
+    // the center lane through it; captures every 6 m at 10 m AGL (13 m
+    // footprint) guarantee ≥2 frames see the 4 m blob — the confirm-count
+    // gate must pass on real detections, not luck.
     probe
         .send(json!({
             "cmd": "start_mission",
             "params": {
                 "area": { "mode": "center", "center_lat": center.0, "center_lon": center.1,
-                          "width_m": 150.0, "height_m": 100.0 },
-                "agl_m": 8.0,
-                "leg_spacing_m": 25.0,
-                "capture_every_m": 20.0,
-                "speed_m_s": 5.0,
+                          "width_m": 120.0, "height_m": 40.0 },
+                "agl_m": 10.0,
+                "leg_spacing_m": 20.0,
+                "capture_every_m": 6.0,
+                "speed_m_s": 4.0,
                 "max_duration_s": 420.0,
-                "object_query": "person",
+                "object_query": "anomaly",
+                "min_confidence": 0.3,
+                "target_separation_m": 5.0,
             },
         }))
         .await?;
@@ -562,26 +828,21 @@ async fn run_verify(
         .wait_until(Duration::from_secs(240), |p| {
             p.last_search
                 .as_ref()
-                .map(|s| s["state"] == json!("searching") && s["leg"].as_u64().unwrap_or(0) >= 1)
+                .map(|s| s["state"] == json!("searching"))
                 .unwrap_or(false)
         })
         .await;
     checks.push(Check {
-        name: "raster-running-2-legs",
+        name: "raster-running",
         pass: running,
         details: json!({ "search_status": probe.last_search }),
     });
-    log.line("verify.progress", json!({ "stage": "raster ≥2 legs", "ok": running }));
+    log.line("verify.progress", json!({ "stage": "raster running", "ok": running }));
 
-    // 5 — cooperative coordination: both IUAS airborne with 2 m vertical
-    // spacing, then CROSSING gotos issued directly on the agents' flight
-    // backends (documented: the dashboard exposes no raw goto; this is the
-    // same seam the smoke tests fly) — coord entries must reach the
-    // dashboard's WS feed.
-    let iuas_up_1 =
-        takeoff_until_airborne(&mut probe, "iuas-01", 8.0, Duration::from_secs(150)).await;
-    let iuas_up_2 =
-        takeoff_until_airborne(&mut probe, "iuas-02", 6.0, Duration::from_secs(150)).await;
+    // 6 — cooperative coordination: CROSSING gotos issued directly on the
+    // agents' flight backends (documented: the dashboard exposes no raw
+    // goto; this is the same seam the smoke tests fly) — coord entries
+    // must reach the dashboard's WS feed.
     let mut coord_ok = false;
     if iuas_up_1 && iuas_up_2 {
         let p1 = probe.pos("iuas-01").unwrap_or(home_of(1));
@@ -602,7 +863,7 @@ async fn run_verify(
         coord_ok = probe
             .wait_until(Duration::from_secs(90), |p| !p.coord.is_empty())
             .await;
-        // Freeze the pair before the RTL check.
+        // Freeze the pair (clears their busy labels for dispatch).
         for vid in ["iuas-01", "iuas-02"] {
             let _ = probe
                 .send(json!({ "cmd": "flight", "vehicle": vid, "command": "hold" }))
@@ -620,8 +881,126 @@ async fn run_verify(
     });
     log.line("verify.progress", json!({ "stage": "coord entries", "ok": coord_ok }));
 
-    // 6 — RTL ALL from the dashboard; everyone lands and disarms (the
-    // WUAS raster aborts within one control cycle on the abort flag).
+    // 7 — live video: enable the WUAS stream over the WS knob; frames must
+    // arrive as binary WS messages, i.e. rendered agent-side, published on
+    // `video/live`, fetched across the fabric by the GCS relay.
+    probe
+        .send(json!({
+            "cmd": "video", "vehicle": "wuas-01",
+            "params": { "enable": true, "fps": 5 },
+        }))
+        .await?;
+    let frames_before = probe.binary_frames;
+    let video_ok = probe
+        .wait_until(Duration::from_secs(30), |p| p.binary_frames >= frames_before + 3)
+        .await;
+    checks.push(Check {
+        name: "video-live-through-fabric",
+        pass: video_ok,
+        details: json!({ "binary_frames": probe.binary_frames }),
+    });
+    probe
+        .send(json!({
+            "cmd": "video", "vehicle": "wuas-01",
+            "params": { "enable": false },
+        }))
+        .await?;
+    log.line("verify.progress", json!({ "stage": "video frames", "ok": video_ok }));
+
+    // 8 — the point of the increment: detect → confirm(2 frames) →
+    // target_found, on frames that traveled the data plane.
+    let found = probe
+        .wait_until(Duration::from_secs(300), |p| p.event("mission.target_found").is_some())
+        .await;
+    checks.push(Check {
+        name: "anomaly-detect-confirm-target",
+        pass: found,
+        details: json!({
+            "target_found": probe.event("mission.target_found"),
+            "hits": probe.events.iter()
+                .filter(|e| e["kind"] == json!("detect.hit")).count(),
+            "candidates": probe.events.iter()
+                .filter(|e| e["kind"] == json!("detect.candidate")).count(),
+        }),
+    });
+    log.line("verify.progress", json!({ "stage": "target found", "ok": found }));
+
+    // 9 — dispatch → an IUAS actually investigating (busy label from its
+    // own telemetry, i.e. the investigate ack was accepted and the orbit
+    // runner owns the vehicle).
+    let investigating = probe
+        .wait_until(Duration::from_secs(120), |p| {
+            p.event("target.dispatch").is_some()
+                && ["iuas-01", "iuas-02"].iter().any(|v| {
+                    p.telemetry
+                        .get(*v)
+                        .and_then(|s| s.get("busy"))
+                        .and_then(Value::as_str)
+                        == Some("investigate")
+                })
+        })
+        .await;
+    let busy_map: HashMap<String, Value> = ["iuas-01", "iuas-02"]
+        .iter()
+        .map(|v| {
+            (
+                v.to_string(),
+                probe
+                    .telemetry
+                    .get(*v)
+                    .and_then(|s| s.get("busy"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            )
+        })
+        .collect();
+    checks.push(Check {
+        name: "anomaly-dispatch-investigate",
+        pass: investigating,
+        details: json!({
+            "dispatch": probe.event("target.dispatch"),
+            "busy": busy_map,
+        }),
+    });
+    log.line("verify.progress", json!({ "stage": "iuas investigating", "ok": investigating }));
+
+    // 10 — the map layers' data feeds: a 1 Hz `net` snapshot with per-link
+    // counters + the active profile, and a `capabilities` message carrying
+    // the WUAS's sensor_meta (hfov/DRI) — what the sensor & network layers
+    // render from.
+    let feeds_ok = probe
+        .wait_until(Duration::from_secs(20), |p| {
+            let net_ok = p
+                .net
+                .as_ref()
+                .map(|n| {
+                    !n["links"].as_array().map(Vec::is_empty).unwrap_or(true)
+                        && n["profile"]["name"].is_string()
+                })
+                .unwrap_or(false);
+            let meta_ok = p
+                .capabilities
+                .get("wuas-01")
+                .map(|c| c["sensor_meta"]["camera"]["hfov_deg"].is_number())
+                .unwrap_or(false);
+            net_ok && meta_ok
+        })
+        .await;
+    checks.push(Check {
+        name: "net-and-sensor-meta-on-ws",
+        pass: feeds_ok,
+        details: json!({
+            "net_links": probe.net.as_ref()
+                .and_then(|n| n["links"].as_array().map(Vec::len)),
+            "net_profile": probe.net.as_ref().map(|n| n["profile"].clone()),
+            "wuas_sensor_meta": probe.capabilities.get("wuas-01")
+                .map(|c| c["sensor_meta"].clone()),
+        }),
+    });
+    log.line("verify.progress", json!({ "stage": "net+sensor feeds", "ok": feeds_ok }));
+
+    // 11 — RTL ALL from the dashboard; everyone lands and disarms (raster
+    // and investigate runners abort within one control cycle).
     probe.send(json!({ "cmd": "all", "command": "rtl" })).await?;
     let down = probe
         .wait_until(Duration::from_secs(300), |p| {
@@ -726,6 +1105,19 @@ async fn run(args: Args) -> Result<i32, String> {
         .map_err(|e| format!("run-config write: {e}"))?;
     println!("      run-config journaled to every vehicle + {}", rc_path.display());
 
+    // 2b — simulation plane: anomaly world model + ground-truth serving +
+    // control endpoint. Truth lives in the AnomalyField; agents fetch it
+    // over the fabric; dashboards/scripts mutate it through the endpoint.
+    let deploy_cancel = CancellationToken::new();
+    let field = AnomalySourceConfig::default().build();
+    let _anomaly_guard = serve_anomaly_truth(&fleet, field.clone(), &deploy_cancel).await?;
+    let net: NetSnapshot = Arc::new(Mutex::new(json!({ "links": [] })));
+    let control_addr =
+        serve_control(args.control_port, field.clone(), net.clone(), deploy_cancel.child_token())
+            .await?;
+    let control_base = format!("http://{control_addr}");
+    println!("      sim control endpoint at {control_base} (anomalies + netstats)");
+
     // 3 — dashboard over the console bridge.
     println!("[3/4] starting the dashboard …");
     let (client_addr, bridge_addr) = fleet.bridge_client().await?;
@@ -743,22 +1135,52 @@ async fn run(args: Args) -> Result<i32, String> {
         }],
         ..muas_dashboard::DashConfig::default()
     };
-    let dashboard = muas_dashboard::start(
-        dash_config,
-        Arc::new(muas_dashboard::providers::StubDetector),
-    )
-    .await?;
+    // SimpleDetector: real detection over fabric-fetched frames; the NDN
+    // fetch path attaches once the dashboard's engine exists.
+    let detector = Arc::new(muas_dashboard::detect::SimpleDetector::new());
+    let dashboard = muas_dashboard::start(dash_config, detector.clone()).await?;
+    {
+        let dash_weak = Arc::downgrade(&dashboard.dash);
+        detector.attach(Arc::new(move || {
+            dash_weak.upgrade().and_then(|dash| dash.consumer())
+        }));
+    }
+    // Sim attachment: capability flag for the UI's anomaly tool + the
+    // control seam (WS `sim` commands → control endpoint → AnomalyField).
+    let link_profile_json =
+        serde_json::to_value(LinkProfileConfig::new(&args.profile, &link)).unwrap_or(Value::Null);
+    dashboard.dash.attach_sim(
+        json!({ "anomalies": true, "control": control_base, "profile": link_profile_json }),
+        Arc::new(HttpSimControl::new(control_base.clone())),
+    );
+    // 1 Hz network/sim exporter: per-link ndn-sim face counters + anomaly
+    // ground truth onto the dashboard's broadcast hub and /netstats.
+    tokio::spawn(net_export_loop(
+        fleet.fabric.clone(),
+        fleet.nodes.clone(),
+        fleet.console,
+        VEHICLES.iter().map(|v| v.to_string()).collect(),
+        dashboard.dash.clone(),
+        field.clone(),
+        net.clone(),
+        link_profile_json,
+        deploy_cancel.child_token(),
+    ));
     println!("[4/4] up.");
     deploy_log.line(
         "deployment.up",
-        json!({ "dashboard": dashboard.addr.to_string(), "profile": args.profile }),
+        json!({
+            "dashboard": dashboard.addr.to_string(),
+            "control": control_base,
+            "profile": args.profile,
+        }),
     );
 
     let exit_code = if args.verify {
         // Give the MAVLink links + EKF a moment before scripting.
         tokio::time::sleep(Duration::from_secs(5)).await;
         let addr = dashboard.addr;
-        let checks = run_verify(addr, &fleet, &mut deploy_log).await?;
+        let checks = run_verify(addr, &control_base, &fleet, &mut deploy_log).await?;
         let all = checks.iter().all(|c| c.pass);
         for check in &checks {
             check.emit(&mut deploy_log);
@@ -773,13 +1195,15 @@ async fn run(args: Args) -> Result<i32, String> {
         deploy_log.line("verify.summary", summary);
         i32::from(!all)
     } else {
-        banner(dashboard.addr, &args.profile, &run_id);
+        banner(dashboard.addr, &args.profile, &run_id, &control_base);
         let _ = tokio::signal::ctrl_c().await;
         println!("\nshutting down …");
         0
     };
 
-    // Teardown: dashboard, agents (journals flushed), fabric, SITLs.
+    // Teardown: sim plane, dashboard, agents (journals flushed), fabric,
+    // SITLs.
+    deploy_cancel.cancel();
     deploy_log.line("deployment.down", json!({}));
     dashboard.shutdown().await;
     fleet.shutdown().await;

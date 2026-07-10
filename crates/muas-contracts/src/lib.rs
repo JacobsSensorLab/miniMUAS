@@ -6,6 +6,8 @@
 //! ndn-service-core's contract⇄carrier seam so backends (ndn-rpc, ndn-ndnsf,
 //! ndn-nacabe) stay pluggable and comparable.
 
+pub mod anomaly;
 pub mod names;
 pub mod policy;
+pub mod sensors;
 pub mod services;

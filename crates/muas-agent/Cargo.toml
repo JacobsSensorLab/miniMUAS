@@ -33,6 +33,9 @@ ndn-service-core = { workspace = true }
 ndn-rpc = { workspace = true }
 ndn-ndnsf = { workspace = true }
 
+# Synthetic sensor feed: pure-Rust JPEG encoding of rendered nadir frames.
+jpeg-encoder = "0.7"
+
 # NDF: journal Block chains + Spark telemetry lane.
 ndf-apps = { workspace = true }
 ndf-spark = { workspace = true }

@@ -38,6 +38,29 @@ pub fn mission_object(mission_id: &str, vehicle_id: &str, rest: &str) -> String 
     format!("{APP_PREFIX}/mission/{mission_id}/{vehicle_id}/{rest}")
 }
 
+/// Vehicle-rooted mission object, e.g.
+/// `/muas/v3/<vid>/mission/<mid>/camera/<cam>/frame/<gps_ns>/<seq>`.
+///
+/// Deviation from the v2 mission-rooted shape ([`mission_object`]),
+/// documented: v3 fabric/console routing is keyed on the per-vehicle prefix
+/// (`/muas/v3/<vid>`), so artifacts published under the VEHICLE root reach
+/// consumers over the routes that already exist; the mission-rooted alias
+/// is kept for parity audits.
+pub fn vehicle_mission_object(vehicle_id: &str, mission_id: &str, rest: &str) -> String {
+    format!("{APP_PREFIX}/{vehicle_id}/mission/{mission_id}/{rest}")
+}
+
+/// Simulation namespace root: ground truth a virtual deployment serves
+/// (real deployments never publish here).
+pub const SIM_PREFIX: &str = "/muas/v3/sim";
+
+/// Latest-wins simulation stream, e.g. `anomalies` →
+/// `/muas/v3/sim/anomalies` (the ground truth synthetic sensors fetch
+/// through the fabric).
+pub fn sim_stream(stream: &str) -> String {
+    format!("{SIM_PREFIX}/{stream}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,5 +79,10 @@ mod tests {
             mission_object("m1", "wuas-01", "camera/cam0/frame/123/7"),
             "/muas/v3/mission/m1/wuas-01/camera/cam0/frame/123/7"
         );
+        assert_eq!(
+            vehicle_mission_object("wuas-01", "m1", "camera/cam0/frame/123/7"),
+            "/muas/v3/wuas-01/mission/m1/camera/cam0/frame/123/7"
+        );
+        assert_eq!(sim_stream("anomalies"), "/muas/v3/sim/anomalies");
     }
 }

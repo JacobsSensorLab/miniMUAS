@@ -311,6 +311,10 @@ h3:first-child { margin-top: 0; }
   <button class="cds-btn cds-btn--ghost" id="replayBtn">Replay</button>
   <button class="cds-btn cds-btn--ghost" id="dataBtn">Data on</button>
   <button class="cds-btn cds-btn--ghost" id="eventsBtn">Events on</button>
+  <button class="cds-btn cds-btn--ghost" id="sensorsBtn"
+    title="Camera FoV footprints, DRI rings, and audio reach, rendered from each vehicle's advertised sensor_meta">Sensors on</button>
+  <button class="cds-btn cds-btn--ghost" id="netBtn"
+    title="Fabric links between nodes: active link profile, live flow rates, drops (1 Hz from the deployment)">Network off</button>
   <button class="cds-btn cds-btn--ghost" id="imageryBtn">Imagery on</button>
   <span class="cds-tag cds-tag--red" id="conn">offline</span>
 </header>
@@ -420,6 +424,28 @@ opportunistic: fire whenever the vehicle happens to pass within range.">
   <div class="btnrow">
     <button class="cds-btn cds-btn--secondary" id="capNow">Capture now</button>
     <button class="cds-btn cds-btn--tertiary" id="capPick">Pick point</button>
+  </div>
+
+  <div id="simPanel" style="display:none">
+    <h3>Simulation</h3>
+    <div class="grid-2">
+      <div class="field"><label for="akind">Anomaly type</label>
+        <select id="akind">
+          <option value="visual">visual</option>
+          <option value="audio">audio</option>
+        </select></div>
+      <div class="field"><label for="asig">Signature</label>
+        <select id="asig"></select></div>
+      <div class="field" id="asizeF"><label for="asize">Size (m)</label>
+        <input id="asize" type="number" step="0.5" value="4"></div>
+      <div class="field" id="aloudF" style="display:none"><label for="aloud">Loudness (dB)</label>
+        <input id="aloud" type="number" step="1" value="80"></div>
+    </div>
+    <div class="btnrow">
+      <button class="cds-btn cds-btn--tertiary" id="aplace"
+        title="Click the map to drop this anomaly into the running simulation (via the deployment control endpoint)">Place on map</button>
+      <button class="cds-btn cds-btn--danger-tertiary" id="aclear">Clear all</button>
+    </div>
   </div>
 
   <h3>Detection</h3>
@@ -554,6 +580,8 @@ function dispatch(m){
   else if (m.type === "capabilities") onCaps(m);
   else if (m.type === "sensor_data") pushSensorData(m.item);
   else if (m.type === "video_stats") onVideoStats(m);
+  else if (m.type === "net") NET = m;
+  else if (m.type === "sim_anomalies") simAnoms = m.items || [];
 }
 const send = obj => {
   if (REPLAY.active){
@@ -831,6 +859,20 @@ let showData = true;
 let sensorData = [];          // {vehicle,sensor,kind,name,lat,lon,t,source,label}
 let CAPS = {};                // vid -> ["camera","audio"]
 const SENSOR_COLOR = { camera:"#78a9ff", audio:"#ff832b" };
+// ---------- sensor viz layer: FoV quads + DRI rings + audio reach ----------
+// Rendered from each vehicle's ADVERTISED sensor_meta (capability profile,
+// additive key) — sensors are dynamic; nothing airframe-specific lives here.
+let showSensors = true;
+let SMETA = {};               // vid -> sensor_meta object (or null)
+// ---------- network layer (phase 1): fabric links + live flow ----------
+// NET is the deployment's 1 Hz snapshot: per-link ndn-sim face counters +
+// the active link profile. Phases 2/3 (span-derived path traces, native
+// radio telemetry) ride the same message — see docs/v3/NETWORK-VIZ.md.
+let showNet = false;
+let NET = null;
+// ---------- simulation plane (virtual deployments only) ----------
+let SIM = null;               // hello.sim capability object
+let simAnoms = [];            // ground-truth anomalies (drawn while sim)
 function pushSensorData(item){
   if (!item || sensorData.some(d => d.name === item.name)) return;
   sensorData.push(item);
@@ -874,6 +916,7 @@ const fmtClock = s => {
 function resetUIState(){
   drones = {}; targets = []; mapEvents = []; sensorData = [];
   hoverEvt = null; plan = null;
+  SMETA = {}; NET = null; simAnoms = [];
   log.innerHTML = "";
   mframes.textContent = "0"; mleg.textContent = "–";
   mdet.textContent = "0/0"; mtargets.textContent = "0";
@@ -1038,6 +1081,180 @@ function drawTiles(){
   return drew;
 }
 
+// ---------- layer renderers: sensors / network / sim ground truth ----------
+// All three draw through the SAME world→screen transform as trails and the
+// plan (toPx per vertex), so they rotate/zoom correctly in heading-up and
+// fleet-framing modes. Radii in ground metres become px via view.mppx.
+const mToPxr = m => m / view.mppx;
+// world bearing (deg cw from north) -> canvas arc angle (rad, +x axis,
+// clockwise because y is down), honoring the map rotation
+const bearingToCanvas = deg => (deg - 90) * Math.PI / 180 - view.rot;
+function drawSensors(){
+  if (!showSensors) return;
+  for (const [vid, d] of Object.entries(drones)){
+    if (!hasFix(d) || d.lat === undefined) continue;
+    const meta = SMETA[vid];
+    if (!meta) continue;                    // nothing advertised: draw nothing
+    const col = COLORS[vid] || "#f4f4f4";
+    const p = toPx(d.lat, d.lon);
+    const cam = meta.camera;
+    if (cam && cam.hfov_deg > 0 && d.agl > 0.5){
+      // Ground footprint quad from pose + hfov + AGL. With no attitude in
+      // telemetry this is the nadir box (pitch/roll would skew it into the
+      // trapezoid; the corner math is per-vertex, so attitude plugs in
+      // here when the sample carries it).
+      const wm = 2 * d.agl * Math.tan(cam.hfov_deg * Math.PI / 360);
+      const hm = wm * ((cam.height_px || 240) / (cam.width_px || 320));
+      const hd = (d.heading || 0) * Math.PI / 180;
+      const f = [Math.cos(hd), Math.sin(hd)];        // forward (N,E)
+      const r = [-Math.sin(hd), Math.cos(hd)];       // right (N,E)
+      const corners = [[hm/2, wm/2], [hm/2, -wm/2], [-hm/2, -wm/2], [-hm/2, wm/2]];
+      ctx.strokeStyle = col; ctx.lineWidth = 1.2; ctx.setLineDash([4,3]);
+      ctx.beginPath();
+      corners.forEach((c, i) => {
+        const dn = f[0]*c[0] + r[0]*c[1], de = f[1]*c[0] + r[1]*c[1];
+        const q = toPx(d.lat + dn / M_PER_DEG_LAT,
+                       d.lon + de / mPerDegLon(d.lat));
+        i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]);
+      });
+      ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
+      // DRI rings from the advertised ranges [detect, recognize, identify]
+      const labels = ["D", "R", "I"];
+      (cam.dri_m || []).slice(0, 3).forEach((rng, i) => {
+        const rp = mToPxr(rng);
+        if (!(rng > 0) || rp < 8 || rp > 4000) return;
+        ctx.strokeStyle = col + "55"; ctx.lineWidth = 1; ctx.setLineDash([2,5]);
+        ctx.beginPath(); ctx.arc(p[0], p[1], rp, 0, 7); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = col + "cc"; ctx.font = "10px 'IBM Plex Mono', monospace";
+        ctx.fillText(labels[i], p[0] + rp * 0.707 + 2, p[1] - rp * 0.707 - 2);
+      });
+    }
+    const aud = meta.audio;
+    if (aud){
+      ctx.strokeStyle = "#ff832b"; ctx.lineWidth = 1.2;
+      if (aud.lobes && aud.lobes.length){
+        // beamforming lobes: filled wedges relative to the vehicle nose
+        ctx.fillStyle = "#ff832b22";
+        for (const lobe of aud.lobes){
+          const rp = mToPxr(lobe.range_m || 0);
+          if (!(rp > 2) || rp > 4000) continue;
+          const c = bearingToCanvas((d.heading || 0) + (lobe.bearing_deg || 0));
+          const half = (lobe.width_deg || 30) * Math.PI / 360;
+          ctx.beginPath(); ctx.moveTo(p[0], p[1]);
+          ctx.arc(p[0], p[1], rp, c - half, c + half);
+          ctx.closePath(); ctx.fill(); ctx.stroke();
+        }
+      } else if (aud.omni_range_m > 0){
+        // omnidirectional confidence circle (no lobes advertised)
+        const rp = mToPxr(aud.omni_range_m);
+        if (rp >= 6 && rp <= 4000){
+          ctx.setLineDash([6,4]);
+          ctx.beginPath(); ctx.arc(p[0], p[1], rp, 0, 7); ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      }
+    }
+  }
+}
+// telemetry link age for a network node ("gcs" = this process = fresh)
+const ageOf = id => {
+  if (id === "gcs") return 0;
+  const d = drones[id];
+  if (!d || d.stale || !d.seen) return null;
+  return (Date.now() - d.seen) / 1000;
+};
+function drawNet(){
+  if (!showNet || !NET) return;
+  // Aggregate the deployment's DIRECTED per-face counters into one line
+  // per node pair; activity = both directions summed.
+  const pairs = {};
+  for (const l of (NET.links || [])){
+    const key = [l.from, l.to].sort().join("|");
+    const e = pairs[key] = pairs[key] ||
+      { a: l.from, b: l.to, bps: 0, ihz: 0, drops: 0 };
+    e.bps += l.rate_out_bps || 0;
+    e.ihz += l.rate_out_interests_hz || 0;
+    e.drops += l.out_drops || 0;
+  }
+  const posOf = id => {
+    if (id === "gcs") return [30, cv.height - 30];   // screen-anchored GCS
+    const d = drones[id];
+    return (d && hasFix(d) && d.lat !== undefined) ? toPx(d.lat, d.lon) : null;
+  };
+  ctx.font = "10px 'IBM Plex Mono', monospace";
+  for (const e of Object.values(pairs)){
+    const pa = posOf(e.a), pb = posOf(e.b);
+    if (!pa || !pb) continue;
+    const ageA = ageOf(e.a), ageB = ageOf(e.b);
+    const age = (ageA === null || ageB === null) ? null : Math.max(ageA, ageB);
+    const col = age === null ? "#6f6f6f"
+      : age < 4 ? "#42be65" : age < 10 ? "#f1c21b" : "#fa4d56";
+    ctx.strokeStyle = col + "99";
+    ctx.lineWidth = 1 + Math.min(3.5, Math.log10(1 + e.bps / 1000));
+    if (e.bps > 200){
+      // data-trace: dashes march along the link while traffic flows
+      ctx.setLineDash([7,5]);
+      ctx.lineDashOffset = -((Date.now() / 40) % 12);
+    }
+    ctx.beginPath(); ctx.moveTo(pa[0], pa[1]); ctx.lineTo(pb[0], pb[1]); ctx.stroke();
+    ctx.setLineDash([]); ctx.lineDashOffset = 0;
+    const kb = e.bps >= 1000 ? (e.bps / 1000).toFixed(0) + " kb/s"
+      : e.bps.toFixed(0) + " b/s";
+    ctx.fillStyle = "#c6c6c6";
+    ctx.fillText(`${kb} · ${e.ihz.toFixed(0)} i/s${e.drops ? ` · ${e.drops} drop` : ""}`,
+      (pa[0] + pb[0]) / 2 + 5, (pa[1] + pb[1]) / 2 - 5);
+  }
+  // GCS node + the ACTIVE link profile legend (from run-config)
+  ctx.fillStyle = "#78a9ff"; ctx.fillRect(22, cv.height - 38, 16, 16);
+  ctx.fillStyle = "#f4f4f4"; ctx.fillText("GCS", 20, cv.height - 44);
+  const pr = NET.profile || {};
+  if (pr.name){
+    const text = `link ${pr.name} · ${pr.delay_ms} ms ±${pr.jitter_ms}` +
+      ` · loss ${(pr.loss_rate * 100).toFixed(1)}%` +
+      ` · ${(pr.bandwidth_bps / 1e6).toFixed(0)} Mb/s`;
+    const w = ctx.measureText(text).width;
+    ctx.fillStyle = "rgba(22,22,22,0.85)";
+    ctx.fillRect(46, cv.height - 40, w + 12, 18);
+    ctx.strokeStyle = "#393939"; ctx.lineWidth = 1;
+    ctx.strokeRect(46, cv.height - 40, w + 12, 18);
+    ctx.fillStyle = "#c6c6c6";
+    ctx.fillText(text, 52, cv.height - 27);
+  }
+}
+const SIG_COLOR = { red:"#fa4d56", orange:"#ff832b", blue:"#4589ff",
+                    yellow:"#f1c21b", magenta:"#ee5396" };
+function drawSimAnoms(){
+  if (!simAnoms.length) return;
+  ctx.font = "10px 'IBM Plex Mono', monospace";
+  for (const a of simAnoms){
+    const p = toPx(a.lat_deg, a.lon_deg);
+    if (p[0] < -40 || p[0] > cv.width + 40 || p[1] < -40 || p[1] > cv.height + 40)
+      continue;
+    if (a.kind === "visual"){
+      const col = SIG_COLOR[a.signature] || "#fa4d56";
+      const rp = Math.max(3, mToPxr((a.size_m || 1) / 2));
+      ctx.strokeStyle = col; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(p[0], p[1], rp, 0, 7); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(p[0] - 3, p[1] - 3); ctx.lineTo(p[0] + 3, p[1] + 3);
+      ctx.moveTo(p[0] + 3, p[1] - 3); ctx.lineTo(p[0] - 3, p[1] + 3);
+      ctx.stroke();
+      ctx.fillStyle = col;
+    } else {
+      // audio: sound-wave arcs
+      ctx.strokeStyle = "#ff832b"; ctx.lineWidth = 1.5;
+      for (const r of [4, 8, 12]){
+        ctx.beginPath(); ctx.arc(p[0], p[1], r, -0.7, 0.7); ctx.stroke();
+        ctx.beginPath(); ctx.arc(p[0], p[1], r, Math.PI - 0.7, Math.PI + 0.7);
+        ctx.stroke();
+      }
+      ctx.fillStyle = "#ff832b";
+    }
+    ctx.fillText(`sim ${a.kind}${a.id ? " " + a.id : ""}`, p[0] + 8, p[1] + 14);
+  }
+}
+
 function draw(){
   const now = performance.now();
   const dt = Math.min((now - (draw.last || now)) / 1000, 0.25);
@@ -1163,6 +1380,10 @@ function draw(){
       else d.heading += (((d.thead - d.heading + 540) % 360) - 180) * k;
     }
   }
+  // overlay layers between smoothing and markers: markers stay on top
+  drawSimAnoms();
+  drawSensors();
+  drawNet();
   for (const [vid, d] of Object.entries(drones)){
     const col = COLORS[vid] || "#f4f4f4";
     if (d.lat === undefined) continue;
@@ -1281,6 +1502,18 @@ cv.addEventListener("click", e => {
     picking = null; pickhint.style.display = "none";
     return;
   }
+  if (picking === "anomaly"){
+    // drop a ground-truth anomaly into the running simulation:
+    // click → WS sim op → deployment control endpoint → AnomalyField.
+    // The updated truth comes back via the sim_anomalies broadcast.
+    const params = { kind: akind.value, signature: asig.value,
+                     lat_deg: lat, lon_deg: lon };
+    if (akind.value === "visual") params.size_m = +asize.value || 4;
+    else params.loudness_db = +aloud.value || 80;
+    send({cmd:"sim", op:"place_anomaly", params});
+    picking = null; pickhint.style.display = "none";
+    return;
+  }
   if (picking === "center"){ clat.value = lat.toFixed(6); clon.value = lon.toFixed(6); }
   if (picking === "A") ca.value = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
   if (picking === "B") cb.value = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
@@ -1306,6 +1539,29 @@ dataBtn.onclick = () => {
   if (!showData) hoverEvt = null;
   dataBtn.textContent = showData ? "Data on" : "Data off";
 };
+sensorsBtn.onclick = () => {
+  showSensors = !showSensors;
+  sensorsBtn.textContent = showSensors ? "Sensors on" : "Sensors off";
+};
+netBtn.onclick = () => {
+  showNet = !showNet;
+  netBtn.textContent = showNet ? "Network on" : "Network off";
+};
+// simulation panel: signature choices follow the anomaly kind, and the
+// size/loudness field swaps with it
+const SIGS = { visual: ["red", "orange", "blue", "yellow", "magenta"],
+               audio:  ["siren", "voice", "engine"] };
+function syncSimForm(){
+  asig.innerHTML = SIGS[akind.value]
+    .map(s => `<option value="${s}">${s}</option>`).join("");
+  asizeF.style.display = akind.value === "visual" ? "" : "none";
+  aloudF.style.display = akind.value === "audio" ? "" : "none";
+}
+akind.onchange = syncSimForm;
+syncSimForm();
+aplace.onclick = () => pick("anomaly",
+  `the ${akind.value} anomaly's location`);
+aclear.onclick = () => send({cmd:"sim", op:"clear_anomalies", params:{}});
 modalClose.onclick = closeModal;
 modal.onclick = e => { if (e.target === modal) closeModal(); };
 window.addEventListener("keydown", e => {
@@ -1417,6 +1673,11 @@ function onHello(m){
     renderTargets();
   }
   (m.sensor_data || []).forEach(pushSensorData);
+  SMETA = m.sensor_meta || {};
+  // sim tools appear ONLY when a virtual deployment advertised itself
+  SIM = m.sim || null;
+  simPanel.style.display = SIM ? "" : "none";
+  if (!SIM){ simAnoms = []; NET = null; }
   VEHICLES.forEach((v,i) => COLORS[v] = PALETTE[i % PALETTE.length]);
   tvid.innerHTML = VEHICLES.map(v => `<option value="${v}">${v}</option>`).join("");
   cards.innerHTML = ""; videos.innerHTML = "";
@@ -1517,14 +1778,14 @@ function onHello(m){
   });
   if (m.capabilities)
     Object.entries(m.capabilities).forEach(([v, sensors]) =>
-      onCaps({vehicle:v, sensors}));
+      onCaps({vehicle:v, sensors, sensor_meta: SMETA[v]}));
   syncMapCtl();
 }
 function onTelemetry(m){
   const s = m.sample, vid = m.vehicle;
   const d = drones[vid] = drones[vid] || {trail:[]};
   Object.assign(d, { tlat:s.lat_deg, tlon:s.lon_deg, agl:s.agl_m,
-    thead:s.heading_deg, stale:false });
+    thead:s.heading_deg, stale:false, seen:Date.now() });
   const tail = d.trail[d.trail.length-1];
   if (!tail || tail[0] !== s.lat_deg || tail[1] !== s.lon_deg){
     d.trail.push([s.lat_deg, s.lon_deg]);
@@ -1592,6 +1853,7 @@ function onVideoFrame(buf){
 const SENSOR_ICON = { camera:"📷", audio:"🎙" };
 function onCaps(m){
   CAPS[m.vehicle] = m.sensors || [];
+  if (m.sensor_meta !== undefined) SMETA[m.vehicle] = m.sensor_meta;
   const el = document.getElementById(`caps-${m.vehicle}`);
   if (!el) return;
   el.textContent = (m.sensors || []).map(s => SENSOR_ICON[s] || s).join(" ")

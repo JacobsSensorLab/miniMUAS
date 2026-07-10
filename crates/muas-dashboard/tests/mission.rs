@@ -81,7 +81,7 @@ fn dispatches(actions: &[Action]) -> Vec<(usize, String, String)> {
 
 fn caps(m: &mut Mission, vid: &str, sensors: &[&str]) {
     let set: BTreeSet<String> = sensors.iter().map(|s| s.to_string()).collect();
-    m.set_capabilities(vid, set);
+    m.set_capabilities(vid, set, serde_json::Value::Null);
 }
 
 // ───────────────────────────── confirm-then-queue ───────────────────────────

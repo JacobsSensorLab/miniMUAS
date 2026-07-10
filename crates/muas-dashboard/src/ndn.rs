@@ -406,10 +406,27 @@ async fn capabilities_poller(
         }
         for vid in &vehicles {
             let name = names::vehicle_stream(vid, "telemetry/state");
-            let Some(payload) = fetch_latest(&mut consumer, &name).await else { continue };
-            let Ok(profile) = serde_json::from_slice::<CapabilityProfile>(&payload) else {
+            let Some(payload) = fetch_latest(&mut consumer, &name).await else {
+                tracing::debug!(vid, "capability poll: no state payload");
                 continue;
             };
+            let Ok(profile_value) = serde_json::from_slice::<Value>(&payload) else {
+                tracing::debug!(vid, "capability poll: state not JSON");
+                continue;
+            };
+            let Ok(profile) = serde_json::from_value::<CapabilityProfile>(profile_value.clone())
+            else {
+                tracing::debug!(vid, %profile_value, "capability poll: profile parse failed");
+                continue;
+            };
+            tracing::debug!(
+                vid,
+                has_meta = profile_value.get("sensor_meta").is_some(),
+                "capability poll: profile ok"
+            );
+            // Additive sensor metadata (muas-contracts::sensors) rides the
+            // same profile document; Null for legacy vehicles.
+            let sensor_meta = profile_value.get("sensor_meta").cloned().unwrap_or(Value::Null);
             let sensors: BTreeSet<String> = {
                 let s: BTreeSet<String> = profile
                     .extras
@@ -424,7 +441,7 @@ async fn capabilities_poller(
                 }
             };
             dash.lens.set_sensors(vid, sensors.iter().cloned().collect());
-            let actions = dash.with_mission(|m| m.set_capabilities(vid, sensors));
+            let actions = dash.with_mission(|m| m.set_capabilities(vid, sensors, sensor_meta));
             dash.apply_actions(actions);
         }
     }

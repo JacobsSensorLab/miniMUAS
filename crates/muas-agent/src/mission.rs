@@ -752,16 +752,16 @@ struct SearchStatusPub {
 }
 
 impl SearchStatusPub {
-    fn push(&self, state: &str, leg: u64, frames: u64, note: &str) {
+    fn push(&self, state: &str, leg: u64, frames: u64, note: &str, last_frames: &[String]) {
         let status = SearchStatus {
             detects_completed: 0,
             detects_pending: 0,
             frames_captured: frames,
             gps_time_ns: crate::telemetry::gps_time_ns(),
-            // No camera in this build: captures are journal events + this
-            // counter; no frame data names are published (documented
-            // deviation — the detection pipeline sees zero frames).
-            last_frames: Vec::new(),
+            // Newest-first published frame names (the GCS fans a detection
+            // out per new name). Empty when no sensor feed is fitted — the
+            // pre-v3.1 journal-only capture behavior.
+            last_frames: last_frames.to_vec(),
             last_note: note.to_string(),
             leg,
             legs_total: self.legs_total,
@@ -795,12 +795,12 @@ pub(crate) async fn run_raster(shared: Arc<AgentShared>, req: RasterRequest, pla
             "speed_m_s": plan.speed_m_s,
         }),
     );
-    status.push(search_state::TRANSIT, 0, 0, "starting");
+    status.push(search_state::TRANSIT, 0, 0, "starting", &[]);
     lock(&shared.backend).as_dyn().set_cruise_speed(plan.speed_m_s);
 
     let agl = plan.agl_m;
     if !ensure_airborne(&shared, agl, LABEL).await {
-        status.push(search_state::FAILED, 0, 0, "airborne failed");
+        status.push(search_state::FAILED, 0, 0, "airborne failed", &[]);
         shared.journal.event(
             "search.finished",
             serde_json::json!({ "mission_id": req.mission_id, "outcome": "failed",
@@ -816,6 +816,9 @@ pub(crate) async fn run_raster(shared: Arc<AgentShared>, req: RasterRequest, pla
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut events = Vec::new();
     let mut last_status = tokio::time::Instant::now();
+    // Published frame names, newest first (the GCS detection fan-out reads
+    // these off search/status; cap mirrors the v2 last_frames window).
+    let mut recent_frames: Vec<String> = Vec::new();
     let outcome = loop {
         interval.tick().await;
         if interrupted(&shared, LABEL) {
@@ -833,10 +836,25 @@ pub(crate) async fn run_raster(shared: Arc<AgentShared>, req: RasterRequest, pla
                     shared
                         .journal
                         .event("search.leg", serde_json::json!({ "leg": index }));
-                    status.push(search_state::SEARCHING, index as u64, flight.frames, "");
+                    status.push(search_state::SEARCHING, index as u64, flight.frames, "", &recent_frames);
                     pushed = true;
                 }
                 MissionEvent::Capture { point, lat_deg, lon_deg, agl_m, heading_deg } => {
+                    // Render + publish the frame through the data plane
+                    // when a sensor feed is fitted (None = the pre-v3.1
+                    // journal-only capture).
+                    let pose = crate::sensor::SensorPose { lat_deg, lon_deg, agl_m, heading_deg };
+                    let published = crate::sensor::publish_raster_capture(
+                        &shared,
+                        &req.mission_id,
+                        flight.frames,
+                        &pose,
+                    )
+                    .await;
+                    if let Some(name) = &published {
+                        recent_frames.insert(0, name.clone());
+                        recent_frames.truncate(8);
+                    }
                     shared.journal.event(
                         "search.capture",
                         serde_json::json!({
@@ -848,6 +866,7 @@ pub(crate) async fn run_raster(shared: Arc<AgentShared>, req: RasterRequest, pla
                             "agl_m": agl_m,
                             "heading_deg": heading_deg,
                             "frame_index": flight.frames,
+                            "frame_name": published,
                         }),
                     );
                     status.push(
@@ -855,6 +874,7 @@ pub(crate) async fn run_raster(shared: Arc<AgentShared>, req: RasterRequest, pla
                         flight.leg() as u64,
                         flight.frames,
                         "",
+                        &recent_frames,
                     );
                     pushed = true;
                 }
@@ -867,7 +887,7 @@ pub(crate) async fn run_raster(shared: Arc<AgentShared>, req: RasterRequest, pla
         if pushed {
             last_status = tokio::time::Instant::now();
         } else if last_status.elapsed() >= Duration::from_secs(1) {
-            status.push(search_state::SEARCHING, flight.leg() as u64, flight.frames, "");
+            status.push(search_state::SEARCHING, flight.leg() as u64, flight.frames, "", &recent_frames);
             last_status = tokio::time::Instant::now();
         }
         if let Some(outcome) = outcome {
@@ -880,7 +900,7 @@ pub(crate) async fn run_raster(shared: Arc<AgentShared>, req: RasterRequest, pla
         FlightOutcome::Aborted => search_state::ABORTED,
         FlightOutcome::TimedOut => search_state::FAILED,
     };
-    status.push(state, flight.leg() as u64, flight.frames, outcome.as_str());
+    status.push(state, flight.leg() as u64, flight.frames, outcome.as_str(), &recent_frames);
     shared.journal.event(
         "search.finished",
         serde_json::json!({
@@ -1231,6 +1251,12 @@ mod tests {
             latest_search: std::sync::Mutex::new(None),
             latest_state: std::sync::Mutex::new(None),
             fallback_home: std::sync::Mutex::new(None),
+            latest_video: std::sync::Mutex::new(None),
+            latest_sensor: std::sync::Mutex::new(None),
+            sensor_feed: None,
+            frames: None,
+            video_session: std::sync::Mutex::new(None),
+            cancel: tokio_util::sync::CancellationToken::new(),
             journal,
             commands: cmd_tx,
         });

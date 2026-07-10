@@ -1,0 +1,107 @@
+{
+  "run_id": "run-1783699448",
+  "created_ns": 1783699479724220000,
+  "vehicles": [
+    {
+      "vehicle_id": "wuas-01",
+      "fleet_ids": [
+        "wuas-01",
+        "iuas-01",
+        "iuas-02"
+      ],
+      "endpoint": "mavlink:tcp:127.0.0.1:5760",
+      "telemetry_hz": 4.0,
+      "carrier": "rpc",
+      "extras": [
+        "raster",
+        "camera"
+      ],
+      "max_range_m": 300.0,
+      "min_agl_m": 3.5,
+      "max_agl_m": 20.0,
+      "hsep_m": 8.0,
+      "vsep_m": 4.0,
+      "horizon_s": 20.0,
+      "grace_s": 2.5,
+      "floor_agl_m": 3.5,
+      "rtl_base_agl_m": 8.0,
+      "rtl_sep_m": 3.0
+    },
+    {
+      "vehicle_id": "iuas-01",
+      "fleet_ids": [
+        "wuas-01",
+        "iuas-01",
+        "iuas-02"
+      ],
+      "endpoint": "mavlink:tcp:127.0.0.1:5770",
+      "telemetry_hz": 4.0,
+      "carrier": "rpc",
+      "extras": [
+        "orbit",
+        "camera"
+      ],
+      "max_range_m": 300.0,
+      "min_agl_m": 3.5,
+      "max_agl_m": 20.0,
+      "hsep_m": 8.0,
+      "vsep_m": 4.0,
+      "horizon_s": 20.0,
+      "grace_s": 2.5,
+      "floor_agl_m": 3.5,
+      "rtl_base_agl_m": 8.0,
+      "rtl_sep_m": 3.0
+    },
+    {
+      "vehicle_id": "iuas-02",
+      "fleet_ids": [
+        "wuas-01",
+        "iuas-01",
+        "iuas-02"
+      ],
+      "endpoint": "mavlink:tcp:127.0.0.1:5780",
+      "telemetry_hz": 4.0,
+      "carrier": "rpc",
+      "extras": [
+        "orbit",
+        "camera",
+        "audio"
+      ],
+      "max_range_m": 300.0,
+      "min_agl_m": 3.5,
+      "max_agl_m": 20.0,
+      "hsep_m": 8.0,
+      "vsep_m": 4.0,
+      "horizon_s": 20.0,
+      "grace_s": 2.5,
+      "floor_agl_m": 3.5,
+      "rtl_base_agl_m": 8.0,
+      "rtl_sep_m": 3.0
+    }
+  ],
+  "link_profile": {
+    "name": "apsta",
+    "delay_ms": 2.0,
+    "jitter_ms": 0.5,
+    "loss_rate": 0.001,
+    "bandwidth_bps": 20000000
+  },
+  "sitl": {
+    "binary": "/Users/pmle/Documents/Dev/ardupilot/build/sitl/bin/arducopter",
+    "model": "+",
+    "defaults": "/Users/pmle/Documents/Dev/ardupilot/Tools/autotest/default_params/copter.parm",
+    "speedup": 1.0,
+    "homes": [
+      "35.3632621,149.1652374,584,0",
+      "35.3636214,149.1652374,584,0",
+      "35.3629028,149.1652374,584,0"
+    ],
+    "ardupilot_rev": "0b863c87e7981abba7d4b71436c275584a349fa2"
+  },
+  "stack_revs": {
+    "minimuas": "dd5216cc9cfe1622822caad91d542586a9e433a4",
+    "uas-console": "51b4b203531f33a82f9309ab6b1cc66e94fbc282",
+    "uas-fleet": "27e49e77f0ea185116b75cb1bcd0c72c1d86542f",
+    "uas-flight": "d1856518995a2e08ccd11bf8803b4b455aae225f"
+  }
+}

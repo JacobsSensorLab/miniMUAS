@@ -40,11 +40,14 @@
 //! profile (ndn-sim has no way to carry a foreign UDP flow over a SimLink
 //! — see the friction notes in the M5 report).
 
+pub mod anomaly;
+pub mod control;
 pub mod fleet;
 pub mod metrics;
 pub mod run_config;
 pub mod verdict;
 
+pub use anomaly::{AnomalyField, AnomalySource, AnomalySourceConfig};
 pub use fleet::{FleetSim, VehicleSpec};
 pub use metrics::{Summary, summarize};
 pub use run_config::RunConfig;

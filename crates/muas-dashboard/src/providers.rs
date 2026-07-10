@@ -1,6 +1,7 @@
-//! Injection seams: the detection provider (STUBBED — the perception
-//! service lands in a later increment) and the vehicle commander (the NDN
-//! service client in production, scripted fakes in tests).
+//! Injection seams: the detection provider (stub / scripted /
+//! [`crate::detect::SimpleDetector`]), the vehicle commander (the NDN
+//! service client in production, scripted fakes in tests), and the
+//! simulation-control seam an embedding virtual deployment plugs in.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -8,6 +9,7 @@ use std::pin::Pin;
 use std::sync::Mutex;
 
 use muas_contracts::services::Ack;
+use serde_json::Value;
 
 use crate::mission::{DetectOutcome, InvestigateOrder, RasterOrder};
 
@@ -71,6 +73,21 @@ impl DetectionProvider for ScriptedDetector {
             .unwrap_or(DetectOutcome::Miss(String::new()));
         Box::pin(async move { outcome })
     }
+}
+
+// ───────────────────────────── sim control ──────────────────────────────────
+
+/// The simulation-control seam: an embedding virtual deployment attaches an
+/// implementation (its HTTP/WS control endpoint client) with
+/// [`crate::Dashboard::attach_sim`]; the anomaly-placement tool's WS
+/// commands (`{"cmd":"sim","op":..,"params":..}`) are forwarded through it.
+/// Real deployments never attach one, and the UI never shows the tool
+/// (capability-gated by the hello message).
+pub trait SimControl: Send + Sync {
+    /// Execute one control operation (e.g. `place_anomaly`,
+    /// `clear_anomalies`) against the deployment; resolves to the
+    /// endpoint's JSON reply.
+    fn call(&self, op: String, params: Value) -> BoxFuture<Result<Value, String>>;
 }
 
 // ───────────────────────────── commander ────────────────────────────────────

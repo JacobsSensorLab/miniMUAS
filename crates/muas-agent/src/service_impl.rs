@@ -234,9 +234,20 @@ impl VehicleService for VehicleServiceImpl {
         })();
         let ack = match gate {
             Err(rejection) => Ack::reject(&rejection),
-            // STUB (M3): capture scheduling (now / override / opportunistic
-            // watchpoints) is not executed yet — accepted + journaled only.
-            Ok(()) => Ack::ok_detail("accepted; capture execution stubbed at M3 (task journaled)"),
+            // With a sensor feed fitted, mode `now` executes: capture at
+            // the current pose, publish the artifact over the data plane,
+            // surface the result on `sensor/last` (the GCS poller's name).
+            Ok(()) if self.shared.sensor_feed.is_some() && req.mode == sensor_mode::NOW => {
+                tokio::spawn(crate::sensor::capture_now_task(self.shared.clone(), req.clone()));
+                Ack::ok_detail("accepted; capture executing (sensor feed)")
+            }
+            // STUB (documented): override fly-capture-resume and
+            // opportunistic watchpoints are a later increment.
+            Ok(()) if self.shared.sensor_feed.is_some() => {
+                Ack::ok_detail("accepted; override/opportunistic scheduling stubbed (journaled)")
+            }
+            // No sensor feed fitted: the pre-v3.1 stub behavior.
+            Ok(()) => Ack::ok_detail("accepted; capture execution stubbed (no sensor feed)"),
         };
         self.journal_ack(
             "sensor_capture",
@@ -248,9 +259,29 @@ impl VehicleService for VehicleServiceImpl {
 
     async fn video_control(&self, req: VideoRequest) -> Ack {
         let _span = tracing::info_span!("service-invocation", op = "video_control").entered();
-        // STUB (M3): the MJPEG pipeline (CameraHub) is not ported yet — the
-        // knob is accepted + journaled so dashboards can already drive it.
-        let ack = Ack::ok_detail("accepted; video pipeline stubbed at M3");
+        // With a sensor feed fitted the knob is real: a session task renders
+        // frames into the `video/live` latest-wins buffer, which the GCS
+        // relay fetches over the fabric — the same path a real camera's
+        // MJPEG pipeline will use. Without a feed, the v2-era stub ack.
+        let ack = if self.shared.sensor_feed.is_none() {
+            Ack::ok_detail("accepted; video pipeline stubbed (no sensor feed)")
+        } else if req.enabled {
+            let session = self.shared.cancel.child_token();
+            {
+                let mut slot = lock(&self.shared.video_session);
+                if let Some(previous) = slot.take() {
+                    previous.cancel(); // restart with the new parameters
+                }
+                *slot = Some(session.clone());
+            }
+            tokio::spawn(crate::sensor::video_task(self.shared.clone(), req.fps, session));
+            Ack::ok_detail("video started (sensor feed)")
+        } else {
+            if let Some(session) = lock(&self.shared.video_session).take() {
+                session.cancel();
+            }
+            Ack::ok_detail("video stopped")
+        };
         self.journal_ack(
             "video_control",
             serde_json::to_value(&req).unwrap_or_default(),

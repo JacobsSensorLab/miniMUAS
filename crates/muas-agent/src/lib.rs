@@ -22,6 +22,7 @@ pub mod config;
 pub mod coord;
 pub mod journal;
 pub mod mission;
+pub mod sensor;
 pub mod service_impl;
 pub mod telemetry;
 
@@ -51,6 +52,7 @@ use uas_mavlink::MavlinkFlightBackend;
 
 pub use config::{AgentConfig, CarrierKind, Endpoint, ParseOutcome, UdpLink, HELP};
 pub use journal::JournalHandle;
+pub use sensor::{SensorFeed, SensorFeedConfig, SensorPose, SyntheticFeed};
 
 /// Lock a mutex, recovering from poisoning (a panicked task must not wedge
 /// the whole agent — v2's "failures never kill the process" posture).
@@ -217,6 +219,21 @@ pub struct AgentShared {
     /// Smart-RTL home captured by the agent's lock-per-poll takeoff (the
     /// MAVLink backend only records home on its own blocking takeoff path).
     pub fallback_home: Mutex<Option<(f64, f64)>>,
+    /// Freshest live-video payload (`[8-byte BE seq][jpeg]`) served under
+    /// `video/live`; `None` until the video pipeline runs.
+    pub latest_video: Mutex<Option<Bytes>>,
+    /// Freshest tasked-capture result (v2 `SensorCaptureResult` JSON dict)
+    /// served under `sensor/last`.
+    pub latest_sensor: Mutex<Option<Bytes>>,
+    /// The pluggable sensor feed (`None` = no sensors fitted).
+    pub sensor_feed: Option<Arc<dyn sensor::SensorFeed>>,
+    /// Mission-artifact publisher (present iff a sensor feed is fitted).
+    pub frames: Option<Arc<sensor::FramePublisher>>,
+    /// Live video session cancel handle (`video_control` swaps it).
+    pub video_session: Mutex<Option<CancellationToken>>,
+    /// The agent's root cancel token (ad-hoc capture/video tasks tie their
+    /// lifetime to it so shutdown never leaks a renderer loop).
+    pub cancel: CancellationToken,
     pub journal: JournalHandle,
     pub commands: mpsc::UnboundedSender<AgentCommand>,
 }
@@ -358,6 +375,35 @@ impl Agent {
         );
         tasks.push(journal_task);
 
+        // -- sensor feed (pluggable seam; see sensor.rs) ----------------------
+        let mut sensor_meta = muas_contracts::sensors::SensorMeta::default();
+        let (sensor_feed, frames): (
+            Option<Arc<dyn sensor::SensorFeed>>,
+            Option<Arc<sensor::FramePublisher>>,
+        ) = match &config.sensor_feed {
+            sensor::SensorFeedConfig::None => (None, None),
+            synth @ sensor::SensorFeedConfig::Synthetic { .. } => {
+                let has_audio = config.extras.iter().any(|e| e == "audio");
+                let feed = sensor::SyntheticFeed::new(synth, has_audio, config.audio_range_m)
+                    .expect("synthetic variant builds a synthetic feed");
+                // Ground truth arrives OVER THE NETWORK (bridge + fabric),
+                // like every peer stream — no process-local shortcut.
+                tasks.push(sensor::spawn_anomaly_fetcher(
+                    engine.app_consumer(cancel.child_token()),
+                    feed.anomaly_name.clone(),
+                    feed.cache(),
+                    cancel.clone(),
+                ));
+                sensor_meta = feed.sensor_meta();
+                let node = engine.app_node(cancel.child_token());
+                info!(anomaly_name = %feed.anomaly_name, "synthetic sensor feed up");
+                (
+                    Some(Arc::new(feed) as Arc<dyn sensor::SensorFeed>),
+                    Some(Arc::new(sensor::FramePublisher::new(node))),
+                )
+            }
+        };
+
         // -- shared state ----------------------------------------------------
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
         let shared = Arc::new(AgentShared {
@@ -374,6 +420,12 @@ impl Agent {
             latest_search: Mutex::new(None),
             latest_state: Mutex::new(None),
             fallback_home: Mutex::new(None),
+            latest_video: Mutex::new(None),
+            latest_sensor: Mutex::new(None),
+            sensor_feed,
+            frames,
+            video_session: Mutex::new(None),
+            cancel: cancel.clone(),
             journal: journal.clone(),
             commands: cmd_tx,
         });
@@ -387,9 +439,11 @@ impl Agent {
         );
 
         // -- latest-wins serving (telemetry/live|state, search/status,
-        //    coord/status) ----------------------------------------------------
+        //    coord/status, video/live, sensor/last) ---------------------------
         // telemetry/state is the (static) v2 CapabilityProfile: which
-        // investigation extras this vehicle advertises for dispatch.
+        // investigation extras this vehicle advertises for dispatch — plus
+        // the ADDITIVE `sensor_meta` key (muas-contracts::sensors) when a
+        // feed is fitted, which the dashboard's sensor layer renders from.
         let capability_bytes: Bytes = {
             let profile = uas_fleet_data::kinds::CapabilityProfile {
                 extras: config.extras.clone(),
@@ -403,17 +457,22 @@ impl Agent {
                 velocity: false,
                 yaw_control: true,
             };
-            Bytes::from(serde_json::to_vec(&profile).map_err(|e| format!("profile encode: {e}"))?)
+            let mut value =
+                serde_json::to_value(&profile).map_err(|e| format!("profile encode: {e}"))?;
+            muas_contracts::sensors::merge_into_profile(&mut value, &sensor_meta);
+            Bytes::from(serde_json::to_vec(&value).map_err(|e| format!("profile encode: {e}"))?)
         };
         *lock(&shared.latest_state) = Some(capability_bytes);
         let node = engine.app_node(cancel.child_token());
         let mut serve_guards = Vec::new();
         type ReadLatest = fn(&AgentShared) -> Option<Bytes>;
-        let streams: [(&str, ReadLatest); 4] = [
+        let streams: [(&str, ReadLatest); 6] = [
             ("telemetry/live", |s| lock(&s.latest_telemetry).clone()),
             ("telemetry/state", |s| lock(&s.latest_state).clone()),
             ("search/status", |s| lock(&s.latest_search).clone()),
             ("coord/status", |s| Some(lock(&s.latest_coord).clone())),
+            ("video/live", |s| lock(&s.latest_video).clone()),
+            ("sensor/last", |s| lock(&s.latest_sensor).clone()),
         ];
         for (stream, read) in streams {
             let name: Name = names::vehicle_stream(&config.vehicle_id, stream)

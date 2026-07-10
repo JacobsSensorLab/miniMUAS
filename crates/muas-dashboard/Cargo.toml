@@ -36,6 +36,8 @@ tracing-subscriber = { workspace = true }
 
 # new third-party (this crate only)
 axum = { version = "0.8", features = ["ws"] }
+# SimpleDetector: pure-Rust JPEG decode of fabric-fetched frames.
+jpeg-decoder = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 
 [dev-dependencies]

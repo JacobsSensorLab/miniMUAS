@@ -18,6 +18,7 @@
 //! replay is frontend-driven through the same `dispatch()` handlers.
 
 pub mod config;
+pub mod detect;
 pub mod hub;
 pub mod lens;
 pub mod mission;
@@ -46,7 +47,7 @@ pub fn parse_outcome(args: &[String]) -> Result<Option<DashConfig>, String> {
     }
 }
 use mission::{Action, DetectOutcome, JobResult, Mission, MissionConfig};
-use providers::{CmdResult, Commander, DetectionProvider};
+use providers::{CmdResult, Commander, DetectionProvider, SimControl};
 
 /// Lock a mutex, recovering from poisoning (v2's "failures never kill the
 /// process" posture, same as muas-agent).
@@ -77,6 +78,10 @@ pub struct Dashboard {
     /// Engine handle for on-demand consumers (artifacts, video relays);
     /// absent in pure-logic tests.
     engine: OnceLock<(ForwarderEngine, CancellationToken)>,
+    /// Simulation attachment (virtual deployments only): the capability
+    /// info the hello message advertises + the control seam WS `sim`
+    /// commands forward through. Never set in a real deployment.
+    sim: OnceLock<(Value, Arc<dyn SimControl>)>,
 }
 
 impl Dashboard {
@@ -101,6 +106,7 @@ impl Dashboard {
             commander,
             lens: lens::LensHost::new(&vehicles),
             engine: OnceLock::new(),
+            sim: OnceLock::new(),
             config,
         }
     }
@@ -108,6 +114,15 @@ impl Dashboard {
     /// Attach the engine (enables artifact fetches + video relays).
     pub fn attach_engine(&self, engine: ForwarderEngine, cancel: CancellationToken) {
         let _ = self.engine.set((engine, cancel));
+    }
+
+    /// Attach a simulation deployment: `info` is advertised as the hello
+    /// message's `sim` capability object (e.g. `{"anomalies": true, ...}` —
+    /// gates the UI's anomaly-placement tool); `control` executes the
+    /// forwarded `sim` WS commands against the deployment's control
+    /// endpoint. Idempotent; first attach wins.
+    pub fn attach_sim(&self, info: Value, control: Arc<dyn SimControl>) {
+        let _ = self.sim.set((info, control));
     }
 
     /// A fresh app consumer over the attached engine.
@@ -160,14 +175,23 @@ impl Dashboard {
             .iter()
             .map(|(k, v)| (k.clone(), json!(v.iter().cloned().collect::<Vec<_>>())))
             .collect();
-        json!({
+        let sensor_meta: serde_json::Map<String, Value> =
+            m.sensor_meta.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let mut hello = json!({
             "type": "hello",
             "vehicles": self.vehicles(),
             "enabled": enabled,
             "capabilities": capabilities,
+            "sensor_meta": sensor_meta,
             "sensor_data": *lock(&self.sensor_data),
             "mission": m.hello_mission(),
-        })
+        });
+        // Sim capability flag: present ONLY when a virtual deployment
+        // attached itself — gates the UI's anomaly-placement tool.
+        if let Some((info, _)) = self.sim.get() {
+            hello["sim"] = info.clone();
+        }
+        hello
     }
 
     /// Broadcast a v2-shaped event (`{"type":"event","kind",...,"t"}`).
@@ -342,6 +366,7 @@ impl Dashboard {
             "video" => self.cmd_video(message),
             "sensor" => self.cmd_sensor(message),
             "system" => self.cmd_system(message),
+            "sim" => self.cmd_sim(message),
             _ => {}
         }
         None
@@ -540,6 +565,27 @@ impl Dashboard {
                     "sensor.failed",
                     json!({ "vehicle": vid, "request": request_id, "error": err }),
                 ),
+            }
+        });
+    }
+
+    /// Forward one simulation-control op (anomaly placement tool) through
+    /// the attached [`SimControl`] — WS → deployment control endpoint →
+    /// AnomalyField. Silently ignored when no deployment attached (real
+    /// deployments must not honor sim commands).
+    fn cmd_sim(self: &Arc<Self>, message: &Value) {
+        let Some((_, control)) = self.sim.get() else { return };
+        let op = message.get("op").and_then(Value::as_str).unwrap_or("").to_string();
+        if op.is_empty() {
+            return;
+        }
+        let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
+        let control = control.clone();
+        let dash = self.clone();
+        tokio::spawn(async move {
+            match control.call(op.clone(), params).await {
+                Ok(result) => dash.emit_event("sim.result", json!({ "op": op, "ok": true, "result": result })),
+                Err(err) => dash.emit_event("sim.result", json!({ "op": op, "ok": false, "error": err })),
             }
         });
     }
