@@ -31,6 +31,27 @@ Format:
   every op's Frame. Request: a `metadata: BTreeMap<String, Bytes>` (or one
   reserved appended frame field) on both types, uniform across carriers.
 
+## [2026-07-10] Lifecycle-records build: first external stratum through the bench pin lifecycle — works, with edges
+- **Project:** flotilla (bench) / ndf-rs (ndf-policy, ndf-apps)
+- **Type:** friction + praise
+- **Context:** uas-fleet-records authored `uas-lifecycle.ndfs` and compiled
+  it through flotilla's bench with a crate-local Atelier.lock + vendored
+  `measured` pin — 0 err, deterministic pin, L-07 correctly refused a
+  drift-edit without `supersedes`. The pin lifecycle works for external
+  consumers; STRATA.md now has a second worked example (waterline's was
+  the first).
+- **Detail:** (1) bench `compile --lock` rewrites the lockfile and strips
+  its comments (main.rs:58-64) and there is no read-only compile for CI;
+  (2) `--store` works for compile but is undocumented in usage; (3) ride-on
+  pins must be vendored per repo — a shared store convention would help;
+  (4) ndf-policy has no README (module docs only); (5) ndf-policy's
+  `PresenceActuator` is a seam without an upstream mechanism — our MCU
+  windowed-follow is hand-rolled pending one; (6) ndf-apps errors are
+  Debug-only (no Display/Error impls); (7) ArduPilot param dumps lack a
+  canonical byte form, so calibration snapshot hashes are
+  identity-of-capture, not identity-of-content (upstream-of-everyone
+  problem, noting for the record).
+
 ## [2026-07-10] ndn-sim: foreign UDP flows and virtual time for external forwarders
 - **Project:** ndn-workspace (ndn-sim)
 - **Type:** missing-feature
