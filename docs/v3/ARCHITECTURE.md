@@ -232,8 +232,10 @@ unit/property tests:
   green.
 - **M1** (done 2026-07-10): uas-flight fully ported — 17 modules, the whole
   UAS-IPBRC `test_flight_*` oracle translated (202 tests, zero warnings).
-- **M2**: uas-mavlink + SITL: takeoff/goto/raster/carrot-orbit/RTL parity,
-  goto-floor and ensure_airborne regressions green.
+- **M2** (done 2026-07-10): uas-mavlink link core + all-AGL backend +
+  FlightCommandLink impl; 40 unit tests; 8/8 SITL checkride checks green
+  (record: uas-flight `crates/uas-mavlink/CHECKRIDE.md` — pins the 3.5 m
+  goto floor, bias lead cap, ensure_airborne ladder).
 - **M3**: uas-fleet-data/-node + muas-contracts + muas-agent on ndn-service
   (rpc carrier), telemetry/coord as Sparks, journals as chains, coordination
   parity in ndn-sim co-sim; NDNSF carrier comparison.
