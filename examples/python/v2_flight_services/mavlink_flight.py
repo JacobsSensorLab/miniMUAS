@@ -210,7 +210,17 @@ def connect_flight_link(
         home_alt_m=float(home_alt_m) if home_alt_m is not None else 0.0,
     )
     inner.connect(timeout_s=connect_timeout_s)
-    start = _wait_position(inner, position_timeout_s, phase="primary")
+    try:
+        start = _wait_position(inner, position_timeout_s, phase="primary")
+    except Exception:
+        # close on failure or the dangling connection (and its 1 Hz
+        # heartbeat thread) poisons every retry: SITL's single-client
+        # serial port keeps talking to the corpse
+        try:
+            inner.close()
+        except Exception:
+            pass
+        raise
     if home_alt_m is None:
         # Grounded vehicle: its current altitude in the link frame IS
         # ground level for all subsequent AGL math.

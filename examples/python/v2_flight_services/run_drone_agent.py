@@ -927,7 +927,24 @@ class MavlinkFlightBackend:
         # agl passes straight through (link pinned to home_alt_m=0),
         # shifted by the de-confliction bias when one is active.
         self._last_cmd = (lat, lon, agl, yaw_deg)
-        self._link.goto(lat, lon, self._effective_agl(agl), yaw_deg=yaw_deg)
+        t_lat, t_lon = lat, lon
+        if self._alt_bias:
+            # SITL 2026-07-09: ArduCopter guided flies a straight 3D line
+            # to its target, so an avoidance climb attached to a far
+            # waypoint is spread over the WHOLE leg — at a mid-leg
+            # crossing barely half the bias was realized. While a bias is
+            # active, cap the horizontal lead so the vertical maneuver
+            # completes within ~lead metres of travel (seconds, not the
+            # whole leg); the mission's 2 s re-sends keep walking the
+            # capped carrot toward the real target.
+            here = self.position()
+            dist = _dist_m(here[0], here[1], lat, lon)
+            lead = 15.0
+            if dist > lead:
+                f = lead / dist
+                t_lat = here[0] + (lat - here[0]) * f
+                t_lon = here[1] + (lon - here[1]) * f
+        self._link.goto(t_lat, t_lon, self._effective_agl(agl), yaw_deg=yaw_deg)
 
     def at_target(self, lat, lon, agl, tol_m=2.0) -> bool:
         p = self.position()
