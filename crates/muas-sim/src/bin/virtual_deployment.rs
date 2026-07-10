@@ -52,7 +52,11 @@ const ARDUPILOT_DIR: &str = "/Users/pmle/Documents/Dev/ardupilot";
 const SITL_MODEL: &str = "+";
 const SITL_SPEEDUP: f64 = 1.0; // real time: smooth for a human on the map
 /// CMAC-ish anchor the three homes spread around (~40 m apart).
-const HOME: (f64, f64, f64) = (35.3632621, 149.1652374, 584.0);
+// ArduPilot's canonical test home: CMAC, Canberra. Latitude is NEGATIVE —
+// the sign-flipped copy that circulated through the M2 checkride put the
+// fleet in the Pacific south of Japan, where every satellite tile is the
+// same blank ocean blue and the imagery layer looks "broken".
+const HOME: (f64, f64, f64) = (-35.3632621, 149.1652374, 584.0);
 const M_PER_DEG_LAT: f64 = 111_320.0;
 
 const VEHICLES: [&str; 3] = ["wuas-01", "iuas-01", "iuas-02"];
