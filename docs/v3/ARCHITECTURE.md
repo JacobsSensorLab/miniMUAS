@@ -230,8 +230,8 @@ unit/property tests:
 
 - **M0** (done): branch, docs, surveys, multi-repo scaffold, all workspaces
   green.
-- **M1**: uas-flight port with translated test oracle (deconflict → geo/
-  patterns/placement → tick core → constraints → orbit ladder).
+- **M1** (done 2026-07-10): uas-flight fully ported — 17 modules, the whole
+  UAS-IPBRC `test_flight_*` oracle translated (202 tests, zero warnings).
 - **M2**: uas-mavlink + SITL: takeoff/goto/raster/carrot-orbit/RTL parity,
   goto-floor and ensure_airborne regressions green.
 - **M3**: uas-fleet-data/-node + muas-contracts + muas-agent on ndn-service
