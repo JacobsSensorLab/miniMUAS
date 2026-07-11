@@ -249,6 +249,14 @@ impl Commander for NdnCommander {
             to_result(client.system_shutdown(confirm).await)
         })
     }
+
+    fn rc_disengage(&self, vehicle: String) -> BoxFuture<CmdResult> {
+        let clients = self.short.clone();
+        Box::pin(async move {
+            let Some(client) = clients.get(&vehicle) else { return no_vehicle(&vehicle) };
+            to_result(client.rc_disengage().await)
+        })
+    }
 }
 
 // ───────────────────────────── pollers ──────────────────────────────────────
@@ -275,6 +283,12 @@ pub fn spawn_pollers(
             cancel.clone(),
         )));
         tasks.push(tokio::spawn(task_queue_poller(
+            dash.clone(),
+            engine.app_consumer(cancel.child_token()),
+            vid.clone(),
+            cancel.clone(),
+        )));
+        tasks.push(tokio::spawn(rc_status_poller(
             dash.clone(),
             engine.app_consumer(cancel.child_token()),
             vid,
@@ -544,6 +558,38 @@ async fn task_queue_poller(
             continue;
         }
         dash.on_task_queue(&vehicle, status);
+    }
+}
+
+/// ~4 Hz rc/status follower (RC-CONTROL R2): relays one vehicle's RC
+/// pilot-session status ([`muas_contracts::rc::RcStatus`]) into its tile's
+/// RC strip and the map's manual ring. Latest-wins; content dedup + the
+/// hello snapshot live in [`Dashboard::on_rc_status`] (the task-queue
+/// poller's shape). The stream only exists while the agent's RC receiver
+/// runs (`--rc`); on a plain fleet every fetch misses and the strip stays
+/// idle.
+async fn rc_status_poller(
+    dash: Arc<Dashboard>,
+    mut consumer: Consumer,
+    vehicle: String,
+    cancel: CancellationToken,
+) {
+    let name = names::vehicle_stream(&vehicle, names::RC_STATUS_STREAM);
+    let mut interval = tokio::time::interval(Duration::from_millis(250));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => break,
+            _ = interval.tick() => {}
+        }
+        let Some(payload) = fetch_latest(&mut consumer, &name).await else { continue };
+        let Ok(status) = serde_json::from_slice::<Value>(&payload) else { continue };
+        // Tolerant additive decode, but the pinned shape must hold (the
+        // telemetry poller's validate-then-forward-the-raw-JSON pattern).
+        if serde_json::from_value::<muas_contracts::rc::RcStatus>(status.clone()).is_err() {
+            continue;
+        }
+        dash.on_rc_status(&vehicle, status);
     }
 }
 

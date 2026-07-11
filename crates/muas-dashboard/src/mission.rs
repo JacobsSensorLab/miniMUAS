@@ -24,6 +24,9 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
+use muas_contracts::strategy::{
+    rank_candidates, reask_schedule, CandidateSnapshot, DispatchStrategy, RequesterStrategy,
+};
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -253,10 +256,19 @@ pub struct MissionConfig {
     pub search_margin_s: f64,
     /// Wall clock, seconds since the Unix epoch (injected for tests).
     pub clock: Arc<dyn Fn() -> f64 + Send + Sync>,
+    /// How the dispatcher ORDERS capable candidates (ROUND-3 §2). The default
+    /// reproduces `pick_vehicle` exactly (idle-first, config order); the
+    /// deployment folds a non-default record from `--strategy-chain` /
+    /// `--strategy` and injects it via [`MissionConfig::with_strategies`].
+    pub dispatch_strategy: DispatchStrategy,
+    /// The re-ask backoff after an agent busy-refusal (ROUND-3 §2). The
+    /// default never re-asks on a timer (today's event-driven pump only).
+    pub requester_strategy: RequesterStrategy,
 }
 
 impl MissionConfig {
-    /// Config with the v2 defaults and the system clock.
+    /// Config with the v2 defaults, the system clock, and behavior-neutral
+    /// (crate-default) service strategies.
     pub fn new(wuas_id: impl Into<String>, iuas_ids: Vec<String>) -> Self {
         Self {
             wuas_id: wuas_id.into(),
@@ -269,7 +281,23 @@ impl MissionConfig {
                     .map(|d| d.as_secs_f64())
                     .unwrap_or(0.0)
             }),
+            dispatch_strategy: DispatchStrategy::default(),
+            requester_strategy: RequesterStrategy::default(),
         }
+    }
+
+    /// Inject non-default dispatch/requester strategies — the strategy-load
+    /// seam. The deployment resolves these from `--strategy-chain`/`--strategy`
+    /// (`muas_contracts::strategy::load_active` → `dispatch()`/`requester()`)
+    /// and hands them in; the crate defaults are behavior-neutral.
+    pub fn with_strategies(
+        mut self,
+        dispatch: DispatchStrategy,
+        requester: RequesterStrategy,
+    ) -> Self {
+        self.dispatch_strategy = dispatch;
+        self.requester_strategy = requester;
+        self
     }
 }
 
@@ -311,6 +339,15 @@ pub struct Mission {
     seen_frames: HashSet<String>,
     pub detects_pending: u64,
     pub detects_done: u64,
+    /// Per-`(target_index, sensor)` count of agent busy-refusal re-asks so
+    /// far — indexes the requester strategy's backoff
+    /// ([`RequesterStrategy::reask`]). Empty under the default (never re-ask).
+    reask_attempts: HashMap<(usize, String), u32>,
+    /// Telemetry-poller hint: per-vehicle estimated remaining flight time,
+    /// seconds, for the dispatch strategy's flight-time floor. Empty ⇒ the
+    /// floor term is inert (behavior-neutral). Wired by the sibling poller
+    /// via [`Mission::note_vehicle_flight_time`].
+    vehicle_ft_est_s: HashMap<String, f64>,
 }
 
 impl Mission {
@@ -338,7 +375,18 @@ impl Mission {
             seen_frames: HashSet::new(),
             detects_pending: 0,
             detects_done: 0,
+            reask_attempts: HashMap::new(),
+            vehicle_ft_est_s: HashMap::new(),
         }
+    }
+
+    /// Telemetry-poller hook: record a vehicle's estimated remaining flight
+    /// time, seconds — a hint the dispatch strategy's flight-time floor ranks
+    /// on. Absent ⇒ unknown ⇒ inert, so this is behavior-neutral until a
+    /// non-default dispatch strategy consults it. (Seam: the sibling-owned
+    /// telemetry poller in `lib.rs` wires this from vehicle telemetry.)
+    pub fn note_vehicle_flight_time(&mut self, vehicle: &str, flight_time_est_s: f64) {
+        self.vehicle_ft_est_s.insert(vehicle.to_string(), flight_time_est_s);
     }
 
     /// WUAS then the IUAS list — the v2 vehicle ordering (index 0 is the
@@ -1017,20 +1065,48 @@ impl Mission {
 
     // ── dispatch machinery ──────────────────────────────────────────────────
 
-    /// v2 `_pick_vehicle_locked`: first idle, enabled IUAS advertising
-    /// `sensor`; `None` if none.
+    /// Pick a vehicle for one `sensor` job. Hard eligibility (enabled +
+    /// capability match + not-busy) is the caller's filter — never strategy
+    /// material; ORDER among the eligible is the dispatch strategy's
+    /// ([`rank_candidates`], ROUND-3 §2), and we take the first.
+    ///
+    /// The default strategy (idle-first, config order) reproduces the v2
+    /// `_pick_vehicle_locked` first-match scan exactly: every eligible
+    /// candidate here is idle (busy vehicles stay filtered out — the
+    /// dashboard does not queue jobs on remote vehicles, so a job with no
+    /// idle taker waits for a busy→idle transition), so idle-first is a no-op
+    /// and the input (config) order carries through. Lifting the busy
+    /// exclusion into the ranking's idle-first term is a follow that needs the
+    /// pump/completion path to handle remote queueing — flagged in the round
+    /// report.
     fn pick_vehicle(&self, sensor: &str, busy: &HashSet<String>) -> Option<String> {
         let default_caps: BTreeSet<String> = ["camera".to_string()].into();
+        let mut eligible: Vec<String> = Vec::new();
+        let mut snapshots: Vec<CandidateSnapshot> = Vec::new();
         for vid in &self.cfg.iuas_ids {
             if busy.contains(vid) || !self.enabled.get(vid).copied().unwrap_or(true) {
                 continue;
             }
             let caps = self.capabilities.get(vid).unwrap_or(&default_caps);
-            if caps.contains(sensor) {
-                return Some(vid.clone());
+            if !caps.contains(sensor) {
+                continue;
             }
+            eligible.push(vid.clone());
+            snapshots.push(CandidateSnapshot {
+                // Every eligible candidate cleared the busy gate above.
+                idle: true,
+                // Idle vehicles carry no dashboard-side pending queue.
+                queued: 0,
+                // Telemetry-fed hint (empty ⇒ None ⇒ the floor term is inert).
+                flight_time_est_s: self.vehicle_ft_est_s.get(vid).copied(),
+                // Per-vehicle distance needs position telemetry the pure
+                // machine does not carry yet ⇒ the `nearest` term is inert.
+                distance_m: None,
+            });
         }
-        None
+        rank_candidates(&self.cfg.dispatch_strategy, &snapshots)
+            .first()
+            .map(|&i| eligible[i].clone())
     }
 
     /// v2 `_pump_dispatch`: assign queued jobs to idle, enabled,
@@ -1202,11 +1278,29 @@ impl Mission {
                 return Vec::new();
             };
             self.vehicle_busy.insert(refused_by.clone(), true);
+            // Re-ask backoff (ROUND-3 §2 requester strategy). The default
+            // requester never re-asks on a timer (`max_attempts` 0 ⇒ `None`),
+            // so this stays exactly today's behavior: requeue + an immediate
+            // event-driven pump. A non-default requester's delay rides the
+            // event; running the TIMED re-pump is the async executor's follow
+            // (an Action it can schedule) — the pure machine only computes the
+            // schedule and surfaces it. Flagged in the round report.
+            let attempt = {
+                let counter = self
+                    .reask_attempts
+                    .entry((result.target_index, result.sensor.clone()))
+                    .or_insert(0);
+                *counter += 1;
+                *counter
+            };
+            let reask_delay_s = reask_schedule(&self.cfg.requester_strategy, attempt);
             let payload = json!({
                 "index": result.target_index,
                 "sensor": result.sensor,
                 "vehicle": refused_by,
                 "note": result.note,
+                "attempt": attempt,
+                "reask_delay_s": reask_delay_s,
             });
             let mut actions = vec![Action::Emit(self.event("target.job_requeued", payload))];
             actions.extend(self.pump_dispatch());
@@ -1302,4 +1396,139 @@ pub fn frame_seq(frame: &str) -> i64 {
         .next()
         .and_then(|s| s.parse().ok())
         .unwrap_or(-1)
+}
+
+// ───────────────────────── strategy-driven dispatch (ROUND-3 §2) ─────────────
+
+#[cfg(test)]
+mod strategy_tests {
+    use super::*;
+    use muas_contracts::strategy::{RankTerm, ReaskPolicy};
+
+    fn cfg(iuas: &[&str]) -> MissionConfig {
+        let mut c = MissionConfig::new("wuas-01", iuas.iter().map(|s| s.to_string()).collect());
+        c.confirm_count = 1;
+        c.clock = Arc::new(|| 1000.0);
+        c
+    }
+
+    /// Default dispatch strategy = today's `pick_vehicle`: idle-first with the
+    /// config vehicle-id order as the tie break.
+    #[test]
+    fn default_dispatch_strategy_reproduces_config_order() {
+        let m = Mission::new(cfg(&["iuas-01", "iuas-02"]));
+        assert_eq!(m.pick_vehicle("camera", &HashSet::new()), Some("iuas-01".into()));
+    }
+
+    /// A flight-time-floor + idle-first strategy swaps the pick when the
+    /// telemetry hints say the config-first vehicle is below the floor.
+    #[test]
+    fn flight_time_floor_strategy_swaps_dispatch_order() {
+        let dispatch = DispatchStrategy {
+            ranking: vec![RankTerm::flight_time_floor_s(300.0), RankTerm::idle_first()],
+            ..DispatchStrategy::default()
+        };
+        let mut m = Mission::new(
+            cfg(&["iuas-01", "iuas-02"]).with_strategies(dispatch, RequesterStrategy::default()),
+        );
+        m.note_vehicle_flight_time("iuas-01", 120.0); // below the 300 s floor
+        m.note_vehicle_flight_time("iuas-02", 600.0); // clears it
+        assert_eq!(
+            m.pick_vehicle("camera", &HashSet::new()),
+            Some("iuas-02".into()),
+            "flight-time floor ranks the healthy IUAS ahead of config order"
+        );
+
+        // The SAME hints under the default strategy keep config order.
+        let mut d = Mission::new(cfg(&["iuas-01", "iuas-02"]));
+        d.note_vehicle_flight_time("iuas-01", 120.0);
+        d.note_vehicle_flight_time("iuas-02", 600.0);
+        assert_eq!(d.pick_vehicle("camera", &HashSet::new()), Some("iuas-01".into()));
+    }
+
+    fn investigating_target(m: &mut Mission) {
+        m.state = "investigating".into();
+        m.targets.push(Target {
+            index: 0,
+            object_id: "x".into(),
+            confidence: 0.9,
+            lat: 35.0,
+            lon: -90.0,
+            frame: "f".into(),
+            best_offset: 1.0,
+            status: "investigating".into(),
+            artifacts: vec![],
+            jobs: vec![Job {
+                sensor: "camera".into(),
+                vehicle: "iuas-01".into(),
+                status: "investigating".into(),
+                artifacts: vec![],
+            }],
+        });
+    }
+
+    fn busy_refusal(m: &mut Mission) -> Vec<Action> {
+        m.on_job_result(JobResult {
+            target_index: 0,
+            sensor: "camera".into(),
+            ok: false,
+            artifacts: vec![],
+            note: "vehicle busy with task 'investigate'".into(),
+            artifact_items: vec![],
+        })
+    }
+
+    fn requeued(actions: &[Action]) -> Value {
+        actions
+            .iter()
+            .find_map(|a| match a {
+                Action::Emit(v) if v.get("kind") == Some(&json!("target.job_requeued")) => {
+                    Some(v.clone())
+                }
+                _ => None,
+            })
+            .expect("target.job_requeued emitted")
+    }
+
+    /// The requester strategy's exact backoff rides the requeue events on
+    /// successive agent busy-refusals (5 s, then 10 s).
+    #[test]
+    fn reask_schedule_drives_requeue_backoff() {
+        let requester = RequesterStrategy {
+            reask: ReaskPolicy {
+                backoff_initial_s: 5.0,
+                give_up_horizon_s: 120.0,
+                max_attempts: 5,
+                multiplier: 2.0,
+            },
+            ..RequesterStrategy::default()
+        };
+        let mut m = Mission::new(
+            cfg(&["iuas-01"]).with_strategies(DispatchStrategy::default(), requester),
+        );
+        investigating_target(&mut m);
+        let evt = requeued(&busy_refusal(&mut m));
+        assert_eq!(evt["attempt"], json!(1));
+        assert_eq!(evt["reask_delay_s"], json!(5.0));
+
+        // Re-arm the same job and refuse again → attempt 2, 10 s (× multiplier).
+        m.targets[0].jobs[0].status = "investigating".into();
+        m.targets[0].jobs[0].vehicle = "iuas-01".into();
+        m.vehicle_busy.clear();
+        let evt = requeued(&busy_refusal(&mut m));
+        assert_eq!(evt["attempt"], json!(2));
+        assert_eq!(evt["reask_delay_s"], json!(10.0));
+    }
+
+    /// Behavior-neutral: the default requester never re-asks on a timer, so
+    /// the requeue carries a null delay and the job requeues exactly as today.
+    #[test]
+    fn default_requester_reask_is_none_behavior_neutral() {
+        let mut m = Mission::new(cfg(&["iuas-01"]));
+        investigating_target(&mut m);
+        let evt = requeued(&busy_refusal(&mut m));
+        assert_eq!(evt["reask_delay_s"], Value::Null);
+        assert_eq!(evt["attempt"], json!(1));
+        assert_eq!(m.targets[0].jobs[0].status, "queued", "requeued as before");
+    }
 }

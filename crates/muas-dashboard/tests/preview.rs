@@ -163,4 +163,93 @@ fn hello_schema_round_trips() {
     assert_eq!(parsed["mission"]["state"], json!("idle"));
     assert!(parsed["mission"]["targets"].as_array().unwrap().is_empty());
     assert!(parsed["sensor_data"].as_array().unwrap().is_empty());
+    // RC pilot surface (RC-CONTROL R2): hello carries the rc snapshot map and
+    // the RC-reachable target roster (empty on a plain config).
+    assert_eq!(parsed["rc"], json!({}), "no RC status yet");
+    assert_eq!(parsed["rc_targets"], json!([]), "no --rc-target configured");
+}
+
+/// The rc/status poller's broadcast shape + hello inclusion + content dedup —
+/// mirrors the task-queue poller's `on_task_queue` contract.
+#[test]
+fn rc_status_broadcasts_and_rides_hello() {
+    use muas_dashboard::hub::Outbound;
+    let dash = Arc::new(Dashboard::new(
+        DashConfig { record_dir: None, ..DashConfig::default() },
+        Arc::new(StubDetector),
+        Arc::new(ScriptedCommander::answering(CmdResult::Ack(Ack::ok()))),
+    ));
+    let mut rx = dash.hub.subscribe();
+
+    let status = json!({
+        "vehicle_id": "iuas-01",
+        "gps_time_ns": 42_u64,
+        "engaged": true,
+        "source": "listen:127.0.0.1:14650",
+        "seq_gap_pct": 2.5,
+        "age_ms": 18_u64,
+        "failsafe_state": "manual",
+    });
+    assert!(dash.on_rc_status("iuas-01", status.clone()), "first sample broadcasts");
+    let Ok(Outbound::Text(text)) = rx.try_recv() else { panic!("rc broadcast") };
+    let msg: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(msg["type"], json!("rc"));
+    assert_eq!(msg["vehicle"], json!("iuas-01"));
+    assert_eq!(msg["status"]["failsafe_state"], json!("manual"));
+    assert_eq!(msg["status"]["engaged"], json!(true));
+
+    // Content dedup: an identical sample is silent (fresh clients get it via
+    // hello instead).
+    assert!(!dash.on_rc_status("iuas-01", status.clone()), "identical sample is silent");
+    assert!(rx.try_recv().is_err(), "no second broadcast for an unchanged status");
+
+    // The stored snapshot rides hello.
+    let hello = dash.hello();
+    assert_eq!(hello["rc"]["iuas-01"]["failsafe_state"], json!("manual"));
+}
+
+/// End-to-end honesty: a pilot's WS commands (`{"cmd":"rc",…}`) drive real
+/// uas-rc frames onto a bound [`UdpRcReceiver`] — the exact receiver the
+/// agent binds for `--rc listen:<addr>`. Nothing is short-circuited: the
+/// command layer feeds the RcHost, whose sender puts frames on the wire.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pilot_ws_commands_drive_real_rc_frames() {
+    use std::collections::BTreeMap;
+    use std::time::{Duration, Instant};
+    use uas_rc::{RcFlags, UdpRcReceiver};
+
+    let mut rx = UdpRcReceiver::bind("127.0.0.1:0").unwrap();
+    let addr = rx.local_addr().unwrap();
+    let mut targets = BTreeMap::new();
+    targets.insert("iuas-01".to_string(), addr);
+
+    let config = DashConfig { record_dir: None, rc_targets: targets, ..DashConfig::default() };
+    let dash = Arc::new(Dashboard::new(
+        config,
+        Arc::new(StubDetector),
+        Arc::new(ScriptedCommander::answering(CmdResult::Ack(Ack::ok()))),
+    ));
+    // Wire the send host exactly as `start()` does.
+    let host = muas_dashboard::rc::RcHost::new(&dash.config.rc_targets);
+    dash.attach_rc(host.clone());
+
+    // Engage + push a right-roll, arm-gesture held — all through the WS surface.
+    dash.handle_command(&json!({ "cmd": "rc", "op": "engage", "target": "iuas-01" }));
+    dash.handle_command(&json!({
+        "cmd": "rc", "op": "input", "arm": true,
+        "channels": [2000, 1500, 1600, 1500, 65535, 65535, 65535, 65535],
+    }));
+    host.tick(0);
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let frame = loop {
+        if let Some(f) = rx.poll().unwrap() {
+            break f;
+        }
+        assert!(Instant::now() < deadline, "no frame reached the agent RC socket");
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    assert_eq!(frame.channels[0], 2000, "ch1 roll deflection arrived over the wire");
+    assert_eq!(frame.channels[2], 1600, "ch3 throttle arrived");
+    assert!(frame.flags.contains(RcFlags::ARM_GESTURE), "the held arm gesture rode the flag byte");
 }

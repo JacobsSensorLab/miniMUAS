@@ -6,6 +6,27 @@ use ndf_spark::{mint_instance, SparkEmitter};
 use uas_fleet_data::kinds::TelemetrySample;
 use uas_mavlink::BackendTelemetry;
 
+/// Nominal full-battery flight endurance, seconds.
+///
+/// TODO(strategy): a single conservative constant for the whole airframe
+/// class — NOT a real endurance model. Replace with a per-airframe endurance
+/// curve or the autopilot's own remaining-time estimate (ArduPilot
+/// `BATTERY_STATUS.time_remaining`) once that telemetry is plumbed. Only the
+/// PROVIDER STRATEGY's flight-time floor consults the derived estimate; with
+/// no strategy record published (today's default) it is never read, so the
+/// coarse constant cannot change current behavior.
+pub const NOMINAL_ENDURANCE_S: f64 = 900.0;
+
+/// A deliberately simple remaining-flight-time estimate from battery percent:
+/// `battery_fraction * NOMINAL_ENDURANCE_S` (linear discharge assumption).
+///
+/// This is the `flight_time_est_s` the agent feeds the provider strategy's
+/// snapshot ([`muas_contracts::strategy::QueueSnapshot`]). See
+/// [`NOMINAL_ENDURANCE_S`] for the modeling caveat.
+pub fn flight_time_est_s(battery_pct: f64) -> f64 {
+    (battery_pct.clamp(0.0, 100.0) / 100.0) * NOMINAL_ENDURANCE_S
+}
+
 /// Publisher clock, nanoseconds since the Unix epoch (the v2 `gps_time_ns()`
 /// placeholder wall clock until GPS/PPS time is wired into the stack).
 pub fn gps_time_ns() -> u64 {

@@ -138,6 +138,14 @@ pub const UNDERSTOOD_KINDS: &[KindSpec] = &[
         widgets: &["panel.video_tile"],
     },
     KindSpec {
+        kind: "rc",
+        description: "One vehicle's RC pilot-session status (RcStatus, \
+                      RC-CONTROL R2): engaged, source, seq-gap %, age, \
+                      failsafe state — the tile RC strip, the map manual \
+                      ring, and the Pilot surface's MANUAL banner.",
+        widgets: &["panel.rc_strip", "panel.pilot", "map.manual_ring"],
+    },
+    KindSpec {
         kind: "coord",
         description: "A vehicle's cooperative-coordination entries (peer, \
                       mode coop/coop-pending/unco, biases). Understood and \
@@ -295,6 +303,33 @@ pub const WIDGETS: &[WidgetSpec] = &[
                   run order (drag to reorder, split warnings), collapsed \
                   finished tail.",
         required_kind: "task_queue",
+        ready: true,
+    },
+    WidgetSpec {
+        id: "panel.rc_strip",
+        name: "RC status strip",
+        renders: "Per-tile RC session strip: engaged indicator, source, \
+                  rate/gap %, age, and color-coded failsafe state (manual \
+                  green, hold amber, rtl/e-stop red).",
+        required_kind: "rc",
+        ready: true,
+    },
+    WidgetSpec {
+        id: "panel.pilot",
+        name: "Pilot surface",
+        renders: "Manual-control panel: vehicle/broadcast selector, \
+                  engage/disengage, gamepad + keyboard stick input with live \
+                  crosshairs and channel bars, and a prominent E-STOP.",
+        required_kind: "rc",
+        ready: true,
+    },
+    WidgetSpec {
+        id: "map.manual_ring",
+        name: "Manual-control ring",
+        renders: "A distinct ring around vehicles under RC manual control \
+                  (driven by rc/status engaged), so the map shows who a pilot \
+                  is flying.",
+        required_kind: "rc",
         ready: true,
     },
     WidgetSpec {

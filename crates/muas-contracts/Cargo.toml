@@ -21,3 +21,8 @@ ndn-service-macro = { workspace = true }
 manifest = { workspace = true }
 render-contract = { workspace = true }
 ndf-core = { workspace = true }
+# Strategy records + evaluator (ROUND-3 §2): the agent ack path and the
+# dashboard dispatcher interpret these. Re-exported through `strategy` so the
+# dashboard reaches them without a dep of its own (its Cargo.toml is owned by
+# the RC surface).
+uas-fleet-strategy = { workspace = true }

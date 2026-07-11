@@ -45,6 +45,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use muas_contracts::services::{InvestigateRequest, RasterRequest, SensorRequest};
+use muas_contracts::strategy::{deny_code, deny_when, provider_decision, ProviderDecision, QueueSnapshot};
 use muas_contracts::tasks::{
     task_kind, task_origin, task_state, QueuedTaskInfo, TaskProgress, TaskQueueStatus,
 };
@@ -330,9 +331,14 @@ pub enum Submit {
     /// Pending depth limit reached.
     Full { depth: usize },
     /// The vehicle is flying the RTL ladder: work is never queued behind a
-    /// return-to-launch (POLICY HOOK, ROUND-3 §2: acceptance rules become
-    /// strategy-record-driven) — callers refuse busy, exactly v2.
+    /// return-to-launch. This is the provider strategy's default
+    /// `active-kind-in ["rtl"]` deny — callers refuse busy, exactly v2.
     RtlOwned,
+    /// The provider strategy denied the request with a stable `code` that is
+    /// neither RTL-owned nor queue-full: a battery / flight-time floor
+    /// (ROUND-3 §2 new capability), the busy-refusal posture (`accept=deny`),
+    /// or an unknown deny condition (fail-closed). Callers refuse with `code`.
+    Denied { code: String },
     /// The queue engine is disabled (`queue_enabled = false`): callers keep
     /// the legacy busy-refusal + direct-spawn semantics.
     Disabled,
@@ -346,23 +352,65 @@ pub fn submit(shared: &Arc<AgentShared>, params: TaskParams, origin: &'static st
         return Submit::Disabled;
     }
     let kind = params.kind();
+    // The provider strategy in force (ROUND-3 §2). With no record published
+    // this is the config-derived baseline, byte-for-byte today's behavior.
+    let strategy = shared.effective_provider();
     let est = params.estimate_s(shared);
+    // Snapshot battery under the backend lock BEFORE the queue/busy locks
+    // (lock ordering). `-1.0` is the backend's unknown-battery sentinel → the
+    // snapshot carries `None`, so a battery / flight-time floor over unknown
+    // state never fires (the evaluator's never-synthesize rule).
+    let battery_pct = {
+        let backend = lock(&shared.backend);
+        let raw = backend.as_dyn_ref().telemetry().battery_pct;
+        (raw >= 0.0).then_some(raw)
+    };
     let now = crate::telemetry::gps_time_ns();
     let mut q = lock(&shared.tasks);
     let mut busy = lock(&shared.busy);
-    if *busy == "rtl" {
-        return Submit::RtlOwned;
-    }
-    let idle = q.active.is_none() && busy.is_empty();
-    if !idle && q.pending.len() >= shared.queue_depth {
-        drop(busy);
-        shared.journal.event(
-            "task.refused",
-            serde_json::json!({ "kind": kind, "code": "queue-full",
-                                "depth": shared.queue_depth }),
-        );
-        return Submit::Full { depth: shared.queue_depth };
-    }
+    // Ask the strategy evaluator instead of the old hardcoded branches. The
+    // snapshot mirrors today's idle test (active-none && busy-empty ⇒ the
+    // active-kind is None and depth counts only pending); the busy label IS
+    // the ACTIVE task kind, so the default `active-kind-in ["rtl"]` deny
+    // fires the exact v2 RtlOwned refusal, and depth ≥ queue_depth is the
+    // exact v2 queue-full gate.
+    let was_rtl = *busy == "rtl";
+    let idle_now = q.active.is_none() && busy.is_empty();
+    let snapshot = QueueSnapshot {
+        active_kind: (!idle_now).then(|| {
+            if busy.is_empty() {
+                q.active.as_ref().map(|e| e.kind.to_string()).unwrap_or_default()
+            } else {
+                busy.clone()
+            }
+        }),
+        battery_pct,
+        depth: q.pending.len() as u32,
+        flight_time_est_s: battery_pct.map(crate::telemetry::flight_time_est_s),
+    };
+    let idle = match provider_decision(&strategy, &snapshot) {
+        ProviderDecision::Accept => true,
+        ProviderDecision::Queue { .. } => false,
+        ProviderDecision::Deny { code } => {
+            drop(busy);
+            shared.journal.event(
+                "task.refused",
+                serde_json::json!({ "kind": kind, "code": code.clone(),
+                                    "depth": snapshot.depth }),
+            );
+            // Map the deny code onto the caller-facing Submit shape, keeping
+            // the exact v2 pathways for the default strategy (rtl → RtlOwned,
+            // depth limit → Full); battery/flight-time/busy-posture denies are
+            // the new capability and refuse with the code.
+            return if code == deny_code::QUEUE_FULL {
+                Submit::Full { depth: strategy.queue_depth as usize }
+            } else if code == deny_when::ACTIVE_KIND_IN && was_rtl {
+                Submit::RtlOwned
+            } else {
+                Submit::Denied { code }
+            };
+        }
+    };
     let task_id = q.next_id();
     let entry = TaskEntry {
         task_id: task_id.clone(),
@@ -1330,5 +1378,187 @@ mod tests {
             .iter()
             .any(|l| l["kind"] == "task.aborted" && l["task_id"] == "tsk-2" && l["by"] == "ladder"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── strategy-driven ack path (ROUND-3 §2) ───────────────────────────────
+
+    use muas_contracts::strategy::{DenyCondition, ProviderStrategy};
+    use uas_fleet_node::flight_backend::FlightBackend;
+    use uas_mavlink::BackendTelemetry;
+
+    /// A sim backend that reports a chosen battery percent — the real sim
+    /// reports the `-1.0` "unknown" sentinel, so a provider strategy's
+    /// battery / flight-time floor needs a known estimate to fire on.
+    struct BatteryBackend {
+        inner: SimFlightBackend,
+        battery_pct: f64,
+    }
+    impl FlightBackend for BatteryBackend {
+        fn source(&self) -> &'static str {
+            self.inner.source()
+        }
+        fn position(&self) -> Option<(f64, f64, f64)> {
+            self.inner.position()
+        }
+        fn velocity_ne(&self) -> (f64, f64) {
+            self.inner.velocity_ne()
+        }
+        fn goto(&mut self, lat: f64, lon: f64, agl_m: f64, yaw_deg: Option<f64>) {
+            self.inner.goto(lat, lon, agl_m, yaw_deg)
+        }
+        fn at_target(&self, lat: f64, lon: f64, agl_m: f64, tol_m: f64) -> bool {
+            self.inner.at_target(lat, lon, agl_m, tol_m)
+        }
+        fn set_cruise_speed(&mut self, speed_m_s: f64) {
+            self.inner.set_cruise_speed(speed_m_s)
+        }
+        fn ensure_airborne(&mut self, agl_m: f64) -> bool {
+            self.inner.ensure_airborne(agl_m)
+        }
+        fn takeoff(&mut self, agl_m: f64) -> bool {
+            self.inner.takeoff(agl_m)
+        }
+        fn set_alt_bias(&mut self, bias_m: f64) {
+            self.inner.set_alt_bias(bias_m)
+        }
+        fn avoid_bias(&self) -> f64 {
+            self.inner.avoid_bias()
+        }
+        fn home(&self) -> Option<(f64, f64)> {
+            self.inner.home()
+        }
+        fn heading(&self) -> Option<f64> {
+            self.inner.heading()
+        }
+        fn attitude_deg(&self) -> Option<(f64, f64)> {
+            self.inner.attitude_deg()
+        }
+        fn rangefinder_m(&self) -> f64 {
+            self.inner.rangefinder_m()
+        }
+        fn rtl(&mut self) -> bool {
+            self.inner.rtl()
+        }
+        fn land(&mut self) -> bool {
+            self.inner.land()
+        }
+        fn hold(&mut self) -> bool {
+            self.inner.hold()
+        }
+        fn telemetry(&self) -> BackendTelemetry {
+            BackendTelemetry { battery_pct: self.battery_pct, ..self.inner.telemetry() }
+        }
+    }
+    impl crate::TickableBackend for BatteryBackend {
+        fn advance(&mut self, dt: f64) {
+            crate::TickableBackend::advance(&mut self.inner, dt)
+        }
+        fn takeoff_begin(&mut self, agl_m: f64) -> crate::TakeoffStart {
+            self.inner.takeoff_begin(agl_m)
+        }
+    }
+
+    /// Bench over a battery-reporting backend, with a customization hook.
+    fn bench_battery(
+        vehicle_id: &str,
+        battery_pct: f64,
+        customize: impl FnOnce(&mut AgentShared),
+    ) -> (Arc<AgentShared>, crate::SharedBackend) {
+        let (journal, _task) = crate::journal::spawn(vehicle_id, None, None, None);
+        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let backend: crate::SharedBackend = Arc::new(Mutex::new(Box::new(BatteryBackend {
+            inner: SimFlightBackend::new(ORIGIN.0, ORIGIN.1),
+            battery_pct,
+        })
+            as Box<dyn crate::TickableBackend>));
+        let mut shared = AgentShared::bench(vehicle_id, backend.clone(), journal, cmd_tx);
+        customize(&mut shared);
+        (Arc::new(shared), backend)
+    }
+
+    /// A published provider strategy governs the pending-depth gate: with the
+    /// strategy's `queue_depth = 1`, the 2nd request queues and the 3rd denies
+    /// queue-full — regardless of the config baseline (`queue_depth` 4 here).
+    #[tokio::test(start_paused = true)]
+    async fn provider_strategy_depth_limit_denies_queue_full() {
+        let (shared, _backend) = bench("iuas-60", None, |s| {
+            assert_eq!(s.queue_depth, DEFAULT_QUEUE_DEPTH, "config baseline is 4");
+            *lock(&s.provider_strategy) =
+                Some(ProviderStrategy { queue_depth: 1, ..ProviderStrategy::default() });
+        });
+        let svc = service(&shared);
+        assert!(svc.investigate(investigate_req(40.0, 3.0)).await.accepted, "idle starts");
+        assert_eq!(svc.investigate(investigate_req(50.0, 1.0)).await.code, "queued");
+        let third = svc.investigate(investigate_req(60.0, 1.0)).await;
+        assert!(!third.accepted, "strategy depth 1: third denies");
+        assert_eq!(third.code, "queue-full");
+        assert_eq!(lock(&shared.tasks).pending_len(), 1, "refused request never queued");
+        shared.abort.store(true, Ordering::Relaxed); // wind the bench down
+    }
+
+    /// The NEW capability: a provider strategy flight-time floor denies when
+    /// the battery-derived estimate is below it (135 s at 15 % vs a 180 s
+    /// floor). Deny conditions gate even an idle vehicle.
+    #[tokio::test(start_paused = true)]
+    async fn provider_strategy_flight_time_floor_denies_low_estimate() {
+        // 15 % → flight_time_est_s = 0.15 * 900 = 135 s, below the 180 s floor.
+        let (shared, _backend) = bench_battery("iuas-61", 15.0, |s| {
+            *lock(&s.provider_strategy) = Some(ProviderStrategy {
+                deny_when: vec![DenyCondition::flight_time_below_s(180.0)],
+                ..ProviderStrategy::default()
+            });
+        });
+        let svc = service(&shared);
+        let ack = svc.investigate(investigate_req(40.0, 1.0)).await;
+        assert!(!ack.accepted, "low flight-time reserve must refuse: {}", ack.detail);
+        assert_eq!(ack.code, "flight-time-below-s");
+        assert!(lock(&shared.busy).is_empty(), "denied request never occupied the vehicle");
+
+        // A healthy battery (90 % → 810 s) clears the same floor and accepts.
+        let (healthy, _backend) = bench_battery("iuas-62", 90.0, |s| {
+            *lock(&s.provider_strategy) = Some(ProviderStrategy {
+                deny_when: vec![DenyCondition::flight_time_below_s(180.0)],
+                ..ProviderStrategy::default()
+            });
+        });
+        let ack = service(&healthy).investigate(investigate_req(40.0, 1.0)).await;
+        assert!(ack.accepted, "healthy reserve accepts: {}", ack.detail);
+        healthy.abort.store(true, Ordering::Relaxed);
+    }
+
+    /// The SHIPPED reference provider record (`--strategy reference`) drives
+    /// the agent ack seam end to end: its `queue_depth = 1` queues one extra
+    /// interrogation and denies queue-full past it. (Its flight-time floor is
+    /// inert here — the sim reports unknown battery, so the floor never fires,
+    /// which is the never-synthesize rule doing its job.)
+    #[tokio::test(start_paused = true)]
+    async fn reference_provider_record_drives_the_ack_seam() {
+        let reference = muas_contracts::strategy::reference_active().unwrap().provider();
+        let (shared, _backend) = bench("iuas-64", None, |s| {
+            *lock(&s.provider_strategy) = Some(reference);
+        });
+        let svc = service(&shared);
+        assert!(svc.investigate(investigate_req(40.0, 1.0)).await.accepted, "idle starts");
+        assert_eq!(svc.investigate(investigate_req(50.0, 1.0)).await.code, "queued");
+        assert_eq!(svc.investigate(investigate_req(60.0, 1.0)).await.code, "queue-full");
+        shared.abort.store(true, Ordering::Relaxed);
+    }
+
+    /// Behavior-neutral proof: with NO strategy record (the default), the
+    /// effective provider is the config baseline (queue_depth from config,
+    /// deny only under RTL), so the ack path is byte-for-byte today's — the
+    /// existing queue suite above runs entirely on this path.
+    #[tokio::test(start_paused = true)]
+    async fn absent_strategy_is_the_config_baseline() {
+        let (shared, _backend) = bench("iuas-63", None, |s| s.queue_depth = 2);
+        let provider = shared.effective_provider();
+        assert_eq!(provider.queue_depth, 2, "baseline depth = config --queue-depth");
+        assert_eq!(
+            provider.deny_when,
+            vec![DenyCondition::active_kind_in(["rtl"])],
+            "the only default deny is Submit::RtlOwned"
+        );
+        assert_eq!(provider.accept, muas_contracts::strategy::AcceptMode::Queue);
+        shared.abort.store(true, Ordering::Relaxed);
     }
 }

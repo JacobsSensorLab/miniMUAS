@@ -12,4 +12,5 @@ pub mod policy;
 pub mod rc;
 pub mod sensors;
 pub mod services;
+pub mod strategy;
 pub mod tasks;

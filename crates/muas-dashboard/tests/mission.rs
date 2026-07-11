@@ -912,6 +912,9 @@ async fn frames_keep_flowing_while_the_investigate_call_hangs() {
         fn system_shutdown(&self, vehicle: String, _confirm: String) -> BoxFuture<CmdResult> {
             self.log(vehicle, "system/shutdown")
         }
+        fn rc_disengage(&self, vehicle: String) -> BoxFuture<CmdResult> {
+            self.log(vehicle, "rc_disengage")
+        }
     }
 
     let frame = |i: u32| format!("/muas/v3/mission/m/wuas-01/camera/cam0/frame/{}/{i}", 100 + i);

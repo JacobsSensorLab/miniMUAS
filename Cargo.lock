@@ -1993,6 +1993,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tracing",
+ "uas-fleet-strategy",
 ]
 
 [[package]]
@@ -2022,6 +2023,7 @@ dependencies = [
  "uas-console",
  "uas-fleet-data",
  "uas-flight",
+ "uas-rc",
 ]
 
 [[package]]
@@ -4535,6 +4537,16 @@ dependencies = [
  "uas-fleet-data",
  "uas-flight",
  "uas-mavlink",
+]
+
+[[package]]
+name = "uas-fleet-strategy"
+version = "0.1.0-alpha.0"
+dependencies = [
+ "ndf-apps",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

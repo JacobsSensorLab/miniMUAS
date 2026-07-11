@@ -2,6 +2,7 @@
 //! `run_dashboard.py` flags (plus the muas-agent UDP-face flags for the
 //! engine's point-to-point links).
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -46,6 +47,13 @@ pub struct DashConfig {
     /// first-telemetry-fix heuristic. Field path: manual survey entry; a
     /// pluggable positioning backend is a later increment.
     pub gcs: Option<(f64, f64)>,
+    /// RC-CONTROL R2 pilot-surface targets: `vid -> the agent's `--rc
+    /// listen:<addr>` UDP address` the dashboard's [`uas_rc::UdpRcSender`]
+    /// aims at (`--rc-target`). Empty = no vehicle is RC-reachable and the
+    /// Pilot surface stays inert. These frames travel exactly the pilot-node
+    /// path: raw 26-byte [`uas_rc::RcFrame`]s onto the agent's real RC
+    /// receiver socket — no dashboard-internal shortcut.
+    pub rc_targets: BTreeMap<String, SocketAddr>,
 }
 
 impl Default for DashConfig {
@@ -67,6 +75,7 @@ impl Default for DashConfig {
             run_name: String::new(),
             links: Vec::new(),
             gcs: None,
+            rc_targets: BTreeMap::new(),
         }
     }
 }
@@ -103,6 +112,14 @@ NETWORK (point-to-point UDP faces; repeatable):
     --vehicle <VID=LOCAL,REMOTE>  face to vehicle VID; routes /muas/v3/<VID>
     --forwarder <LOCAL,REMOTE>    face to an upstream forwarder; routes /muas/v3
     --link <LOCAL,REMOTE>         inbound-only face
+
+RC PILOT SURFACE (RC-CONTROL R2; repeatable):
+    --rc-target <VID=ADDR>        the agent's `--rc listen:<addr>` UDP address
+                                  the pilot surface aims its UdpRcSender at
+                                  (a bare host:port, or listen:host:port).
+                                  The dashboard sends raw uas-rc frames onto
+                                  that real RC receiver socket — no shortcut.
+    --rc-targets <VID=ADDR,..>    the same, several at once (comma-separated)
 
 MISSION:
     --confirm-count <N>        detections (within target_separation_m) needed
@@ -151,6 +168,32 @@ fn parse_addr(s: &str, flag: &str) -> Result<SocketAddr, String> {
 fn split_pair<'a>(s: &'a str, sep: char, flag: &str) -> Result<(&'a str, &'a str), String> {
     s.split_once(sep)
         .ok_or_else(|| format!("{flag}: expected '<..>{sep}<..>', got '{s}'"))
+}
+
+/// Parse one `VID=ADDR` RC target into the map. `ADDR` may carry a
+/// `listen:` prefix (symmetry with the agent's `--rc listen:<addr>`); a
+/// `spark:` prefix is refused (R2 rides the plain-UDP listen path, R1's
+/// default).
+fn parse_rc_target(spec: &str, flag: &str, out: &mut BTreeMap<String, SocketAddr>)
+    -> Result<(), String> {
+    let (vid, addr) = split_pair(spec, '=', flag)?;
+    let vid = vid.trim();
+    if vid.is_empty() {
+        return Err(format!("{flag}: empty vehicle id in '{spec}'"));
+    }
+    let addr = addr.trim();
+    let addr = match addr.split_once(':') {
+        Some(("listen", rest)) => rest,
+        Some(("spark", _)) => {
+            return Err(format!(
+                "{flag}: spark carriage is not wired in R2; use the plain-UDP \
+                 listen address (got '{addr}')"
+            ));
+        }
+        _ => addr,
+    };
+    out.insert(vid.to_string(), parse_addr(addr, flag)?);
+    Ok(())
 }
 
 /// Parse CLI args (without the program name).
@@ -240,6 +283,14 @@ pub fn parse_args(args: &[String]) -> Result<ParseOutcome, String> {
                     route: Some(muas_contracts::names::APP_PREFIX.to_string()),
                 });
             }
+            "--rc-target" => {
+                parse_rc_target(&next(arg, &mut it)?, arg, &mut config.rc_targets)?;
+            }
+            "--rc-targets" => {
+                for spec in next(arg, &mut it)?.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                    parse_rc_target(spec, arg, &mut config.rc_targets)?;
+                }
+            }
             "--link" => {
                 let value = next(arg, &mut it)?;
                 let (local, remote) = split_pair(&value, ',', arg)?;
@@ -314,5 +365,41 @@ mod tests {
         assert_eq!(c.iuas_ids, vec!["iuas-01".to_string(), "iuas-02".to_string()]);
         assert_eq!(c.links[0].route.as_deref(), Some("/muas/v3/wuas-01"));
         assert!(c.record_dir.is_none(), "empty --record-dir disables recording");
+    }
+
+    #[test]
+    fn rc_targets_parse_repeatable_and_listed() {
+        let ParseOutcome::Run(c) = parse_args(&args(&[
+            "--rc-target",
+            "iuas-02=127.0.0.1:14650",
+            "--rc-target",
+            "iuas-03=listen:127.0.0.1:14651",
+            "--rc-targets",
+            "wuas-01=127.0.0.1:14640, iuas-04=127.0.0.1:14652",
+        ]))
+        .unwrap() else {
+            panic!("run")
+        };
+        assert_eq!(c.rc_targets.len(), 4);
+        assert_eq!(c.rc_targets["iuas-02"], "127.0.0.1:14650".parse().unwrap());
+        assert_eq!(
+            c.rc_targets["iuas-03"],
+            "127.0.0.1:14651".parse().unwrap(),
+            "listen: prefix is stripped"
+        );
+        assert_eq!(c.rc_targets["wuas-01"], "127.0.0.1:14640".parse().unwrap());
+    }
+
+    #[test]
+    fn rc_targets_default_empty_and_reject_bad_specs() {
+        let ParseOutcome::Run(c) = parse_args(&[]).unwrap() else { panic!("run") };
+        assert!(c.rc_targets.is_empty(), "no flag: pilot surface inert");
+        assert!(parse_args(&args(&["--rc-target", "no-equals"])).is_err());
+        assert!(parse_args(&args(&["--rc-target", "iuas-02=nope"])).is_err());
+        assert!(
+            parse_args(&args(&["--rc-target", "iuas-02=spark:127.0.0.1:1"])).is_err(),
+            "spark carriage refused in R2"
+        );
+        assert!(parse_args(&args(&["--rc-target", "=127.0.0.1:1"])).is_err());
     }
 }

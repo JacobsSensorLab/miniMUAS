@@ -310,9 +310,15 @@ pub struct AgentShared {
     /// Accept-and-queue semantics on (`queue_enabled`, default). Off keeps
     /// the v2 busy-refusal behavior for raster/investigate/override.
     pub queue_enabled: bool,
-    /// Pending-depth limit (`queue-full` beyond it). POLICY HOOK (ROUND-3
-    /// §2): becomes strategy-record-driven.
+    /// Baseline pending-depth limit (`queue-full` beyond it) used when NO
+    /// provider strategy record is in force (see [`AgentShared::effective_provider`]).
     pub queue_depth: usize,
+    /// The active provider strategy (ROUND-3 §2): folded from the strategy
+    /// source at startup and swappable via [`AgentShared::reload_strategy`].
+    /// `None` = no record published → the ack path uses the config-derived
+    /// baseline, which is byte-for-byte today's hardcoded behavior. Behind a
+    /// mutex so a reload can swap it without restarting the agent.
+    pub provider_strategy: Mutex<Option<muas_contracts::strategy::ProviderStrategy>>,
     /// Freshest task-queue snapshot (served under `tasks/queue`).
     pub latest_tasks: Mutex<Option<Bytes>>,
     /// The v2 abort flag: raised by rtl/land/hold, cleared when a new task
@@ -387,6 +393,34 @@ pub struct AgentShared {
 }
 
 impl AgentShared {
+    /// The provider strategy the ack path interprets right now: the folded
+    /// record when one is in force, else the config-derived baseline
+    /// (`queue_depth` from config, everything else the crate default — which
+    /// reproduces today's hardcoded queue-engine behavior: accept-and-queue,
+    /// deny only under RTL, FIFO). Keeping the baseline config-derived (rather
+    /// than the crate default's fixed depth 4) is what makes "no strategy
+    /// published" byte-for-byte today's behavior for any `--queue-depth`.
+    pub fn effective_provider(&self) -> muas_contracts::strategy::ProviderStrategy {
+        lock(&self.provider_strategy).clone().unwrap_or_else(|| {
+            muas_contracts::strategy::ProviderStrategy {
+                queue_depth: self.queue_depth as u32,
+                ..Default::default()
+            }
+        })
+    }
+
+    /// Reload the active provider strategy from a source (the reload seam;
+    /// refresh-on-change by following a live chain is a deployment follow).
+    /// Swaps atomically under the mutex; `None` restores the config baseline.
+    pub fn reload_strategy(
+        &self,
+        source: Option<&muas_contracts::strategy::StrategySource>,
+    ) -> Result<(), String> {
+        let active = muas_contracts::strategy::load_active(source).map_err(|e| e.to_string())?;
+        *lock(&self.provider_strategy) = active.provider.map(|a| a.record);
+        Ok(())
+    }
+
     /// Smart-RTL home: the backend's own capture, or the agent-side capture
     /// from [`mission::ensure_airborne`].
     pub fn home(&self) -> Option<(f64, f64)> {
@@ -414,6 +448,7 @@ impl AgentShared {
             tasks: Mutex::new(queue::QueueState::default()),
             queue_enabled: true,
             queue_depth: queue::DEFAULT_QUEUE_DEPTH,
+            provider_strategy: Mutex::new(None),
             latest_tasks: Mutex::new(None),
             abort: std::sync::atomic::AtomicBool::new(false),
             operator_abort: std::sync::atomic::AtomicBool::new(false),
@@ -601,6 +636,27 @@ impl Agent {
             }
         };
 
+        // -- active service strategy (ROUND-3 §2) ----------------------------
+        // Fold the strategy source once at startup. `None` (no --strategy*)
+        // → today's behavior. The provider record (if any) governs the ack
+        // path; the dashboard folds the dispatch/requester records itself.
+        let active_strategy = muas_contracts::strategy::load_active(config.strategy.as_ref())
+            .map_err(|e| format!("strategy load: {e}"))?;
+        let provider_strategy = active_strategy.provider.as_ref().map(|a| a.record.clone());
+        journal.event(
+            "strategy.loaded",
+            serde_json::json!({
+                "source": match &config.strategy {
+                    None => "defaults".to_string(),
+                    Some(muas_contracts::strategy::StrategySource::Reference) => "reference".into(),
+                    Some(muas_contracts::strategy::StrategySource::ChainDir(dir)) =>
+                        format!("chain-dir:{}", dir.display()),
+                },
+                "provider": provider_strategy.is_some(),
+                "unspoken": active_strategy.unspoken.len(),
+            }),
+        );
+
         // -- shared state ----------------------------------------------------
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
         let shared = Arc::new(AgentShared {
@@ -611,6 +667,7 @@ impl Agent {
             tasks: Mutex::new(queue::QueueState::default()),
             queue_enabled: config.queue_enabled,
             queue_depth: config.queue_depth,
+            provider_strategy: Mutex::new(provider_strategy),
             latest_tasks: Mutex::new(None),
             abort: std::sync::atomic::AtomicBool::new(false),
             operator_abort: std::sync::atomic::AtomicBool::new(false),

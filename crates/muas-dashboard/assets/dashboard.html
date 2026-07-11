@@ -544,6 +544,67 @@ h3.sech .chev { display: inline-block; width: 14px; color: var(--cds-text-helper
 #catpop .row { color: var(--cds-text-secondary); margin-bottom: 3px; }
 #catpop .row b { color: var(--cds-text-primary); }
 #catpop .mono { font-family: var(--font-mono); }
+
+/* ---- RC pilot surface (RC-CONTROL R2) --------------------------------------- */
+.rcstrip {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-top: 8px; padding: 4px 6px; border-radius: 2px;
+  background: var(--cds-layer-01); border-left: 3px solid var(--cds-border-subtle);
+  font: 400 10px/1.4 var(--font-mono); color: var(--cds-text-secondary);
+}
+.rcstrip.rc-green  { border-left-color: #42be65; }
+.rcstrip.rc-amber  { border-left-color: #f1c21b; }
+.rcstrip.rc-red    { border-left-color: #fa4d56; }
+.rcstrip.rc-gray   { border-left-color: #6f6f6f; }
+.rcstrip .rcdot { width: 8px; height: 8px; border-radius: 50%; flex: none;
+  background: #6f6f6f; }
+.rcstrip.rc-green .rcdot { background: #42be65; }
+.rcstrip.rc-amber .rcdot { background: #f1c21b; }
+.rcstrip.rc-red   .rcdot { background: #fa4d56; }
+.rcstrip .rcstate { font-weight: 600; letter-spacing: .3px; text-transform: uppercase; }
+.rcstrip .rck { color: var(--cds-text-helper); }
+#pilotPanel { font-size: 12px; }
+#pilotPanel .prow { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+#pilotPanel select { flex: 1; height: 28px; background: var(--cds-field-01);
+  color: var(--cds-text-primary); border: none;
+  border-bottom: 1px solid var(--cds-border-strong); font: 400 12px var(--font-mono); }
+#pilotEngage { flex: 1; }
+.pilot-sticks { display: flex; gap: 12px; justify-content: center; margin: 8px 0; }
+.stickbox { position: relative; width: 92px; height: 92px; border-radius: 3px;
+  background: var(--cds-layer-01); border: 1px solid var(--cds-border-subtle); }
+.stickbox::before, .stickbox::after { content: ""; position: absolute;
+  background: var(--cds-border-subtle); }
+.stickbox::before { left: 50%; top: 4px; bottom: 4px; width: 1px; transform: translateX(-.5px); }
+.stickbox::after  { top: 50%; left: 4px; right: 4px; height: 1px; transform: translateY(-.5px); }
+.stickbox .dot { position: absolute; width: 12px; height: 12px; border-radius: 50%;
+  background: #4589ff; margin: -6px 0 0 -6px; transition: left .04s linear, top .04s linear; }
+.stickbox .lbl { position: absolute; bottom: 2px; left: 0; right: 0; text-align: center;
+  font: 400 9px var(--font-mono); color: var(--cds-text-helper); }
+.chbars { display: grid; grid-template-columns: auto 1fr auto; gap: 3px 6px;
+  align-items: center; margin: 8px 0; }
+.chbars .cn { font: 400 10px var(--font-mono); color: var(--cds-text-helper); }
+.chbars .cv { font: 400 10px var(--font-mono); color: var(--cds-text-secondary);
+  text-align: right; }
+.chbar { position: relative; height: 8px; background: var(--cds-layer-01);
+  border-radius: 4px; overflow: hidden; }
+.chbar > i { position: absolute; top: 0; bottom: 0; background: #4589ff;
+  left: 50%; width: 0; }
+#pilotEstop { width: 100%; height: 44px; margin-top: 8px; font-size: 15px;
+  font-weight: 700; letter-spacing: .5px; background: #da1e28; color: #fff;
+  border: none; border-radius: 3px; cursor: pointer; }
+#pilotEstop:disabled { background: #525252; color: #8d8d8d; cursor: not-allowed; }
+#pilotEstop.latched { background: #fff; color: #da1e28; border: 2px solid #da1e28;
+  animation: rcblink 1s steps(2) infinite; }
+@keyframes rcblink { 50% { opacity: .55; } }
+#pilotHint { font-size: 10px; color: var(--cds-text-helper); line-height: 1.5;
+  margin-top: 6px; }
+#pilotHint kbd { font-family: var(--font-mono); background: var(--cds-layer-02);
+  padding: 0 3px; border-radius: 2px; }
+#manualBanner { position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+  z-index: 40; display: none; padding: 4px 16px; border-radius: 3px;
+  background: #da1e28; color: #fff; font: 700 13px var(--font-mono);
+  letter-spacing: 1px; box-shadow: 0 2px 8px rgba(0,0,0,.5); }
+#manualBanner.on { display: block; }
 </style>
 </head>
 <body>
@@ -721,6 +782,7 @@ opportunistic: fire whenever the vehicle happens to pass within range.">
 
 <div id="mapwrap">
   <canvas id="map"></canvas>
+  <div id="manualBanner">⚑ MANUAL</div>
   <div id="mission-banner">
     <span><span class="k">frames</span><b id="mframes">0</b></span>
     <span><span class="k">leg</span><b id="mleg">–</b></span>
@@ -770,6 +832,36 @@ opportunistic: fire whenever the vehicle happens to pass within range.">
 <div id="right">
   <h3>Vehicles</h3>
   <div id="cards"></div>
+  <h3>Pilot <span id="pilotUnavail" class="cds-tag cds-tag--gray"
+    style="display:none" title="No vehicle was configured with --rc-target, so no aircraft is RC-reachable from this dashboard.">no RC targets</span></h3>
+  <div id="pilotPanel">
+    <div class="prow">
+      <select id="pilotVid" title="Target one vehicle, or Broadcast to every RC-reachable vehicle"></select>
+      <button class="cds-btn cds-btn--primary" id="pilotEngage">Engage</button>
+    </div>
+    <div class="prow" style="gap:12px">
+      <label style="display:flex;gap:6px;align-items:center;cursor:pointer;font-size:11px">
+        <input type="radio" name="pilotSrc" value="gamepad" checked> gamepad</label>
+      <label style="display:flex;gap:6px;align-items:center;cursor:pointer;font-size:11px"
+        title="Bench fallback — no gamepad required">
+        <input type="radio" name="pilotSrc" value="keyboard"> keyboard</label>
+      <span id="pilotGp" class="cds-tag cds-tag--gray" style="font-size:10px">no gamepad</span>
+    </div>
+    <div class="pilot-sticks">
+      <div class="stickbox" id="stickL"><div class="dot"></div>
+        <div class="lbl">yaw · thr</div></div>
+      <div class="stickbox" id="stickR"><div class="dot"></div>
+        <div class="lbl">roll · pitch</div></div>
+    </div>
+    <div class="chbars" id="pilotBars"></div>
+    <button id="pilotEstop" disabled>E-STOP</button>
+    <div id="pilotHint">
+      Hold <kbd>Space</kbd> to arm-gesture, <kbd>X</kbd> for e-stop.
+      Keyboard: <kbd>W</kbd>/<kbd>S</kbd> throttle, <kbd>A</kbd>/<kbd>D</kbd> yaw,
+      arrows pitch/roll. A live MANUAL banner shows on the map while engaged;
+      RTL/Land/Hold supersede RC.
+    </div>
+  </div>
   <h3>Video</h3>
   <div id="videos"></div>
   <h3>Commands</h3>
@@ -897,6 +989,7 @@ function dispatch(m){
   else if (m.type === "capabilities") onCaps(m);
   else if (m.type === "sensor_data") pushSensorData(m.item);
   else if (m.type === "task_queue") onTaskQueue(m);
+  else if (m.type === "rc") onRc(m);
   else if (m.type === "video_stats") onVideoStats(m);
   else if (m.type === "net"){ NETPREV = NET; NET = m; renderNetPanel(); }
   else if (m.type === "sim_anomalies"){
@@ -2422,6 +2515,12 @@ function draw(){
       ctx.beginPath(); ctx.arc(p[0], p[1], vs + 4, 0, 7); ctx.stroke();
       ctx.setLineDash([]);
     }
+    if (RCMAN.has(vid)){
+      // manual-control ring (RC-CONTROL R2): a solid red halo marks a vehicle
+      // a pilot is flying by hand, driven by rc/status engaged
+      ctx.strokeStyle = "#fa4d56"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(p[0], p[1], vs + 8, 0, 7); ctx.stroke();
+    }
     ctx.fillStyle = d.stale ? "#525252" : col;
     ctx.font = "12px 'IBM Plex Mono', monospace";
     ctx.fillText(`${vid} ${d.agl?.toFixed(1)??"–"}m${d.stale?" (stale)":""}`,
@@ -2862,6 +2961,7 @@ function onHello(m){
           title="clean sync + poweroff of the companion computer; refused while armed or mid-task"
           onclick="cmdShutdown('${vid}')">⏻ Power off companion</button>
       </div>
+      <div class="rcstrip rc-gray" id="rc-${vid}" style="display:none"></div>
       <div class="qstrip" id="queue-${vid}" style="display:none"></div>`;
     cards.appendChild(tile);
     // enable toggle
@@ -2914,6 +3014,13 @@ function onHello(m){
     Object.entries(m.capabilities).forEach(([v, sensors]) =>
       onCaps({vehicle:v, sensors, sensor_meta: SMETA[v]}));
   setRecUI(!!m.recording);
+  // RC pilot surface (RC-CONTROL R2): which vehicles are RC-reachable, plus
+  // the rc/status snapshot so the tile strips + map ring render immediately.
+  RCTARGETS = m.rc_targets || [];
+  initPilot();
+  RCSTAT = m.rc || {};
+  Object.entries(RCSTAT).forEach(([v, st]) => renderRcStrip(v, st));
+  refreshManualSet();
   renderLegend();
   syncMapCtl();
 }
@@ -3117,6 +3224,275 @@ function queueApplyServer(q, tasks, nowMs){
   return q || { optimistic: null, since: 0 };
 }
 // ---- end queue pure model ----
+
+// ========================= RC pilot surface (R2) ============================
+// ---- rc pure model (extracted by dash_rc_test.js) ----
+// Everything between these markers is pure (no DOM) — the scratchpad harness
+// extracts and unit-tests it under node (the dash_geom/dash_queue pattern).
+// AETR channel indices into the 8-wide RC_CHANNELS_OVERRIDE array, PINNED to
+// the uas-rc RcFrame wire layout: ch1..4 ride wire offsets 10/12/14/16, and
+// this is the order the backend RcHost forwards untouched (see rc.rs).
+const RC_CH = { roll: 0, pitch: 1, throttle: 2, yaw: 3 };
+const RC_CENTER = 1500, RC_MIN = 1000, RC_MAX = 2000, RC_IGNORE = 65535;
+// Centered flight axes; channels 5..8 left on the "ignore" sentinel.
+function rcCenterChannels(){
+  const ch = new Array(8).fill(RC_IGNORE);
+  ch[RC_CH.roll] = RC_CENTER; ch[RC_CH.pitch] = RC_CENTER;
+  ch[RC_CH.throttle] = RC_CENTER; ch[RC_CH.yaw] = RC_CENTER;
+  return ch;
+}
+// One stick axis in [-1,1] → PWM µs, with a symmetric deadzone rescaled so
+// the first movement past the zone starts just off center (no jump). invert
+// flips the sign (screen-down axes read as +pitch/+throttle when pushed up).
+function axisToUs(v, dead, invert){
+  dead = dead || 0;
+  if (invert) v = -v;
+  if (Math.abs(v) <= dead) v = 0;
+  else v = (v - Math.sign(v) * dead) / (1 - dead);
+  v = Math.max(-1, Math.min(1, v));
+  return Math.round(RC_CENTER + v * 500);
+}
+// Gamepad "standard" axes → AETR channels. Standard layout: axes[0]=left-x,
+// axes[1]=left-y, axes[2]=right-x, axes[3]=right-y. AETR: right-x→roll,
+// right-y→pitch, left-y→throttle, left-x→yaw (sticks-up = more).
+function gamepadToChannels(axes, dead){
+  dead = (dead == null) ? 0.06 : dead;
+  const a = axes || [];
+  const ch = rcCenterChannels();
+  ch[RC_CH.roll]     = axisToUs(a[2] || 0, dead, false);
+  ch[RC_CH.pitch]    = axisToUs(a[3] || 0, dead, true);
+  ch[RC_CH.throttle] = axisToUs(a[1] || 0, dead, true);
+  ch[RC_CH.yaw]      = axisToUs(a[0] || 0, dead, false);
+  return ch;
+}
+// Keyboard fallback → AETR channels. keys is a Set of held key names
+// (lower-cased letters + raw arrow codes). Full deflection while held.
+function keysToChannels(keys){
+  const ch = rcCenterChannels();
+  const h = k => keys.has(k);
+  const axis = (neg, pos) => (h(pos) ? 1 : 0) - (h(neg) ? 1 : 0);
+  ch[RC_CH.roll]     = RC_CENTER + axis("ArrowLeft", "ArrowRight") * 500;
+  ch[RC_CH.pitch]    = RC_CENTER + axis("ArrowDown", "ArrowUp") * 500;
+  ch[RC_CH.throttle] = RC_CENTER + axis("s", "w") * 500;
+  ch[RC_CH.yaw]      = RC_CENTER + axis("a", "d") * 500;
+  return ch;
+}
+// A Broadcast selector fans to every RC-reachable vehicle; any other value
+// targets that single id (mirrors uas-rc RcTarget selector semantics).
+function rcBroadcastTargets(sel, roster){
+  return sel === "broadcast" ? (roster || []).slice() : [sel];
+}
+// Failsafe state → strip color class: manual green, hold amber,
+// rtl/e-stop red, everything else grey.
+function rcStateClass(state){
+  if (state === "manual") return "rc-green";
+  if (state === "hold") return "rc-amber";
+  if (state === "rtl" || state === "emergency-stop") return "rc-red";
+  return "rc-gray";
+}
+// ---- end rc pure model ----
+
+let RCTARGETS = [];   // RC-reachable vehicle ids (from hello.rc_targets)
+let RCSTAT = {};      // vid -> latest RcStatus
+let RCMAN = new Set(); // vids the map draws a manual ring around (engaged)
+const PILOT = {        // local pilot-surface state
+  engaged: false, target: null, source: "gamepad", estop: false,
+  arm: false, keys: new Set(), timer: null,
+};
+
+// engaged set = every vehicle rc/status reports engaged (authoritative, from
+// the agent) unioned with our just-engaged local target (optimistic, so the
+// ring shows before the first status sample returns)
+function refreshManualSet(){
+  const set = new Set();
+  for (const [v, st] of Object.entries(RCSTAT)) if (st && st.engaged) set.add(v);
+  if (PILOT.engaged && PILOT.target)
+    for (const v of rcBroadcastTargets(PILOT.target, RCTARGETS)) set.add(v);
+  RCMAN = set;
+}
+
+function onRc(m){
+  RCSTAT[m.vehicle] = m.status;
+  renderRcStrip(m.vehicle, m.status);
+  refreshManualSet();
+}
+
+function renderRcStrip(vid, st){
+  const el = document.getElementById(`rc-${vid}`);
+  if (!el || !st) return;
+  const state = st.failsafe_state || "idle";
+  // idle + not engaged = nothing interesting; keep the strip hidden
+  if (!st.engaged && state === "idle"){ el.style.display = "none"; return; }
+  el.style.display = "";
+  el.className = "rcstrip " + rcStateClass(state);
+  const gap = (typeof st.seq_gap_pct === "number") ? st.seq_gap_pct.toFixed(1) : "–";
+  const age = (typeof st.age_ms === "number") ? `${st.age_ms}ms` : "–";
+  const src = st.source || "–";
+  el.innerHTML =
+    `<span class="rcdot"></span>` +
+    `<span class="rcstate">${qEsc(state)}</span>` +
+    `<span class="rck">${st.engaged ? "engaged" : "released"}</span>` +
+    `<span class="rck">gap</span>${gap}%` +
+    `<span class="rck">age</span>${age}` +
+    `<span class="rck">${qEsc(src)}</span>`;
+}
+
+// -- pilot surface controls --------------------------------------------------
+function initPilot(){
+  const sel = document.getElementById("pilotVid");
+  const unavail = document.getElementById("pilotUnavail");
+  const panel = document.getElementById("pilotPanel");
+  if (!sel) return;
+  if (!RCTARGETS.length){
+    unavail.style.display = "";
+    panel.style.opacity = ".5";
+    panel.style.pointerEvents = "none";
+    return;
+  }
+  unavail.style.display = "none";
+  panel.style.opacity = "";
+  panel.style.pointerEvents = "";
+  const opts = RCTARGETS.map(v => `<option value="${qEsc(v)}">${qEsc(v)}</option>`);
+  if (RCTARGETS.length > 1)
+    opts.unshift(`<option value="broadcast">Broadcast (all)</option>`);
+  sel.innerHTML = opts.join("");
+  renderPilotBars(rcCenterChannels());
+}
+
+function pilotHasGamepad(){
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  for (const p of pads) if (p && p.connected) return p;
+  return null;
+}
+
+function pilotSource(){
+  const r = document.querySelector('input[name="pilotSrc"]:checked');
+  return r ? r.value : "gamepad";
+}
+
+// one 50 Hz frame: read the active input, ship it, and mirror it live
+function pilotStep(){
+  if (!PILOT.engaged) return;
+  let channels, arm = false;
+  const src = pilotSource();
+  const pad = pilotHasGamepad();
+  document.getElementById("pilotGp").textContent =
+    pad ? `gamepad: ${pad.id.slice(0, 18)}` : "no gamepad";
+  if (src === "gamepad" && pad){
+    channels = gamepadToChannels(pad.axes);
+    arm = !!(pad.buttons[0] && pad.buttons[0].pressed);       // A = arm-hold
+    if (pad.buttons[1] && pad.buttons[1].pressed && !PILOT.estop) setEstop(true); // B = e-stop
+  } else {
+    channels = keysToChannels(PILOT.keys);
+    arm = PILOT.keys.has(" ");                                // Space = arm-hold
+  }
+  PILOT.arm = arm;
+  send({ cmd: "rc", op: "input", channels, arm, mode: 0 });
+  renderPilotSticks(channels);
+  renderPilotBars(channels);
+}
+
+function pilotEngage(){
+  const sel = document.getElementById("pilotVid");
+  if (!sel || !sel.value) return;
+  PILOT.engaged = true;
+  PILOT.target = sel.value;
+  PILOT.estop = false;
+  send({ cmd: "rc", op: "engage", target: sel.value });
+  document.getElementById("manualBanner").classList.add("on");
+  document.getElementById("pilotEngage").textContent = "Disengage";
+  document.getElementById("pilotEngage").classList.add("cds-btn--danger");
+  document.getElementById("pilotEstop").disabled = false;
+  sel.disabled = true;
+  refreshManualSet();
+  if (PILOT.timer) clearInterval(PILOT.timer);
+  PILOT.timer = setInterval(pilotStep, 20);   // 50 Hz browser stream
+}
+
+function pilotDisengage(){
+  if (!PILOT.engaged) return;
+  PILOT.engaged = false;
+  if (PILOT.timer){ clearInterval(PILOT.timer); PILOT.timer = null; }
+  send({ cmd: "rc", op: "disengage" });
+  setEstop(false);
+  PILOT.target = null;
+  document.getElementById("manualBanner").classList.remove("on");
+  const eng = document.getElementById("pilotEngage");
+  eng.textContent = "Engage"; eng.classList.remove("cds-btn--danger");
+  document.getElementById("pilotEstop").disabled = true;
+  document.getElementById("pilotVid").disabled = false;
+  renderPilotSticks(rcCenterChannels());
+  renderPilotBars(rcCenterChannels());
+  refreshManualSet();
+}
+
+function setEstop(on){
+  if (!PILOT.engaged) return;   // e-stop only means anything on an engaged session
+  PILOT.estop = on;
+  send({ cmd: "rc", op: "estop", on });
+  const b = document.getElementById("pilotEstop");
+  b.classList.toggle("latched", on);
+  b.textContent = on ? "CLEAR E-STOP" : "E-STOP";
+}
+
+function renderPilotSticks(ch){
+  const place = (id, xUs, yUs) => {
+    const box = document.getElementById(id);
+    if (!box) return;
+    const dot = box.querySelector(".dot");
+    const norm = us => us === RC_IGNORE ? 0 : (us - RC_CENTER) / 500;
+    const x = 50 + norm(xUs) * 42, y = 50 - norm(yUs) * 42;   // y up = +
+    dot.style.left = x + "%"; dot.style.top = y + "%";
+  };
+  place("stickL", ch[RC_CH.yaw], ch[RC_CH.throttle]);
+  place("stickR", ch[RC_CH.roll], ch[RC_CH.pitch]);
+}
+
+const PILOT_BARS = [["roll", RC_CH.roll], ["pitch", RC_CH.pitch],
+                    ["throttle", RC_CH.throttle], ["yaw", RC_CH.yaw]];
+function renderPilotBars(ch){
+  const host = document.getElementById("pilotBars");
+  if (!host) return;
+  host.innerHTML = PILOT_BARS.map(([name, idx]) => {
+    const us = ch[idx];
+    const n = us === RC_IGNORE ? 0 : (us - RC_CENTER) / 500;   // -1..1
+    const w = Math.abs(n) * 50, left = n >= 0 ? 50 : 50 - w;
+    return `<span class="cn">${name}</span>` +
+      `<span class="chbar"><i style="left:${left}%;width:${w}%"></i></span>` +
+      `<span class="cv">${us === RC_IGNORE ? "–" : us}</span>`;
+  }).join("");
+}
+
+// wire the pilot controls once the DOM exists
+(function wirePilot(){
+  const eng = document.getElementById("pilotEngage");
+  if (!eng) return;
+  eng.onclick = () => PILOT.engaged ? pilotDisengage() : pilotEngage();
+  document.getElementById("pilotEstop").onclick = () => setEstop(!PILOT.estop);
+  // switching target (or source) while engaged disengages first — no silent
+  // hand-off of manual authority between vehicles
+  document.getElementById("pilotVid").onchange = () => { if (PILOT.engaged) pilotDisengage(); };
+  document.querySelectorAll('input[name="pilotSrc"]').forEach(r =>
+    r.onchange = () => { PILOT.source = pilotSource(); });
+  // keyboard fallback: only while engaged AND not typing in a field
+  const typing = e => /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
+  window.addEventListener("keydown", e => {
+    if (!PILOT.engaged || typing(e)) return;
+    if (pilotSource() !== "keyboard" && e.key !== "x" && e.key !== "X") return;
+    if (e.key === "x" || e.key === "X"){ if (!PILOT.estop) setEstop(true); e.preventDefault(); return; }
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (["w","a","s","d"," ","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(k)){
+      PILOT.keys.add(k); e.preventDefault();
+    }
+  });
+  window.addEventListener("keyup", e => {
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    PILOT.keys.delete(k);
+  });
+  // closing the tab / losing the socket releases manual control (safety)
+  window.addEventListener("beforeunload", () => { if (PILOT.engaged) pilotDisengage(); });
+})();
+
 let QSTATUS = {};     // vid -> latest TaskQueueStatus (server truth)
 let QOPT = {};        // vid -> {optimistic: [ids]|null, since: ms}
 let MISSION_ID = "";  // current mission id (job → queue-task digest hint)

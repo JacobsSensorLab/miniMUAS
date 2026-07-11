@@ -139,6 +139,10 @@ pub trait Commander: Send + Sync {
     ) -> BoxFuture<CmdResult>;
     /// Authorized companion shutdown (`confirm` must equal the vehicle id).
     fn system_shutdown(&self, vehicle: String, confirm: String) -> BoxFuture<CmdResult>;
+    /// Release an engaged RC-over-NDN manual session (`rc_disengage`,
+    /// RC-CONTROL R2): the operator's explicit disengage from the pilot
+    /// surface. Refused `rc-not-engaged` when nothing is engaged.
+    fn rc_disengage(&self, vehicle: String) -> BoxFuture<CmdResult>;
 }
 
 /// Test commander: every call resolves to a preset result and is logged.
@@ -201,5 +205,8 @@ impl Commander for ScriptedCommander {
     }
     fn system_shutdown(&self, vehicle: String, _confirm: String) -> BoxFuture<CmdResult> {
         self.answer(vehicle, "system/shutdown")
+    }
+    fn rc_disengage(&self, vehicle: String) -> BoxFuture<CmdResult> {
+        self.answer(vehicle, "rc_disengage")
     }
 }

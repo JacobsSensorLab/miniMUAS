@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use muas_contracts::policy::{AglBounds, DEFAULT_MAX_RANGE_M};
+use muas_contracts::strategy::StrategySource;
 
 /// Which flight backend flies the vehicle.
 #[derive(Debug, Clone, PartialEq)]
@@ -210,9 +211,16 @@ pub struct AgentConfig {
     /// requests hitting a busy vehicle queue (`Ack.code="queued"`) instead
     /// of refusing busy. Off restores the v2 busy refusals.
     pub queue_enabled: bool,
-    /// Pending-depth limit (`queue-full` beyond it). POLICY HOOK (ROUND-3
-    /// §2): becomes strategy-record-driven; a plain constant until then.
+    /// Pending-depth limit (`queue-full` beyond it) when NO provider strategy
+    /// record is published — the baseline the crate-default provider strategy
+    /// reproduces. A published `ProviderStrategy` overrides it (ROUND-3 §2).
     pub queue_depth: usize,
+
+    // -- service strategy (ROUND-3 §2: strategies are records) --
+    /// Active-strategy source resolved at startup (`--strategy-chain <dir>` /
+    /// `--strategy reference`). `None` = crate defaults = today's behavior;
+    /// the loaded `ProviderStrategy` (if any) governs the ack path.
+    pub strategy: Option<StrategySource>,
 
     // -- journals --
     pub log_dir: Option<PathBuf>,
@@ -269,6 +277,7 @@ impl Default for AgentConfig {
             idle_policy: IdlePolicy::Hold,
             queue_enabled: true,
             queue_depth: crate::queue::DEFAULT_QUEUE_DEPTH,
+            strategy: None,
             log_dir: None,
             journal_chain: false,
             sensor_feed: crate::sensor::SensorFeedConfig::None,
@@ -347,6 +356,15 @@ TASK QUEUE:
     --queue-depth <N>          pending task depth limit (default 4); beyond it
                                requests refuse with code queue-full
     --no-queue                 disable accept-and-queue (v2 busy refusals)
+
+SERVICE STRATEGY (ROUND-3 §2; strategies are signed records, not code):
+    --strategy-chain <DIR>     fold every *.json strategy envelope in DIR into
+                               the active provider strategy the ack path
+                               interprets (queue depth, deny conditions incl.
+                               battery/flight-time floors). Absent = crate
+                               defaults = today's hardcoded behavior.
+    --strategy <reference|DIR> shortcut: 'reference' loads the shipped
+                               reference scenario; otherwise a chain dir
 
 SENSORS:
     --sensor-feed <S>          none (default) | synthetic — synthetic renders
@@ -515,6 +533,11 @@ pub fn parse_args(args: &[String]) -> Result<ParseOutcome, String> {
                     .ok_or_else(|| format!("--queue-depth: bad depth '{value}'"))?;
             }
             "--no-queue" => config.queue_enabled = false,
+            "--strategy-chain" => {
+                config.strategy =
+                    Some(StrategySource::ChainDir(PathBuf::from(next(arg, &mut it)?)));
+            }
+            "--strategy" => config.strategy = Some(StrategySource::parse(&next(arg, &mut it)?)),
             "--sensor-feed" => {
                 config.sensor_feed = match next(arg, &mut it)?.as_str() {
                     "none" => crate::sensor::SensorFeedConfig::None,

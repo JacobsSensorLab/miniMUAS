@@ -108,6 +108,14 @@ impl VehicleServiceImpl {
             Submit::RtlOwned => Ack::reject(&policy::PolicyRejection::Busy {
                 task: "rtl".to_string(),
             }),
+            // A provider-strategy deny (battery/flight-time floor, busy
+            // posture, or unknown condition fail-closed): refuse with the
+            // stable code, human reason in detail (a code, never an error —
+            // the command-lifecycle split).
+            Submit::Denied { code } => Ack::refuse(
+                code.clone(),
+                format!("request denied by provider strategy ({code})"),
+            ),
             Submit::Disabled => {
                 legacy_start();
                 Ack::ok_detail(started_detail)

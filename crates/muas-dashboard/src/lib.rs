@@ -31,6 +31,7 @@ pub mod mission;
 pub mod ndn;
 pub mod providers;
 pub mod raster;
+pub mod rc;
 pub mod server;
 
 use std::collections::HashMap;
@@ -66,6 +67,16 @@ fn now_s() -> f64 {
     hub::now_ns() as f64 / 1e9
 }
 
+/// Parse the pilot surface's WS target selector: `"broadcast"` → every
+/// RC-reachable vehicle; anything else → that single vehicle id.
+fn ws_rc_target(message: &Value) -> uas_rc::RcTarget {
+    match message.get("target").and_then(Value::as_str) {
+        Some("broadcast") | Some("Broadcast") => uas_rc::RcTarget::Broadcast,
+        Some(vid) => uas_rc::RcTarget::One(vid.to_string()),
+        None => uas_rc::RcTarget::Broadcast,
+    }
+}
+
 /// Everything the web layer, the pollers, and the action executor share.
 pub struct Dashboard {
     pub config: DashConfig,
@@ -78,6 +89,12 @@ pub struct Dashboard {
     /// Latest task-queue snapshot per vehicle (tile queue strip; rides the
     /// hello message so a fresh client renders the strip immediately).
     task_queues: Mutex<HashMap<String, Value>>,
+    /// Latest rc/status snapshot per vehicle (RC-CONTROL R2 pilot strip +
+    /// map manual ring; rides hello so a fresh client renders immediately).
+    rc_status: Mutex<HashMap<String, Value>>,
+    /// The RC pilot-surface send host — present only when `--rc-target`
+    /// wired at least one reachable vehicle (else the Pilot surface is inert).
+    rc: OnceLock<Arc<rc::RcHost>>,
     /// Per-vehicle video relay enable flags.
     video_flags: Mutex<HashMap<String, Arc<AtomicBool>>>,
     pub detector: Arc<dyn DetectionProvider>,
@@ -111,6 +128,8 @@ impl Dashboard {
             last_sample: Mutex::new(HashMap::new()),
             sensor_data: Mutex::new(Vec::new()),
             task_queues: Mutex::new(HashMap::new()),
+            rc_status: Mutex::new(HashMap::new()),
+            rc: OnceLock::new(),
             video_flags: Mutex::new(HashMap::new()),
             detector,
             commander,
@@ -133,6 +152,17 @@ impl Dashboard {
     /// endpoint. Idempotent; first attach wins.
     pub fn attach_sim(&self, info: Value, control: Arc<dyn SimControl>) {
         let _ = self.sim.set((info, control));
+    }
+
+    /// Attach the RC pilot-surface send host (RC-CONTROL R2). Idempotent;
+    /// first attach wins. Absent when no `--rc-target` was configured.
+    pub fn attach_rc(&self, host: Arc<rc::RcHost>) {
+        let _ = self.rc.set(host);
+    }
+
+    /// The RC pilot host, if the surface is configured.
+    pub fn rc_host(&self) -> Option<&Arc<rc::RcHost>> {
+        self.rc.get()
     }
 
     /// A fresh app consumer over the attached engine.
@@ -191,6 +221,13 @@ impl Dashboard {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
+        let rc_status: serde_json::Map<String, Value> = lock(&self.rc_status)
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        // Which vehicles the Pilot surface can drive (RC-reachable targets);
+        // empty = the surface renders read-only (status strip only).
+        let rc_targets: Vec<String> = self.rc.get().map(|h| h.vehicles()).unwrap_or_default();
         let mut hello = json!({
             "type": "hello",
             "vehicles": self.vehicles(),
@@ -199,6 +236,8 @@ impl Dashboard {
             "sensor_meta": sensor_meta,
             "sensor_data": *lock(&self.sensor_data),
             "task_queues": task_queues,
+            "rc": rc_status,
+            "rc_targets": rc_targets,
             "mission": m.hello_mission(),
             "recording": self.hub.is_recording(),
             // Where this surface describes ITSELF (ROUND-3 §3½): render
@@ -262,6 +301,27 @@ impl Dashboard {
         }
         self.hub.broadcast(&json!({
             "type": "task_queue",
+            "vehicle": vehicle,
+            "status": status,
+        }));
+        true
+    }
+
+    /// Store + broadcast one vehicle's rc/status snapshot (the ~4 Hz
+    /// `rc/status` poller feeds this — RC-CONTROL R2). Content dedup: an
+    /// unchanged status is silent (new WS clients get the stored copy via
+    /// hello). Returns whether a broadcast went out. Mirrors
+    /// [`on_task_queue`](Self::on_task_queue).
+    pub fn on_rc_status(&self, vehicle: &str, status: Value) -> bool {
+        {
+            let mut all = lock(&self.rc_status);
+            if all.get(vehicle) == Some(&status) {
+                return false;
+            }
+            all.insert(vehicle.to_string(), status.clone());
+        }
+        self.hub.broadcast(&json!({
+            "type": "rc",
             "vehicle": vehicle,
             "status": status,
         }));
@@ -498,6 +558,7 @@ impl Dashboard {
             "video" => self.cmd_video(message),
             "sensor" => self.cmd_sensor(message),
             "system" => self.cmd_system(message),
+            "rc" => self.cmd_rc(message),
             "sim" => self.cmd_sim(message),
             _ => {}
         }
@@ -867,6 +928,59 @@ impl Dashboard {
         });
     }
 
+    /// RC-CONTROL R2 pilot-surface ops (`{"cmd":"rc","op":…}`). Silently
+    /// inert when no `--rc-target` was configured. Frame carriage runs on
+    /// the host's own 50 Hz loop; these ops only steer it.
+    fn cmd_rc(self: &Arc<Self>, message: &Value) {
+        let Some(host) = self.rc.get().cloned() else { return };
+        let op = message.get("op").and_then(Value::as_str).unwrap_or("");
+        match op {
+            "engage" => {
+                let target = ws_rc_target(message);
+                let vids = host.engage(target);
+                if vids.is_empty() {
+                    self.emit_event(
+                        "rc.rejected",
+                        json!({ "reason": "no RC-reachable vehicle for target" }),
+                    );
+                } else {
+                    self.emit_event("rc.engaged", json!({ "vehicles": vids }));
+                }
+            }
+            "input" => {
+                let channels: Vec<i64> = message
+                    .get("channels")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_i64).collect())
+                    .unwrap_or_default();
+                let arm = message.get("arm").and_then(Value::as_bool).unwrap_or(false);
+                let mode = message.get("mode").and_then(Value::as_u64).unwrap_or(0) as u8;
+                host.set_input(rc::sanitize_channels(&channels), arm, mode);
+            }
+            "estop" => {
+                let on = message.get("on").and_then(Value::as_bool).unwrap_or(true);
+                host.estop(on);
+                self.emit_event("rc.estop", json!({ "on": on }));
+            }
+            "disengage" => {
+                let vids = host.disengage();
+                if !vids.is_empty() {
+                    self.emit_event("rc.disengaged", json!({ "vehicles": vids }));
+                }
+                // Release the agent-side session too (the explicit path; the
+                // silence ladder would release on its own from the stream
+                // stopping). Fire-and-forget per engaged vehicle.
+                for vid in vids {
+                    let dash = self.clone();
+                    tokio::spawn(async move {
+                        let _ = dash.commander.rc_disengage(vid).await;
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn cmd_system(self: &Arc<Self>, message: &Value) {
         let Some(vid) = self.vehicle_of(message) else { return };
         if message.get("command").and_then(Value::as_str) != Some("shutdown") {
@@ -973,7 +1087,14 @@ pub async fn start(
     ));
     let dash = Arc::new(Dashboard::new(config.clone(), detector, commander));
     dash.attach_engine(engine.clone(), cancel.clone());
-    let tasks = ndn::spawn_pollers(&dash, &engine, &cancel);
+    let mut tasks = ndn::spawn_pollers(&dash, &engine, &cancel);
+    // RC pilot surface (RC-CONTROL R2): build the send host over the
+    // configured targets and spawn its 50 Hz pacing loop.
+    if !config.rc_targets.is_empty() {
+        let host = rc::RcHost::new(&config.rc_targets);
+        dash.attach_rc(host.clone());
+        tasks.push(tokio::spawn(host.run(cancel.clone())));
+    }
 
     let listener =
         tokio::net::TcpListener::bind((config.http_host.as_str(), config.http_port))

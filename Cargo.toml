@@ -24,6 +24,7 @@ uas-flight = { path = "../uas-flight/crates/uas-flight" }
 uas-mavlink = { path = "../uas-flight/crates/uas-mavlink" }
 uas-fleet-data = { path = "../uas-fleet/crates/uas-fleet-data" }
 uas-fleet-node = { path = "../uas-fleet/crates/uas-fleet-node" }
+uas-fleet-strategy = { path = "../uas-fleet/crates/uas-fleet-strategy" }
 uas-rc = { path = "../uas-fleet/crates/uas-rc" }
 uas-console = { path = "../uas-console/crates/uas-console" }
 
