@@ -44,6 +44,7 @@ pub mod anomaly;
 pub mod control;
 pub mod fleet;
 pub mod metrics;
+pub mod nettap;
 pub mod run_config;
 pub mod verdict;
 

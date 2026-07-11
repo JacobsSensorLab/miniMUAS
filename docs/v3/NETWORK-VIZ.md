@@ -159,3 +159,31 @@ Phasing: R2a = line demotion to the overlay sub-layer + field rendering for
 the sim fabric's broadcast profile + namespace coloring on the heatmap
 counters we already export. R2b = span-fed traffic paths + data-centric
 ping. Phase 3 (real radio) unchanged.
+
+### R2a status: SHIPPED (2026-07-10)
+
+- **Fields (new default)**: per-node radial-gradient coverage/activity
+  fields, world-anchored through `toPx`; radius `10 + 9·log10(1+bps/1000)` m
+  clamped [10, 55], alpha `0.10 + 0.08·log10(1+kbps)` capped 0.34,
+  composited `lighter` so overlap (contention) blends brighter. Hue =
+  endpoint telemetry freshness (phase-1 semantics kept), or the namespace
+  color under the lens.
+- **Emission pulses**: expanding rings born at the emitter; cadence = the
+  measured emission rate (interests/s exported + data/s from counter
+  deltas) clamped to 3/s per node; the excess folds into field brightness
+  (`aggregateBoost`, cap +0.25) per the WATERLINE-INPUT ripple guidance.
+  Pulses visualize measured 1 Hz rates, not individual packets.
+- **Overlay bearers**: the phase-1 per-pair lines verbatim (health color,
+  marching dashes, mid-link stats) demoted to a thin squared-end
+  sub-layer, OFF by default, labeled as overlay in the legend.
+- **Namespace lens**: the deployment taps its own UDP bridge seams
+  (`muas-sim/src/nettap.rs` — the one place names are visible without
+  touching the fabric) and exports per-`(node, prefix)` rates on the same
+  `net` message (`prefixes` + `prefix_source`, additive keys). Grouping:
+  4 components under `/muas/…` (`/muas/v3/<subject>/<stream-head>` — the
+  semantic namespace), 3 elsewhere. Dashboard: top-K chips in the Network
+  panel; selecting one recolors/resizes fields+pulses from that prefix's
+  rates alone. A deployment that exports no `prefixes` disables the lens
+  and says so — nothing is synthesized.
+- Sub-layer toggles + the existing Network opacity live in Display;
+  legend adapts to the sub-layers and active lens.

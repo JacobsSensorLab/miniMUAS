@@ -625,6 +625,22 @@ impl VehicleService for VehicleServiceImpl {
         ack
     }
 
+    async fn rc_disengage(&self) -> Ack {
+        let _span = tracing::info_span!("service-invocation", op = "rc_disengage").entered();
+        // The RC task owns the session: raise the request flag and let it
+        // release on its next tick (override released, `rc-manual` busy
+        // cleared, `rc.released{reason:"operator"}` journaled, and a
+        // paused mission resumed via the queue kick).
+        let ack = if self.shared.rc_engaged.load(Ordering::Relaxed) {
+            self.shared.rc_disengage.store(true, Ordering::Relaxed);
+            Ack::ok_detail("rc disengage requested; override releasing")
+        } else {
+            Ack::refuse("rc-not-engaged", "no rc-over-ndn session is engaged")
+        };
+        self.journal_ack("rc_disengage", serde_json::json!({}), &ack);
+        ack
+    }
+
     async fn system_shutdown(&self, confirm: String) -> Ack {
         let span = tracing::info_span!("service-invocation", op = "system_shutdown");
         let gate = {

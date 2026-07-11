@@ -1954,6 +1954,7 @@ dependencies = [
  "uas-fleet-node",
  "uas-flight",
  "uas-mavlink",
+ "uas-rc",
 ]
 
 [[package]]
@@ -4555,6 +4556,14 @@ dependencies = [
  "thiserror",
  "tracing",
  "uas-flight",
+]
+
+[[package]]
+name = "uas-rc"
+version = "0.1.0-alpha.0"
+dependencies = [
+ "ndf-spark",
+ "tracing",
 ]
 
 [[package]]

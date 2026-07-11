@@ -358,6 +358,14 @@ pub trait VehicleService {
     async fn queue_reorder(&self, req: QueueReorderRequest) -> Ack;
     /// Live video stream control.
     async fn video_control(&self, req: VideoRequest) -> Ack;
+    /// Release an engaged RC-over-NDN manual session (RC-CONTROL R1,
+    /// additive): the agent releases the RC channel override, clears the
+    /// `rc-manual` busy claim, journals `rc.released`, and — when the
+    /// session had paused a mission task — resumes the queue. Refused
+    /// `rc-not-engaged` when no session is engaged. The stream-silence
+    /// failsafe ladder releases on its own; this op is the operator's
+    /// explicit disengage.
+    async fn rc_disengage(&self) -> Ack;
     /// Authorized companion shutdown; `confirm` must equal the vehicle id.
     async fn system_shutdown(&self, confirm: String) -> Ack;
 }

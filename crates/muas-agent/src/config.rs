@@ -60,6 +60,92 @@ impl IdlePolicy {
     }
 }
 
+/// RC-over-NDN receiver binding (`--rc`, RC-CONTROL R1; default off).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RcTransport {
+    /// Plain-UDP frame codec bound on this address (bench transport, no
+    /// sender identity).
+    Listen(SocketAddr),
+    /// ndf-spark binding bound on this address (SP-3 replay judging +
+    /// producer-instance admission).
+    Spark(SocketAddr),
+}
+
+impl RcTransport {
+    /// The `source` label published on rc/status and journaled on engage.
+    pub fn label(&self) -> String {
+        match self {
+            Self::Listen(addr) => format!("listen:{addr}"),
+            Self::Spark(addr) => format!("spark:{addr}"),
+        }
+    }
+}
+
+/// What an incoming RC stream may do to a vehicle whose queue is flying a
+/// mission task (`--rc-preempt`). POLICY HOOK (ROUND-3 §2): becomes a
+/// strategy record with the rest of the RC admission policy at R4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RcPreempt {
+    /// Refuse the engage (journaled) — the mission keeps the vehicle.
+    #[default]
+    Deny,
+    /// Suspend the active task through the queue's split machinery (its
+    /// remainder resumes when the RC session releases).
+    PauseMission,
+}
+
+impl RcPreempt {
+    /// Parse the `--rc-preempt` flag value.
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "deny" => Ok(Self::Deny),
+            "pause-mission" => Ok(Self::PauseMission),
+            other => Err(format!(
+                "--rc-preempt: expected deny|pause-mission, got '{other}'"
+            )),
+        }
+    }
+
+    /// The journaled policy name.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Deny => "deny",
+            Self::PauseMission => "pause-mission",
+        }
+    }
+}
+
+/// Everything the RC receiver task needs (`config.rc`, default `None`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RcConfig {
+    pub transport: RcTransport,
+    /// Admitted Spark producer instances (hex) — the R1 allow-configured
+    /// admission stub (`--rc-admission`); empty admits any stream. R4
+    /// replaces the list with AuthorityRecord `rc-control` grant checks.
+    pub admission: Vec<String>,
+    /// RC-vs-queue arbitration when a mission task is active.
+    pub preempt: RcPreempt,
+    /// Silence before the failsafe holds, ms (uas-rc default 500).
+    pub hold_after_ms: u64,
+    /// Silence before the failsafe RTLs + releases, ms (default 3000).
+    pub rtl_after_ms: u64,
+}
+
+impl RcConfig {
+    /// Defaults around a transport (CLI thresholds are the uas-rc ladder
+    /// defaults; embedders/tests may shorten them).
+    pub fn new(transport: RcTransport) -> Self {
+        let ladder = uas_rc::FailsafeConfig::default();
+        Self {
+            transport,
+            admission: Vec::new(),
+            preempt: RcPreempt::default(),
+            hold_after_ms: ladder.hold_after_ms,
+            rtl_after_ms: ladder.rtl_after_ms,
+        }
+    }
+}
+
 /// Service carrier hosting the vehicle service.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CarrierKind {
@@ -139,6 +225,13 @@ pub struct AgentConfig {
     /// ground truth fetched over the network).
     pub sensor_feed: crate::sensor::SensorFeedConfig,
 
+    // -- RC-over-NDN receiver (RC-CONTROL R1; `--rc`, default off) --
+    /// When set, the agent runs an RC receiver task bound per
+    /// [`RcTransport`]: admitted frames stream to the flight backend as
+    /// channel overrides, the uas-rc silence ladder maps to
+    /// hold/rtl/e-stop handling, and `rc/status` publishes latest-wins.
+    pub rc: Option<RcConfig>,
+
     // -- spark telemetry lane --
     /// Emit every telemetry sample as an ndf-spark Spark over UDP to this
     /// destination (the real_socket_twin binding).
@@ -179,6 +272,7 @@ impl Default for AgentConfig {
             log_dir: None,
             journal_chain: false,
             sensor_feed: crate::sensor::SensorFeedConfig::None,
+            rc: None,
             spark_udp: None,
             ndnsf_listen: None,
             ndnsf_peers: Vec::new(),
@@ -260,6 +354,19 @@ SENSORS:
                                anomaly ground truth, fetched over the network
                                (embedders pass a full SensorFeedConfig instead)
 
+RC OVER NDN (R1; default off):
+    --rc <T>                   RC receiver binding: listen:<udp addr> (plain
+                               frame codec) | spark:<udp addr> (ndf-spark,
+                               replay-judged + instance admission)
+    --rc-admission <A,B,..>    admitted spark producer instances (hex) —
+                               allow-configured stub; empty admits any
+                               (R4 replaces this with AuthorityRecord grants)
+    --rc-preempt <P>           RC engage vs an active mission task (requires
+                               the frame ARM_GESTURE flag either way):
+                               deny (default, journaled refusal) |
+                               pause-mission (suspend via the queue split
+                               machinery; resumes on RC release)
+
 JOURNALS / TELEMETRY LANES:
     --log-dir <DIR>            power-loss-safe JSONL journal directory
     --journal-chain            also mirror journal events into an ndf Block chain
@@ -303,6 +410,10 @@ pub fn parse_args(args: &[String]) -> Result<ParseOutcome, String> {
     let mut min_agl: Option<f64> = None;
     let mut max_agl: Option<f64> = None;
     let mut floor: Option<f64> = None;
+    // RC flags may arrive in any order; assembled after the loop.
+    let mut rc_transport: Option<RcTransport> = None;
+    let mut rc_admission: Vec<String> = Vec::new();
+    let mut rc_preempt: Option<RcPreempt> = None;
 
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -413,6 +524,28 @@ pub fn parse_args(args: &[String]) -> Result<ParseOutcome, String> {
                     }
                 };
             }
+            "--rc" => {
+                let value = next(arg, &mut it)?;
+                let (kind, addr) = split_pair(&value, ':', arg)?;
+                let addr = parse_addr(addr, arg)?;
+                rc_transport = Some(match kind {
+                    "listen" => RcTransport::Listen(addr),
+                    "spark" => RcTransport::Spark(addr),
+                    other => {
+                        return Err(format!(
+                            "--rc: expected listen:<addr>|spark:<addr>, got '{other}:..'"
+                        ))
+                    }
+                });
+            }
+            "--rc-admission" => {
+                rc_admission = next(arg, &mut it)?
+                    .split(',')
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect();
+            }
+            "--rc-preempt" => rc_preempt = Some(RcPreempt::parse(&next(arg, &mut it)?)?),
             "--log-dir" => config.log_dir = Some(PathBuf::from(next(arg, &mut it)?)),
             "--journal-chain" => config.journal_chain = true,
             "--spark-udp" => config.spark_udp = Some(parse_addr(&next(arg, &mut it)?, arg)?),
@@ -440,6 +573,19 @@ pub fn parse_args(args: &[String]) -> Result<ParseOutcome, String> {
     config.floor_agl_m = floor.unwrap_or(config.agl_bounds.min_agl_m.max(3.5));
     if config.carrier == CarrierKind::Ndnsf && config.ndnsf_listen.is_none() {
         return Err("--carrier ndnsf requires --ndnsf-listen (see --help)".to_string());
+    }
+    match rc_transport {
+        Some(transport) => {
+            config.rc = Some(RcConfig {
+                admission: rc_admission,
+                preempt: rc_preempt.unwrap_or_default(),
+                ..RcConfig::new(transport)
+            });
+        }
+        None if !rc_admission.is_empty() || rc_preempt.is_some() => {
+            return Err("--rc-admission/--rc-preempt require --rc (see --help)".to_string());
+        }
+        None => {}
     }
     Ok(ParseOutcome::Run(Box::new(config)))
 }
@@ -584,6 +730,55 @@ mod tests {
         assert_eq!(config.queue_depth, 2);
         assert!(parse_args(&args(&["--vehicle-id", "a", "--queue-depth", "0"])).is_err());
         assert!(parse_args(&args(&["--vehicle-id", "a", "--queue-depth", "soon"])).is_err());
+    }
+
+    #[test]
+    fn rc_flags_parse_and_default_off() {
+        assert_eq!(AgentConfig::default().rc, None, "RC defaults OFF");
+
+        let ParseOutcome::Run(config) = parse_args(&args(&[
+            "--vehicle-id",
+            "iuas-02",
+            "--rc",
+            "listen:127.0.0.1:14650",
+            "--rc-admission",
+            "aabb,ccdd",
+            "--rc-preempt",
+            "pause-mission",
+        ]))
+        .unwrap() else {
+            panic!("expected Run");
+        };
+        let rc = config.rc.expect("--rc enables the receiver");
+        assert_eq!(
+            rc.transport,
+            RcTransport::Listen("127.0.0.1:14650".parse().unwrap())
+        );
+        assert_eq!(rc.transport.label(), "listen:127.0.0.1:14650");
+        assert_eq!(rc.admission, vec!["aabb".to_string(), "ccdd".to_string()]);
+        assert_eq!(rc.preempt, RcPreempt::PauseMission);
+        assert_eq!(rc.hold_after_ms, 500, "uas-rc ladder defaults");
+        assert_eq!(rc.rtl_after_ms, 3000);
+
+        // Spark binding + implicit defaults (deny, allow-any).
+        let ParseOutcome::Run(config) =
+            parse_args(&args(&["--vehicle-id", "a", "--rc", "spark:0.0.0.0:14650"])).unwrap()
+        else {
+            panic!("expected Run");
+        };
+        let rc = config.rc.unwrap();
+        assert!(matches!(rc.transport, RcTransport::Spark(_)));
+        assert_eq!(rc.preempt, RcPreempt::Deny, "preempt defaults to deny");
+        assert!(rc.admission.is_empty(), "admission stub defaults allow-any");
+
+        // Refusals: bad shapes, and RC sub-flags without --rc.
+        assert!(parse_args(&args(&["--vehicle-id", "a", "--rc", "serial:/dev/tty"])).is_err());
+        assert!(parse_args(&args(&["--vehicle-id", "a", "--rc-preempt", "deny"])).is_err());
+        assert!(
+            parse_args(&args(&["--vehicle-id", "a", "--rc", "listen:127.0.0.1:1",
+                "--rc-preempt", "sometimes"]))
+            .is_err()
+        );
     }
 
     #[test]

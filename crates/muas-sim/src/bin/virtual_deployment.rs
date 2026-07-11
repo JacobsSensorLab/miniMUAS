@@ -418,11 +418,82 @@ async fn serve_anomaly_truth(
     .map_err(|e| format!("serve anomaly truth: {e}"))
 }
 
+/// Reduce the bridge taps' cumulative per-`(node, prefix)` counters to the
+/// 1 Hz `prefixes` rate table (namespace-lens feed): rates against the
+/// previous sample, then the top-`K` prefixes by current traffic
+/// (cumulative bytes tie-break, so chips stay stable while idle). Every
+/// surviving prefix keeps ALL its node rows — per-node attribution is what
+/// the field/pulse coloring needs.
+fn prefix_rate_table(
+    samples: &[muas_sim::nettap::PrefixSample],
+    prev: &mut HashMap<(String, String), (muas_sim::nettap::PrefixCounters, tokio::time::Instant)>,
+    now: tokio::time::Instant,
+    k: usize,
+) -> Vec<Value> {
+    let r1 = |x: f64| (x * 10.0).round() / 10.0;
+    let mut rows: Vec<(String, f64, u64, Value)> = Vec::new();
+    for s in samples {
+        let key = (s.node.clone(), s.prefix.clone());
+        let c = s.counters;
+        let (out_bps, in_bps, ihz, dhz) = match prev.get(&key) {
+            Some((p, t0)) => {
+                let dt = now.duration_since(*t0).as_secs_f64().max(1e-3);
+                (
+                    c.out_bytes.saturating_sub(p.out_bytes) as f64 * 8.0 / dt,
+                    c.in_bytes.saturating_sub(p.in_bytes) as f64 * 8.0 / dt,
+                    c.out_interests.saturating_sub(p.out_interests) as f64 / dt,
+                    c.out_data.saturating_sub(p.out_data) as f64 / dt,
+                )
+            }
+            None => (0.0, 0.0, 0.0, 0.0),
+        };
+        prev.insert(key, (c, now));
+        rows.push((
+            s.prefix.clone(),
+            out_bps + in_bps,
+            c.out_bytes + c.in_bytes,
+            json!({
+                "node": s.node,
+                "prefix": s.prefix,
+                "rate_out_bps": r1(out_bps),
+                "rate_in_bps": r1(in_bps),
+                "rate_out_interests_hz": r1(ihz),
+                "rate_out_data_hz": r1(dhz),
+                "out_bytes": c.out_bytes,
+                "in_bytes": c.in_bytes,
+            }),
+        ));
+    }
+    // Rank prefixes across nodes; keep the top-K prefixes' rows.
+    let mut totals: HashMap<&str, (f64, u64)> = HashMap::new();
+    for (prefix, bps, bytes, _) in &rows {
+        let t = totals.entry(prefix).or_insert((0.0, 0));
+        t.0 += bps;
+        t.1 += bytes;
+    }
+    let mut ranked: Vec<(&str, (f64, u64))> = totals.into_iter().collect();
+    ranked.sort_by(|a, b| {
+        b.1 .0
+            .partial_cmp(&a.1 .0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.1 .1.cmp(&a.1 .1))
+            .then(a.0.cmp(b.0))
+    });
+    let keep: std::collections::HashSet<String> =
+        ranked.iter().take(k).map(|(p, _)| (*p).to_string()).collect();
+    rows.into_iter()
+        .filter(|(prefix, _, _, _)| keep.contains(prefix))
+        .map(|(_, _, _, row)| row)
+        .collect()
+}
+
 /// 1 Hz network + sim exporter: read every vehicle/console node's per-link
 /// face counters off the fabric (`RunningSimulation::face_stats`), compute
-/// byte/interest rates against the previous sample, publish the snapshot
-/// to `/netstats` and the dashboard hub (`type: "net"`), and broadcast the
-/// anomaly ground truth (`type: "sim_anomalies"`) when it changes.
+/// byte/interest rates against the previous sample, fold in the bridge
+/// taps' per-prefix rates (`prefixes` — the namespace lens), publish the
+/// snapshot to `/netstats` and the dashboard hub (`type: "net"`), and
+/// broadcast the anomaly ground truth (`type: "sim_anomalies"`) when it
+/// changes.
 ///
 /// Layering note (docs/v3/NETWORK-VIZ.md): these are FABRIC-layer truths
 /// exported by the deployment that owns the fabric. Radio-layer truths
@@ -442,6 +513,7 @@ async fn net_export_loop(
     // static link profiles this is visualization truth only; when
     // geometry-based propagation lands, this same value feeds it.
     gcs: (f64, f64),
+    prefix_stats: Arc<muas_sim::nettap::PrefixStats>,
     cancel: CancellationToken,
 ) {
     let label_of = |raw: usize| -> Option<String> {
@@ -459,6 +531,10 @@ async fn net_export_loop(
         sources.push((c, "gcs".to_string()));
     }
     let mut prev: HashMap<(String, String), (u64, u64, tokio::time::Instant)> = HashMap::new();
+    let mut prev_prefix: HashMap<
+        (String, String),
+        (muas_sim::nettap::PrefixCounters, tokio::time::Instant),
+    > = HashMap::new();
     let mut last_anomalies = Vec::new();
     let mut interval = tokio::time::interval(Duration::from_secs(1));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -501,8 +577,15 @@ async fn net_export_loop(
                 }));
             }
         }
-        let snapshot =
-            muas_sim::control::net_snapshot(now_ns() as f64 / 1e9, &profile, gcs, links);
+        let prefixes =
+            prefix_rate_table(&prefix_stats.snapshot(), &mut prev_prefix, now, 8);
+        let snapshot = muas_sim::control::net_snapshot(
+            now_ns() as f64 / 1e9,
+            &profile,
+            gcs,
+            links,
+            prefixes,
+        );
         *net.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot.clone();
         dash.hub.broadcast(&snapshot);
 
@@ -1197,6 +1280,7 @@ async fn run(args: Args) -> Result<i32, String> {
         net.clone(),
         link_profile_json,
         gcs,
+        fleet.prefix_stats.clone(),
         deploy_cancel.child_token(),
     ));
     println!("[4/4] up.");

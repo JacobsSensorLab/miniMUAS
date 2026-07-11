@@ -23,6 +23,7 @@ pub mod coord;
 pub mod journal;
 pub mod mission;
 pub mod queue;
+pub mod rc;
 pub mod sensor;
 pub mod service_impl;
 pub mod telemetry;
@@ -51,7 +52,10 @@ use uas_fleet_node::flight_backend::{FlightBackend, SimFlightBackend, SIM_TICK_S
 use uas_flight::deconflict::DeconflictionEnvelope;
 use uas_mavlink::MavlinkFlightBackend;
 
-pub use config::{AgentConfig, CarrierKind, Endpoint, IdlePolicy, ParseOutcome, UdpLink, HELP};
+pub use config::{
+    AgentConfig, CarrierKind, Endpoint, IdlePolicy, ParseOutcome, RcConfig, RcPreempt,
+    RcTransport, UdpLink, HELP,
+};
 pub use journal::JournalHandle;
 pub use sensor::{SensorFeed, SensorFeedConfig, SensorPose, SyntheticFeed};
 
@@ -97,7 +101,36 @@ pub trait TickableBackend: FlightBackend + Send {
     /// The caller (see [`mission::ensure_airborne`]) then polls telemetry
     /// with short locks, keeping the v2 climb-stall and settle ladder.
     fn takeoff_begin(&mut self, agl_m: f64) -> TakeoffStart;
+
+    /// Stream one RC frame's channel overrides to the vehicle (RC-CONTROL
+    /// R1). Channels carry RC_CHANNELS_OVERRIDE wire semantics end-to-end
+    /// (`65535` = ignore, `0` = release that channel, `1000..=2000` = raw
+    /// PWM µs). MAVLink: a thin link passthrough. Sim: channels 1-4 map to
+    /// a kinematic velocity/yaw response so SITL-less tests observe real
+    /// motion. `false` = the backend refused (link down / no default impl).
+    fn rc_override(&mut self, _channels: [u16; 8]) -> bool {
+        false
+    }
+
+    /// Release RC channel authority back to the autopilot / RC radio
+    /// (MAVLink: the all-zeros `RC_CHANNELS_OVERRIDE` release form; sim:
+    /// re-target the current position, i.e. stop responding to sticks).
+    fn rc_release(&mut self) -> bool {
+        false
+    }
 }
+
+/// Sim RC kinematics: full stick deflection commands this ground speed.
+const RC_SIM_MAX_SPEED_M_S: f64 = 4.0;
+/// Sim RC kinematics: full throttle deflection commands this climb rate.
+const RC_SIM_CLIMB_M_S: f64 = 1.5;
+/// Sim RC kinematics: full yaw deflection turns this fast.
+const RC_SIM_YAW_RATE_DEG_S: f64 = 90.0;
+/// Sim RC kinematics: each override projects the commanded velocity this
+/// far ahead as a goto target — frames at stream rate keep re-projecting
+/// (velocity-like response); a stream that stops leaves at most this many
+/// seconds of drift before the sim settles on the last target.
+const RC_SIM_LOOKAHEAD_S: f64 = 1.0;
 
 impl TickableBackend for SimFlightBackend {
     fn advance(&mut self, dt: f64) {
@@ -112,6 +145,48 @@ impl TickableBackend for SimFlightBackend {
         } else {
             TakeoffStart::Refused("sim climb did not settle")
         }
+    }
+
+    /// Kinematic RC response: channels 1-4 (AETR, 1500 µs = center) map to
+    /// an earth-frame velocity + yaw-rate command — ch1 roll → east, ch2
+    /// pitch → north, ch3 throttle → climb, ch4 yaw → heading rate. Each
+    /// frame re-projects the commanded velocity [`RC_SIM_LOOKAHEAD_S`]
+    /// ahead as a goto target, so a 50 Hz stream flies like velocity
+    /// control and tests can assert real motion without SITL. Non-PWM
+    /// values (`0` release / `65535` ignore) read as centered.
+    fn rc_override(&mut self, channels: [u16; 8]) -> bool {
+        let Some((lat, lon, agl)) = FlightBackend::position(self) else {
+            return false;
+        };
+        let norm = |ch: u16| -> f64 {
+            if (1000..=2000).contains(&ch) {
+                (f64::from(ch) - 1500.0) / 500.0
+            } else {
+                0.0
+            }
+        };
+        let (east, north, climb, yaw) =
+            (norm(channels[0]), norm(channels[1]), norm(channels[2]), norm(channels[3]));
+        let heading = FlightBackend::heading(self).unwrap_or(0.0)
+            + yaw * RC_SIM_YAW_RATE_DEG_S * RC_SIM_LOOKAHEAD_S;
+        let dn = north * RC_SIM_MAX_SPEED_M_S * RC_SIM_LOOKAHEAD_S;
+        let de = east * RC_SIM_MAX_SPEED_M_S * RC_SIM_LOOKAHEAD_S;
+        let dz = climb * RC_SIM_CLIMB_M_S * RC_SIM_LOOKAHEAD_S;
+        FlightBackend::set_cruise_speed(self, north.hypot(east) * RC_SIM_MAX_SPEED_M_S);
+        FlightBackend::goto(
+            self,
+            lat + dn / uas_flight::geo::EARTH_M_PER_DEG_LAT,
+            lon + de / uas_flight::geo::m_per_deg_lon(lat),
+            agl + dz,
+            Some(heading.rem_euclid(360.0)),
+        );
+        true
+    }
+
+    fn rc_release(&mut self) -> bool {
+        // Sticks no longer speak for the vehicle: settle where it stands
+        // (the autopilot-side analogue of the all-zeros release frame).
+        FlightBackend::hold(self)
     }
 }
 
@@ -156,6 +231,16 @@ impl TickableBackend for MavlinkFlightBackend {
             return TakeoffStart::Refused("NAV_TAKEOFF refused");
         }
         TakeoffStart::Climbing { home }
+    }
+
+    /// Thin passthrough — RC frames carry RC_CHANNELS_OVERRIDE semantics
+    /// end-to-end, so the channels go to the wire untouched.
+    fn rc_override(&mut self, channels: [u16; 8]) -> bool {
+        MavlinkFlightBackend::rc_channels_override(self, channels).is_ok()
+    }
+
+    fn rc_release(&mut self) -> bool {
+        MavlinkFlightBackend::release_rc_override(self).is_ok()
     }
 }
 
@@ -278,6 +363,16 @@ pub struct AgentShared {
     /// Freshest tasked-capture result (v2 `SensorCaptureResult` JSON dict)
     /// served under `sensor/last`.
     pub latest_sensor: Mutex<Option<Bytes>>,
+    /// An RC-over-NDN session is engaged (busy label `rc-manual`, or the
+    /// session is riding its own failsafe). Written by the RC task; read
+    /// by the `rc_disengage` service gate.
+    pub rc_engaged: std::sync::atomic::AtomicBool,
+    /// Raised by the `rc_disengage` service op; consumed (swap) by the RC
+    /// task, which releases the override and journals `rc.released`.
+    pub rc_disengage: std::sync::atomic::AtomicBool,
+    /// Freshest rc/status sample (served under `rc/status`); `None` until
+    /// the RC receiver task runs (RC configured off ⇒ never published).
+    pub latest_rc: Mutex<Option<Bytes>>,
     /// The pluggable sensor feed (`None` = no sensors fitted).
     pub sensor_feed: Option<Arc<dyn sensor::SensorFeed>>,
     /// Mission-artifact publisher (present iff a sensor feed is fitted).
@@ -338,6 +433,9 @@ impl AgentShared {
             fallback_home: Mutex::new(None),
             latest_video: Mutex::new(None),
             latest_sensor: Mutex::new(None),
+            rc_engaged: std::sync::atomic::AtomicBool::new(false),
+            rc_disengage: std::sync::atomic::AtomicBool::new(false),
+            latest_rc: Mutex::new(None),
             sensor_feed: None,
             frames: None,
             video_session: Mutex::new(None),
@@ -538,6 +636,9 @@ impl Agent {
             fallback_home: Mutex::new(None),
             latest_video: Mutex::new(None),
             latest_sensor: Mutex::new(None),
+            rc_engaged: std::sync::atomic::AtomicBool::new(false),
+            rc_disengage: std::sync::atomic::AtomicBool::new(false),
+            latest_rc: Mutex::new(None),
             sensor_feed,
             frames,
             video_session: Mutex::new(None),
@@ -582,7 +683,7 @@ impl Agent {
         let node = engine.app_node(cancel.child_token());
         let mut serve_guards = Vec::new();
         type ReadLatest = fn(&AgentShared) -> Option<Bytes>;
-        let streams: [(&str, ReadLatest); 7] = [
+        let streams: [(&str, ReadLatest); 8] = [
             ("telemetry/live", |s| lock(&s.latest_telemetry).clone()),
             ("telemetry/state", |s| lock(&s.latest_state).clone()),
             ("search/status", |s| lock(&s.latest_search).clone()),
@@ -590,6 +691,7 @@ impl Agent {
             ("video/live", |s| lock(&s.latest_video).clone()),
             ("sensor/last", |s| lock(&s.latest_sensor).clone()),
             (names::TASK_QUEUE_STREAM, |s| lock(&s.latest_tasks).clone()),
+            (names::RC_STATUS_STREAM, |s| lock(&s.latest_rc).clone()),
         ];
         for (stream, read) in streams {
             let name: Name = names::vehicle_stream(&config.vehicle_id, stream)
@@ -719,6 +821,14 @@ impl Agent {
                     }
                 }
                 .instrument(mission.clone()),
+            ));
+        }
+
+        // -- RC-over-NDN receiver task (RC-CONTROL R1; `--rc`, default off) ------
+        if let Some(rc_config) = config.rc.clone() {
+            tasks.push(tokio::spawn(
+                rc::run_rc_task(shared.clone(), rc_config, cancel.clone())
+                    .instrument(mission.clone()),
             ));
         }
 

@@ -9,6 +9,7 @@
 pub mod anomaly;
 pub mod names;
 pub mod policy;
+pub mod rc;
 pub mod sensors;
 pub mod services;
 pub mod tasks;

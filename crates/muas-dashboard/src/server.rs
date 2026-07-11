@@ -32,6 +32,7 @@ pub fn router(dash: Arc<Dashboard>) -> Router {
         .route("/artifact", get(artifact))
         .route("/instrument.json", get(instrument))
         .route("/views", get(views))
+        .route("/catalog.json", get(catalog))
         .with_state(dash)
 }
 
@@ -287,4 +288,12 @@ async fn instrument(State(dash): State<Arc<Dashboard>>) -> Response {
 /// `/views`: the latest Binder-rendered track + tile outputs per vehicle.
 async fn views(State(dash): State<Arc<Dashboard>>) -> Json<Value> {
     Json(dash.lens.views())
+}
+
+/// `/catalog.json`: the surface catalog (ROUND-3 §3½) — this dashboard's
+/// typed self-description: understood WS kinds, surface-native widgets,
+/// and the uas-console render contracts it binds through. Assembled
+/// server-side from the registries in [`crate::catalog`].
+async fn catalog(State(dash): State<Arc<Dashboard>>) -> Json<Value> {
+    Json(crate::catalog::catalog(&dash.vehicles()))
 }

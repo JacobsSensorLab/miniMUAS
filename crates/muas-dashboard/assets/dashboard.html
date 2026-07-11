@@ -490,7 +490,60 @@ h3.sech .chev { display: inline-block; width: 14px; color: var(--cds-text-helper
 #dispPanel .row output { font: 400 11px var(--font-mono);
   color: var(--cds-text-primary); text-align: right; }
 #dispPanel input[type=range] { width: 100%; accent-color: var(--cds-interactive); }
+#dispPanel input[type=checkbox] { justify-self: end;
+  accent-color: var(--cds-interactive); }
 #estimate .statline { display: block; }
+
+/* ---- network panel: namespace lens chips ------------------------------------ */
+#nschips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: var(--sp-02); }
+.nschip {
+  display: inline-flex; align-items: center; gap: 5px; height: 20px;
+  padding: 0 var(--sp-03); border: 1px solid var(--cds-border-subtle);
+  border-radius: 10px; background: var(--cds-layer-01);
+  color: var(--cds-text-secondary); font-size: 11px; letter-spacing: .32px;
+  cursor: pointer; max-width: 100%;
+}
+.nschip:hover { background: var(--cds-layer-02); }
+.nschip.on {
+  background: var(--cds-layer-selected-inverse); color: var(--cds-text-inverse);
+  border-color: transparent;
+}
+.nschip .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+.nschip .rate { font-family: var(--font-mono); font-size: 10px; opacity: .75; }
+.nschip .pfx { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#netnote { font-size: 11px; letter-spacing: .32px; color: var(--cds-text-helper);
+  line-height: 1.4; }
+
+/* ---- catalog panel (surface self-description, read-only this round) --------- */
+#catsearch {
+  width: 100%; height: 26px; padding: 0 var(--sp-03); margin-bottom: var(--sp-03);
+  background: var(--cds-field-01); color: var(--cds-text-primary);
+  border: none; border-bottom: 1px solid var(--cds-border-strong);
+  border-radius: 0; font: 400 11px var(--font-mono);
+}
+#catsearch::placeholder { color: var(--cds-text-placeholder); }
+#catalogPanel h5 { font-size: 11px; font-weight: 600; letter-spacing: .32px;
+  color: var(--cds-text-secondary); margin: var(--sp-03) 0 var(--sp-02); }
+#catalogPanel h5 .ct { font-family: var(--font-mono); font-weight: 400;
+  color: var(--cds-text-helper); }
+.catrow {
+  display: flex; justify-content: space-between; align-items: center; gap: 6px;
+  background: var(--cds-layer-01); padding: 3px var(--sp-03); margin-bottom: 2px;
+  font-size: 11px; letter-spacing: .32px; color: var(--cds-text-secondary);
+  cursor: pointer;
+}
+.catrow:hover { background: var(--cds-layer-02); color: var(--cds-text-primary); }
+.catrow .cid { font-family: var(--font-mono); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.catrow .ctag { flex: none; font-size: 9px; padding: 0 5px; border-radius: 8px;
+  background: var(--cds-layer-02); color: var(--cds-text-helper); }
+.catrow .ctag.refuse { background: #520408; color: #ff8389; }
+#catpop { position: fixed; z-index: 50; display: none; max-width: 280px;
+  background: var(--cds-layer-01); border: 1px solid var(--cds-border-subtle);
+  padding: var(--sp-03) var(--sp-05); font: 400 11px/1.5 var(--font-sans); }
+#catpop .row { color: var(--cds-text-secondary); margin-bottom: 3px; }
+#catpop .row b { color: var(--cds-text-primary); }
+#catpop .mono { font-family: var(--font-mono); }
 </style>
 </head>
 <body>
@@ -509,7 +562,7 @@ h3.sech .chev { display: inline-block; width: 14px; color: var(--cds-text-helper
   <button class="cds-btn cds-btn--ghost" id="sensorsBtn"
     title="Sensor coverage from each vehicle's advertised sensor_meta: nadir cameras show the ground footprint quad, forward cameras a FoV cone with shaded D/R/I bands, microphones their reach">Sensors on</button>
   <button class="cds-btn cds-btn--ghost" id="netBtn"
-    title="Fabric links between nodes: active link profile, live flow rates, drops (1 Hz from the deployment)">Network off</button>
+    title="Fabric truth as a MEDIUM: per-node coverage/activity fields + attributable emission pulses (1 Hz from the deployment); point-to-point lines survive only on the off-by-default overlay-bearers sub-layer">Network off</button>
   <button class="cds-btn cds-btn--ghost" id="imageryBtn">Imagery on</button>
   <span class="cds-tag cds-tag--red" id="conn">offline</span>
 </header>
@@ -721,8 +774,12 @@ opportunistic: fire whenever the vehicle happens to pass within range.">
   <div id="videos"></div>
   <h3>Commands</h3>
   <div id="cmdlog"></div>
+  <h3>Network</h3>
+  <div id="netPanel"></div>
   <h3>Display</h3>
   <div id="dispPanel"></div>
+  <h3>Catalog</h3>
+  <div id="catalogPanel"></div>
 </div>
 
 <!-- panel resize grips + collapse edge tabs -->
@@ -769,6 +826,9 @@ opportunistic: fire whenever the vehicle happens to pass within range.">
 
 <!-- task-queue chip details popover (queue strip; taskpop pattern, panel-side) -->
 <div id="qpop"></div>
+
+<!-- catalog entry detail popover (manifest-powered help seed) -->
+<div id="catpop"></div>
 
 <script>
 "use strict";
@@ -838,7 +898,7 @@ function dispatch(m){
   else if (m.type === "sensor_data") pushSensorData(m.item);
   else if (m.type === "task_queue") onTaskQueue(m);
   else if (m.type === "video_stats") onVideoStats(m);
-  else if (m.type === "net") NET = m;
+  else if (m.type === "net"){ NETPREV = NET; NET = m; renderNetPanel(); }
   else if (m.type === "sim_anomalies"){
     simAnoms = m.items || [];
     if (selAnom && !simAnoms.some(a => a.id === selAnom)) selAnom = null;
@@ -1190,12 +1250,32 @@ function dropTasking(req){
 // additive key) — sensors are dynamic; nothing airframe-specific lives here.
 let showSensors = true;
 let SMETA = {};               // vid -> sensor_meta object (or null)
-// ---------- network layer (phase 1): fabric links + live flow ----------
-// NET is the deployment's 1 Hz snapshot: per-link ndn-sim face counters +
-// the active link profile. Phases 2/3 (span-derived path traces, native
-// radio telemetry) ride the same message — see docs/v3/NETWORK-VIZ.md.
+// ---------- network layer (Revision 2a): draw the medium, not the link ----------
+// NET is the deployment's 1 Hz snapshot: per-link ndn-sim face counters,
+// the active link profile, and (when the deployment taps its bridges)
+// per-prefix rates for the namespace lens. Rendering doctrine
+// (docs/v3/NETWORK-VIZ.md Revision 2): broadcast media render as FIELDS
+// (coverage/activity per node, contention = overlap), emissions as brief
+// attributable pulses; the phase-1 per-pair lines survive verbatim on the
+// toggleable, off-by-default "overlay bearers" sub-layer — a line is an
+// overlay/unicast bearer, never the medium.
 let showNet = false;
 let NET = null;
+let NETPREV = null;           // previous snapshot (data-rate deltas)
+let NETNS = "all";            // namespace lens selection ("all" | a prefix)
+const NETPULSES = {};         // node -> {next, rings:[bornS]} pulse state
+const NETSUB_KEY = "muas3.netsub";
+const NETSUB = { fields: true, pulses: true, overlay: false };
+(function loadNetSub(){
+  try {
+    const s = JSON.parse(localStorage.getItem(NETSUB_KEY) || "{}");
+    for (const k of Object.keys(NETSUB))
+      if (typeof s[k] === "boolean") NETSUB[k] = s[k];
+  } catch (e) {}
+})();
+function saveNetSub(){
+  try { localStorage.setItem(NETSUB_KEY, JSON.stringify(NETSUB)); } catch (e) {}
+}
 let GCS = null;               // hello.gcs {lat,lon,source:"manual"} (--gcs)
 // ---------- simulation plane (virtual deployments only) ----------
 let SIM = null;               // hello.sim capability object
@@ -1245,7 +1325,10 @@ function resetUIState(){
   drones = {}; targets = []; UNCONF = []; mapEvents = []; sensorData = [];
   hoverEvt = null; plan = null;
   TASKINGS = []; lastEvtT = 0; closeTaskPop();
-  SMETA = {}; NET = null; GCS = null; simAnoms = []; selAnom = null;
+  SMETA = {}; NET = null; NETPREV = null; GCS = null;
+  simAnoms = []; selAnom = null;
+  for (const k of Object.keys(NETPULSES)) delete NETPULSES[k];
+  renderNetPanel();
   covTrack = []; gcsHome = null;
   QSTATUS = {}; QOPT = {}; MISSION_ID = "";
   qpop.style.display = "none";
@@ -1689,52 +1772,171 @@ const llOf = o => (o && typeof o.lat === "number" && typeof o.lon === "number")
   ? [o.lat, o.lon] : null;
 const gcsLL = () =>
   llOf(GCS) || llOf(NET && NET.gcs) || gcsHome;
-function drawNet(){
-  if (!showNet || !NET || DISP.op.net <= 0) return;
-  ctx.save(); ctx.globalAlpha = DISP.op.net;
-  // Aggregate the deployment's DIRECTED per-face counters into one line
-  // per node pair; activity = both directions summed.
-  const pairs = {};
-  for (const l of (NET.links || [])){
-    const key = [l.from, l.to].sort().join("|");
-    const e = pairs[key] = pairs[key] ||
-      { a: l.from, b: l.to, bps: 0, ihz: 0, drops: 0 };
-    e.bps += l.rate_out_bps || 0;
-    e.ihz += l.rate_out_interests_hz || 0;
-    e.drops += l.out_drops || 0;
+// ---- net field pure model (extracted by dash_net_test.js) ----
+// Everything between these markers is pure math over the NET snapshots —
+// the scratchpad harness extracts and unit-tests it under node (the
+// dash_geom/dash_filter/dash_queue harness pattern).
+// Namespace palette: Carbon categoricals, deliberately DISJOINT from the
+// vehicle PALETTE so a lensed field never impersonates a vehicle color.
+const NS_PALETTE = ["#33b1ff", "#ff7eb6", "#6fdc8c", "#f1c21b",
+                    "#a56eff", "#08bdba", "#ff832b", "#d4bbff"];
+// deterministic prefix → color (stable across snapshots and sessions)
+function nsColor(prefix){
+  let h = 0;
+  for (let i = 0; i < prefix.length; i++)
+    h = (h * 31 + prefix.charCodeAt(i)) >>> 0;
+  return NS_PALETTE[h % NS_PALETTE.length];
+}
+// short operator-facing label for a measured prefix
+const nsLabel = prefix =>
+  prefix.startsWith("/muas/v3/") ? prefix.slice("/muas/v3/".length) : prefix;
+// Per-node activity from the DIRECTED links array: bps = traffic the node
+// sent + traffic sent toward it (what its patch of medium carries);
+// emitHz = interests/s (exported rate) + data/s (delta of the cumulative
+// out_data counter against the previous snapshot, dtS apart).
+function nodeActivity(links, prevLinks, dtS){
+  const prev = {};
+  for (const l of (prevLinks || [])) prev[`${l.from}|${l.to}`] = l;
+  const act = {};
+  const at = id => act[id] = act[id] || { bps: 0, emitHz: 0 };
+  for (const l of (links || [])){
+    const out = l.rate_out_bps || 0;
+    at(l.from).bps += out;
+    at(l.to).bps += out;
+    let dataHz = 0;
+    const p = prev[`${l.from}|${l.to}`];
+    if (p && dtS > 0 && (l.out_data || 0) >= (p.out_data || 0))
+      dataHz = ((l.out_data || 0) - (p.out_data || 0)) / dtS;
+    at(l.from).emitHz += (l.rate_out_interests_hz || 0) + dataHz;
   }
+  return act;
+}
+// Namespace lens: the same per-node shape, restricted to ONE exported
+// prefix (the deployment's per-prefix rate table).
+function prefixActivity(prefixes, ns){
+  const act = {};
+  for (const e of (prefixes || [])){
+    if (e.prefix !== ns) continue;
+    const a = act[e.node] = act[e.node] || { bps: 0, emitHz: 0 };
+    a.bps += (e.rate_out_bps || 0) + (e.rate_in_bps || 0);
+    a.emitHz += (e.rate_out_interests_hz || 0) + (e.rate_out_data_hz || 0);
+  }
+  return act;
+}
+// Chip ranking: prefixes by current traffic, cumulative bytes tie-break
+// (so chips stay stable while a namespace idles).
+function topPrefixes(prefixes, k){
+  const by = {};
+  for (const e of (prefixes || [])){
+    const b = by[e.prefix] = by[e.prefix] || { prefix: e.prefix, bps: 0, bytes: 0 };
+    b.bps += (e.rate_out_bps || 0) + (e.rate_in_bps || 0);
+    b.bytes += (e.out_bytes || 0) + (e.in_bytes || 0);
+  }
+  return Object.values(by)
+    .sort((a, b) => (b.bps - a.bps) || (b.bytes - a.bytes) ||
+                    (a.prefix < b.prefix ? -1 : 1))
+    .slice(0, k);
+}
+// Field geometry: radius/alpha grow with the LOG of recent traffic,
+// clamped — an idle node keeps a small presence disc (the medium exists
+// even when quiet), a busy one a wide bright glow, and no volume of
+// traffic can white out the map.
+function fieldRadiusM(bps){
+  return Math.max(10, Math.min(55, 10 + 9 * Math.log10(1 + bps / 1000)));
+}
+function fieldAlpha(bps){
+  return Math.min(0.34, 0.10 + 0.08 * Math.log10(1 + bps / 1000));
+}
+// Emissions: attributable pulses up to PULSE_MAX_HZ per node; above that
+// per-event rendering is visual static (WATERLINE-INPUT ripple guidance:
+// render coverage steady-state, aggregate high-rate emissions), so the
+// excess folds into steady field intensity instead.
+const PULSE_MAX_HZ = 3;
+function pulseCadenceHz(emitHz){
+  return emitHz > 0 ? Math.min(emitHz, PULSE_MAX_HZ) : 0;
+}
+function aggregateBoost(emitHz){
+  if (emitHz <= PULSE_MAX_HZ) return 0;
+  return Math.min(0.25, 0.06 * Math.log2(emitHz / PULSE_MAX_HZ + 1));
+}
+// ---- end net pure model ----
+const rgba = (hex, a) => {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${
+    Math.max(0, Math.min(1, a))})`;
+};
+// staleness hue for a node's field (same semantics phase 1 gave lines:
+// counters say volume, telemetry freshness says whether the node's patch
+// of fabric is alive — a silent node with fresh telemetry is healthy-idle)
+function netHealthColor(id){
+  const age = ageOf(id);
+  return age === null ? "#6f6f6f"
+    : age < 4 ? "#42be65" : age < 10 ? "#f1c21b" : "#fa4d56";
+}
+// shared per-frame inputs for both net passes (medium + overlays)
+function netFrame(){
+  if (!showNet || !NET || DISP.op.net <= 0) return null;
   const gll = gcsLL();
   const posOf = id => {
     if (id === "gcs") return gll ? toPx(gll[0], gll[1]) : null;
     const d = drones[id];
     return (d && hasFix(d) && d.lat !== undefined) ? toPx(d.lat, d.lon) : null;
   };
+  const usingNs = NETNS !== "all" && (NET.prefixes || []).length > 0;
+  const act = usingNs
+    ? prefixActivity(NET.prefixes, NETNS)
+    : nodeActivity(NET.links, NETPREV && NETPREV.links,
+        NETPREV ? Math.max((NET.t || 0) - (NETPREV.t || 0), 0.2) : 0);
+  return { act, posOf, usingNs, gll };
+}
+// PASS 1 — the medium, under every other layer: soft coverage/activity
+// fields, additively composited so overlap (contention) blends brighter.
+function drawNetMedium(){
+  const f = netFrame();
+  if (!f || !NETSUB.fields) return;
+  ctx.save();
+  ctx.globalAlpha = DISP.op.net;
+  ctx.globalCompositeOperation = "lighter";
+  for (const [id, a] of Object.entries(f.act)){
+    const p = f.posOf(id);
+    if (!p) continue;
+    const rp = mToPxr(fieldRadiusM(a.bps));
+    if (rp < 4 || rp > 5000) continue;
+    const col = f.usingNs ? nsColor(NETNS) : netHealthColor(id);
+    const alpha = fieldAlpha(a.bps) + aggregateBoost(a.emitHz);
+    const g = ctx.createRadialGradient(p[0], p[1], 0, p[0], p[1], rp);
+    g.addColorStop(0, rgba(col, alpha));
+    g.addColorStop(0.65, rgba(col, alpha * 0.5));
+    g.addColorStop(1, rgba(col, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(p[0], p[1], rp, 0, 7); ctx.fill();
+  }
+  ctx.restore();
+}
+const PULSE_LIFE_S = 1.1;      // ring expansion lifetime
+// PASS 2 — above the entity layers: emission pulses, the (off-by-default)
+// overlay bearers, per-node rate labels, the GCS marker, the profile chip.
+function drawNetOver(){
+  const f = netFrame();
+  if (!f) return;
+  ctx.save(); ctx.globalAlpha = DISP.op.net;
   ctx.font = "10px 'IBM Plex Mono', monospace";
-  for (const e of Object.values(pairs)){
-    const pa = posOf(e.a), pb = posOf(e.b);
-    if (!pa || !pb) continue;
-    const ageA = ageOf(e.a), ageB = ageOf(e.b);
-    const age = (ageA === null || ageB === null) ? null : Math.max(ageA, ageB);
-    const col = age === null ? "#6f6f6f"
-      : age < 4 ? "#42be65" : age < 10 ? "#f1c21b" : "#fa4d56";
-    ctx.strokeStyle = col + "99";
-    ctx.lineWidth = lw(1 + Math.min(3.5, Math.log10(1 + e.bps / 1000)));
-    if (e.bps > 200){
-      // data-trace: dashes march along the link while traffic flows
-      ctx.setLineDash([7,5]);
-      ctx.lineDashOffset = -((Date.now() / 40) % 12);
+  if (NETSUB.overlay) drawNetOverlay(f);
+  if (NETSUB.pulses) drawNetPulses(f);
+  if (NETSUB.fields){
+    // per-node throughput label under the field's owner
+    for (const [id, a] of Object.entries(f.act)){
+      const p = f.posOf(id);
+      if (!p) continue;
+      const kb = a.bps >= 1000 ? (a.bps / 1000).toFixed(0) + " kb/s"
+        : a.bps.toFixed(0) + " b/s";
+      ctx.fillStyle = "#c6c6c6";
+      ctx.fillText(`${kb} · ${a.emitHz.toFixed(0)}/s`, p[0] + 8, p[1] + 22);
     }
-    ctx.beginPath(); ctx.moveTo(pa[0], pa[1]); ctx.lineTo(pb[0], pb[1]); ctx.stroke();
-    ctx.setLineDash([]); ctx.lineDashOffset = 0;
-    const kb = e.bps >= 1000 ? (e.bps / 1000).toFixed(0) + " kb/s"
-      : e.bps.toFixed(0) + " b/s";
-    ctx.fillStyle = "#c6c6c6";
-    ctx.fillText(`${kb} · ${e.ihz.toFixed(0)} i/s${e.drops ? ` · ${e.drops} drop` : ""}`,
-      (pa[0] + pb[0]) / 2 + 5, (pa[1] + pb[1]) / 2 - 5);
   }
   // GCS node marker, world-anchored (zoom-scaled like every icon)
-  if (gll){
-    const g = toPx(gll[0], gll[1]);
+  if (f.gll){
+    const g = toPx(f.gll[0], f.gll[1]);
     const s = iconPx(1.2, 5, 16);
     ctx.fillStyle = "#78a9ff";
     ctx.fillRect(g[0] - s/2, g[1] - s/2, s, s);
@@ -1746,9 +1948,10 @@ function drawNet(){
   // ACTIVE link profile legend (screen chrome, not a geo entity)
   const pr = NET.profile || {};
   if (pr.name){
+    const lens = NETNS !== "all" ? ` · lens ${nsLabel(NETNS)}` : "";
     const text = `link ${pr.name} · ${pr.delay_ms} ms ±${pr.jitter_ms}` +
       ` · loss ${(pr.loss_rate * 100).toFixed(1)}%` +
-      ` · ${(pr.bandwidth_bps / 1e6).toFixed(0)} Mb/s`;
+      ` · ${(pr.bandwidth_bps / 1e6).toFixed(0)} Mb/s${lens}`;
     const w = ctx.measureText(text).width;
     ctx.fillStyle = "rgba(22,22,22,0.85)";
     ctx.fillRect(12, cv.height - 40, w + 12, 18);
@@ -1756,6 +1959,78 @@ function drawNet(){
     ctx.strokeRect(12, cv.height - 40, w + 12, 18);
     ctx.fillStyle = "#c6c6c6";
     ctx.fillText(text, 18, cv.height - 27);
+  }
+  ctx.restore();
+}
+// Emission pulses: expanding rings born at the EMITTER (attributable),
+// cadence = the measured emission rate clamped to PULSE_MAX_HZ. The rings
+// visualize measured per-second rates from the 1 Hz export, not
+// individual packets — the legend says so.
+function drawNetPulses(f){
+  const now = performance.now() / 1000;
+  for (const [id, a] of Object.entries(f.act)){
+    const cad = pulseCadenceHz(a.emitHz);
+    const st = NETPULSES[id] = NETPULSES[id] || { next: now, rings: [] };
+    if (cad > 0){
+      if (now >= st.next){
+        st.rings.push(now);
+        if (st.rings.length > 6) st.rings.shift();
+        // schedule forward from now (never burst a backlog after a stall)
+        st.next = Math.max(st.next + 1 / cad, now + 0.25 / cad);
+      }
+    } else {
+      st.next = now;
+    }
+    st.rings = st.rings.filter(b => now - b < PULSE_LIFE_S);
+    const p = f.posOf(id);
+    if (!p){ st.rings = []; continue; }
+    const col = f.usingNs ? nsColor(NETNS) : (COLORS[id] || "#78a9ff");
+    const R = Math.max(mToPxr(fieldRadiusM(a.bps)), 14);
+    for (const b of st.rings){
+      const t = (now - b) / PULSE_LIFE_S;   // 0..1
+      ctx.strokeStyle = rgba(col, (1 - t) * 0.8);
+      ctx.lineWidth = lw(1.5);
+      ctx.beginPath(); ctx.arc(p[0], p[1], 4 + t * R, 0, 7); ctx.stroke();
+    }
+  }
+}
+// Overlay bearers — the DEMOTED phase-1 per-pair lines, verbatim except:
+// thin fixed width, squared (butt) ends, and they live behind an
+// off-by-default toggle. A line here means the deployment's UDP-face
+// bearer between two engines — an overlay artifact, never the medium.
+function drawNetOverlay(f){
+  const pairs = {};
+  for (const l of (NET.links || [])){
+    const key = [l.from, l.to].sort().join("|");
+    const e = pairs[key] = pairs[key] ||
+      { a: l.from, b: l.to, bps: 0, ihz: 0, drops: 0 };
+    e.bps += l.rate_out_bps || 0;
+    e.ihz += l.rate_out_interests_hz || 0;
+    e.drops += l.out_drops || 0;
+  }
+  ctx.save();
+  ctx.lineCap = "butt";
+  for (const e of Object.values(pairs)){
+    const pa = f.posOf(e.a), pb = f.posOf(e.b);
+    if (!pa || !pb) continue;
+    const ageA = ageOf(e.a), ageB = ageOf(e.b);
+    const age = (ageA === null || ageB === null) ? null : Math.max(ageA, ageB);
+    const col = age === null ? "#6f6f6f"
+      : age < 4 ? "#42be65" : age < 10 ? "#f1c21b" : "#fa4d56";
+    ctx.strokeStyle = col + "99";
+    ctx.lineWidth = lw(1);
+    if (e.bps > 200){
+      // data-trace: dashes march along the bearer while traffic flows
+      ctx.setLineDash([7,5]);
+      ctx.lineDashOffset = -((Date.now() / 40) % 12);
+    }
+    ctx.beginPath(); ctx.moveTo(pa[0], pa[1]); ctx.lineTo(pb[0], pb[1]); ctx.stroke();
+    ctx.setLineDash([]); ctx.lineDashOffset = 0;
+    const kb = e.bps >= 1000 ? (e.bps / 1000).toFixed(0) + " kb/s"
+      : e.bps.toFixed(0) + " b/s";
+    ctx.fillStyle = "#c6c6c6";
+    ctx.fillText(`${kb} · ${e.ihz.toFixed(0)} i/s${e.drops ? ` · ${e.drops} drop` : ""}`,
+      (pa[0] + pb[0]) / 2 + 5, (pa[1] + pb[1]) / 2 - 5);
   }
   ctx.restore();
 }
@@ -1995,6 +2270,9 @@ function draw(){
     ctx.fillText("grid 10 m", 12, cv.height - 12);
   }
   drawCoverage();
+  // the network MEDIUM renders under every entity layer: fields are the
+  // ground the vehicles/marks sit on, not chrome over them
+  drawNetMedium();
   if (plan && DISP.op.plan > 0){
     ctx.save(); ctx.globalAlpha = DISP.op.plan;
     ctx.strokeStyle = "#f1c21b99"; ctx.lineWidth = lw(1.5); ctx.beginPath();
@@ -2117,7 +2395,7 @@ function draw(){
   drawSensors();
   drawTaskings();
   drawUnconfirmed();
-  drawNet();
+  drawNetOver();
   // vehicle markers scale with zoom between legible clamps (~1.5 m body)
   const vs = iconPx(1.5, 6, 24);
   for (const [vid, d] of Object.entries(drones)){
@@ -2338,6 +2616,7 @@ netBtn.onclick = () => {
   showNet = !showNet;
   netBtn.textContent = showNet ? "Network on" : "Network off";
   renderLegend();
+  renderNetPanel();
 };
 // simulation panel: signature choices follow the anomaly kind, and the
 // size/loudness field swaps with it
@@ -2521,8 +2800,12 @@ function onHello(m){
   // sim tools appear ONLY when a virtual deployment advertised itself
   SIM = m.sim || null;
   simPanel.style.display = SIM ? "" : "none";
-  if (!SIM){ simAnoms = []; NET = null; selAnom = null; }
+  if (!SIM){ simAnoms = []; NET = null; NETPREV = null; selAnom = null; }
   renderAnomList();
+  renderNetPanel();
+  // the surface's own catalog (ROUND-3 §3½): fetch from wherever the
+  // hello advertises it (falls back to the boot-time fetch)
+  if (m.catalog_url) loadCatalog(m.catalog_url);
   VEHICLES.forEach((v,i) => COLORS[v] = PALETTE[i % PALETTE.length]);
   tvid.innerHTML = VEHICLES.map(v => `<option value="${v}">${v}</option>`).join("");
   cards.innerHTML = ""; videos.innerHTML = "";
@@ -3601,13 +3884,34 @@ function renderLegend(){
       <div class="li">${sw("border:1px dashed #ff832b;border-radius:50%")}
         audio reach: omni circle or beam lobes</div>`);
   }
-  if (showNet) parts.push(`<h4>Network (fabric links)</h4>
-    <div class="li">${sw("background:#42be65")} link fresh &lt;4 s
-      ${sw("background:#f1c21b;margin-left:6px")} &lt;10 s
-      ${sw("background:#fa4d56;margin-left:6px")} stale</div>
-    <div class="li">${sw("background:repeating-linear-gradient(90deg,#42be65 0 5px,transparent 5px 9px)")}
-      marching dashes = traffic flowing; width ∝ throughput</div>
-    <div class="li">${sw("background:#78a9ff")} GCS node (world-anchored at the GCS position)</div>`);
+  if (showNet){
+    const nsCol = NETNS !== "all" ? nsColor(NETNS) : null;
+    parts.push(`<h4>Network — the medium</h4>` +
+      (NETSUB.fields ? `
+      <div class="li">${sw("background:radial-gradient(circle,#42be65cc,transparent 72%);border-radius:50%")}
+        coverage/activity field per fabric node — size &amp; brightness track
+        recent traffic (log-scaled, clamped)</div>
+      <div class="li">${sw("background:radial-gradient(circle at 35% 50%,#42be65aa,transparent 60%),radial-gradient(circle at 65% 50%,#f1c21baa,transparent 60%);border-radius:50%")}
+        overlapping fields blend brighter = shared medium (contention)</div>
+      <div class="li">${sw("background:#42be65")} node fresh &lt;4 s
+        ${sw("background:#f1c21b;margin-left:6px")} &lt;10 s
+        ${sw("background:#fa4d56;margin-left:6px")} stale — field hue =
+        telemetry freshness${nsCol ? "" : " (“all” lens)"}</div>` : "") +
+      (NETSUB.pulses ? `
+      <div class="li">${sw("border:1px solid #78a9ff;border-radius:50%")}
+        expanding ring = emission pulse at the emitter (measured rate,
+        ≤${PULSE_MAX_HZ}/s shown; busier nodes brighten the field instead)</div>` : "") +
+      (nsCol ? `
+      <div class="li">${sw(`background:${nsCol};border-radius:50%`)}
+        namespace lens: only <b>${nsLabel(NETNS)}</b> traffic, in its
+        namespace color</div>` : "") +
+      (NETSUB.overlay ? `
+      <h4>Network — overlay bearers (not the medium)</h4>
+      <div class="li">${sw("background:repeating-linear-gradient(90deg,#42be65 0 5px,transparent 5px 9px);height:2px")}
+        thin squared line = a point-to-point OVERLAY bearer (the
+        deployment's UDP faces); dashes march while traffic flows</div>` : "") + `
+      <div class="li">${sw("background:#78a9ff")} GCS node (world-anchored at the GCS position)</div>`);
+  }
   if (showEvents) parts.push(`<h4>Events (diamonds fade with age)</h4>
     <div class="li">${sw("background:#42be65")} detect.hit
       ${sw("background:#f1c21b;margin-left:6px")} candidate
@@ -3671,6 +3975,37 @@ legendBtn.onclick = () => {
     row.append(lab, inp, out);
     dispPanel.appendChild(row);
   }
+  // Network sub-layers (Revision 2a): fields + pulses ON by default;
+  // overlay bearers OFF by default — lines are earned, not default. The
+  // Network opacity slider above applies to all three.
+  const subRows = [
+    ["Net: coverage fields", "fields",
+     "soft per-node coverage/activity fields — the medium (R2a default)"],
+    ["Net: emission pulses", "pulses",
+     `attributable expanding rings at each emitter, ≤${PULSE_MAX_HZ}/s per node`],
+    ["Net: overlay bearers", "overlay",
+     "the demoted per-pair lines: real point-to-point UDP-face bearers, " +
+     "explicitly an overlay — never the medium (off by default)"],
+  ];
+  const subInputs = [];
+  for (const [label, key, tip] of subRows){
+    const row = document.createElement("div");
+    row.className = "row";
+    row.title = tip;
+    const lab = document.createElement("label");
+    lab.textContent = label;
+    const inp = document.createElement("input");
+    inp.type = "checkbox";
+    inp.checked = NETSUB[key];
+    const out = document.createElement("output");
+    const show = () => { out.value = NETSUB[key] ? "on" : "off"; };
+    show(); subInputs.push([inp, key, show]);
+    inp.onchange = () => {
+      NETSUB[key] = inp.checked; show(); saveNetSub(); renderLegend();
+    };
+    row.append(lab, inp, out);
+    dispPanel.appendChild(row);
+  }
   const reset = document.createElement("button");
   reset.className = "cds-btn cds-btn--ghost";
   reset.style.cssText = "height:24px;padding:0 8px;font-size:12px";
@@ -3679,11 +4014,167 @@ legendBtn.onclick = () => {
     Object.assign(DISP, { veil: 0.35, iconMul: 1, lineMul: 1 });
     Object.assign(DISP.op, { sensors: 1, net: 1, events: 0.9, data: 1,
       trails: 1, plan: 1, coverage: 0.4 });
+    Object.assign(NETSUB, { fields: true, pulses: true, overlay: false });
     for (const [inp, get, show] of outs){ inp.value = get(); show(); }
-    saveDisp();
+    for (const [inp, key, show] of subInputs){ inp.checked = NETSUB[key]; show(); }
+    saveDisp(); saveNetSub(); renderLegend();
   };
   dispPanel.appendChild(reset);
 })();
+
+// ---------- Network panel: the namespace lens ----------
+// Chips over the prefixes the deployment MEASURED (top-K by traffic from
+// its bridge taps). Selecting one colors the fields/pulses by that
+// namespace and sizes them by its traffic alone; "all" restores
+// health-colored total-traffic fields. If a deployment exports no
+// per-prefix counters the lens says so and disables itself — the fields
+// still render from the per-face totals (the split that IS real).
+const fmtBps = bps => bps >= 1000
+  ? (bps / 1000).toFixed(bps >= 10000 ? 0 : 1) + " kb/s"
+  : bps.toFixed(0) + " b/s";
+function renderNetPanel(){
+  const px = (NET && NET.prefixes) || [];
+  const chips = topPrefixes(px, 8);
+  // a selected namespace that fell out of the top-K stays selectable
+  if (NETNS !== "all" && !chips.some(c => c.prefix === NETNS))
+    chips.push({ prefix: NETNS, bps: 0, bytes: 0 });
+  const chipHTML = c => `
+    <button class="nschip${NETNS === c.prefix ? " on" : ""}"
+      data-ns="${qEsc(c.prefix)}"
+      title="${qEsc(c.prefix)} — color network fields/pulses by this namespace only">
+      <span class="dot" style="background:${nsColor(c.prefix)}"></span>
+      <span class="pfx">${qEsc(nsLabel(c.prefix))}</span>
+      <span class="rate">${fmtBps(c.bps)}</span>
+    </button>`;
+  let note;
+  if (!NET)
+    note = "no network snapshot yet — this panel feeds from the " +
+      "deployment's 1 Hz net export";
+  else if (!px.length)
+    note = "this deployment exports no per-prefix counters — the lens is " +
+      "disabled; fields show per-face totals (the split that is real)";
+  else
+    note = `top ${Math.min(chips.length, 8)} prefixes by measured traffic ` +
+      `(source: ${qEsc(NET.prefix_source || "deployment export")})`;
+  if (!showNet) note += " · Network layer is OFF (header button)";
+  netPanel.innerHTML = (px.length ? `<div id="nschips">
+    <button class="nschip${NETNS === "all" ? " on" : ""}" data-ns="all"
+      title="no lens: fields colored by node health, sized by total traffic">all</button>
+    ${chips.map(chipHTML).join("")}</div>` : "") +
+    `<div id="netnote">${note}</div>`;
+}
+netPanel.addEventListener("click", e => {
+  const b = e.target.closest(".nschip");
+  if (!b) return;
+  NETNS = b.dataset.ns;
+  renderNetPanel();
+  renderLegend();
+});
+
+// ---------- Catalog: the surface's own shelf (ROUND-3 §3½) ----------
+// A read-only browser over /catalog.json — the manifested self-
+// description this dashboard serves about ITSELF: native widgets,
+// understood WS kinds, and the uas-console render contracts it binds
+// through. Searchable; every entry opens a detail popover (the manifest-
+// powered help seed). Placement/binding is deliberately absent — that is
+// builder-mode's milestone.
+let CATALOG = null;
+let CATFILTER = "";
+function loadCatalog(url){
+  fetch(url || "/catalog.json")
+    .then(r => r.json())
+    .then(c => { CATALOG = c; renderCatalogList(); })
+    .catch(() => { CATALOG = null; renderCatalogList(); });
+}
+(function initCatalogPanel(){
+  catalogPanel.innerHTML = `
+    <input id="catsearch" type="text"
+      placeholder="search widgets · kinds · contracts…"
+      title="filter the catalog (substring match on ids, names, descriptions)">
+    <div id="catlist"></div>`;
+  const cs = document.getElementById("catsearch");
+  cs.oninput = () => { CATFILTER = cs.value; renderCatalogList(); };
+})();
+const catMatch = (f, ...fields) =>
+  !f || fields.some(x => String(x || "").toLowerCase().includes(f));
+function renderCatalogList(){
+  const list = document.getElementById("catlist");
+  if (!CATALOG){
+    list.innerHTML = "<span style='color:#6f6f6f;font-size:12px'>catalog " +
+      "unavailable (GET /catalog.json failed)</span>";
+    return;
+  }
+  const f = CATFILTER.trim().toLowerCase();
+  const widgets = (CATALOG.widgets || []).filter(w =>
+    catMatch(f, w.id, w.name, w.renders, w.required_kind));
+  const kinds = (CATALOG.understood_kinds || []).filter(k =>
+    catMatch(f, k.kind, k.description));
+  const contracts = (CATALOG.contracts || []).filter(c =>
+    catMatch(f, c.intent, c.renderer, c.verdict, c.contract));
+  const row = (group, id, label, tag, tagCls) => `
+    <div class="catrow" data-group="${group}" data-id="${qEsc(id)}"
+         title="click for details">
+      <span class="cid">${qEsc(label)}</span>
+      <span class="ctag${tagCls ? " " + tagCls : ""}">${qEsc(tag)}</span>
+    </div>`;
+  const none = "<div style='color:#6f6f6f;font-size:11px'>no matches</div>";
+  list.innerHTML = `
+    <h5>Native widgets <span class="ct">${widgets.length}</span></h5>
+    ${widgets.map(w => row("widget", w.id, w.id,
+      w.required_kind || "self", "")).join("") || none}
+    <h5>Understood kinds <span class="ct">${kinds.length}</span></h5>
+    ${kinds.map(k => row("kind", k.kind, k.kind,
+      (k.widgets || []).length ? `${k.widgets.length} widget${
+        k.widgets.length > 1 ? "s" : ""}` : "recorded", "")).join("") || none}
+    <h5>Render contracts <span class="ct">${contracts.length}</span></h5>
+    ${contracts.map(c => row("contract", `${c.contract}/${c.intent}`, c.intent,
+      c.verdict, c.verdict === "refuse" ? "refuse" : "")).join("") || none}
+    <div style="font-size:10px;color:#6f6f6f;margin-top:6px;line-height:1.4">
+      served typed from /catalog.json · read-only this round —
+      placement/binding is builder-mode's milestone</div>`;
+}
+function openCatPop(group, id, anchor){
+  if (!CATALOG) return;
+  const rows = [];
+  if (group === "widget"){
+    const w = (CATALOG.widgets || []).find(x => x.id === id);
+    if (!w) return;
+    rows.push(`<div class="row"><b>${qEsc(w.name)}</b> <span class="mono">${qEsc(w.id)}</span></div>`,
+      `<div class="row">${qEsc(w.renders)}</div>`,
+      `<div class="row">feeds on: <span class="mono">${qEsc(w.required_kind || "— (self-contained)")}</span></div>`,
+      `<div class="row">ready to use: <b>${w.ready ? "yes — exists today" : "no"}</b></div>`);
+  } else if (group === "kind"){
+    const k = (CATALOG.understood_kinds || []).find(x => x.kind === id);
+    if (!k) return;
+    rows.push(`<div class="row"><b class="mono">${qEsc(k.kind)}</b></div>`,
+      `<div class="row">${qEsc(k.description)}</div>`,
+      `<div class="row">rendered by: ${(k.widgets || []).length
+        ? k.widgets.map(w => `<span class="mono">${qEsc(w)}</span>`).join(", ")
+        : "no widget yet (understood + recorded)"}</div>`);
+  } else {
+    const c = (CATALOG.contracts || []).find(x =>
+      `${x.contract}/${x.intent}` === id);
+    if (!c) return;
+    rows.push(`<div class="row"><b class="mono">${qEsc(c.intent)}</b> · ${qEsc(c.verdict)}</div>`,
+      c.renderer ? `<div class="row">via native renderer <span class="mono">${qEsc(c.renderer)}</span></div>`
+                 : `<div class="row">explicitly refused by the contract (documented honesty, not an omission)</div>`,
+      `<div class="row">contract <span class="mono">${qEsc(c.contract)}</span> · ${qEsc(c.source)}</div>`);
+  }
+  catpop.innerHTML = rows.join("");
+  const r = anchor.getBoundingClientRect();
+  catpop.style.display = "block";
+  catpop.style.left = `${Math.max(8, r.left - 292)}px`;
+  catpop.style.top = `${Math.max(8, Math.min(r.top, innerHeight - 170))}px`;
+}
+catalogPanel.addEventListener("click", e => {
+  const row = e.target.closest(".catrow");
+  if (row) openCatPop(row.dataset.group, row.dataset.id, row);
+});
+document.addEventListener("click", e => {
+  if (catpop.style.display === "block" && !catpop.contains(e.target) &&
+      !e.target.closest(".catrow"))
+    catpop.style.display = "none";
+});
 
 // ---------- collapsible tool sections (state persists per header) ----------
 function makeCollapsible(panel, panelKey){
@@ -3775,6 +4266,8 @@ applyPanels();
 
 renderCmdLog();
 renderLegend();
+renderNetPanel();
+loadCatalog();                     // hello may re-point via catalog_url
 syncLogVids(); applyLogFilter();   // restore persisted event-log filters
 resize(); syncMapCtl(); connect(); draw();
 setTimeout(preview, 800);

@@ -106,19 +106,32 @@ async fn clear_anomalies(State(state): State<ControlState>) -> Json<Value> {
 /// Assemble the deployment's 1 Hz network snapshot — the ONE document that
 /// is both broadcast to the dashboard as the WS `net` message and served
 /// verbatim at `GET /netstats`. `gcs` is the ground-station position the
-/// network layer anchors its GCS node to.
+/// network layer anchors its GCS node to. `prefixes` is the per-node
+/// per-prefix rate table from the bridge taps ([`crate::nettap`]) — the
+/// namespace lens's feed; empty when the deployment measures none. Both
+/// keys are additive: the phase-1 renderer ignores keys it does not know.
 ///
 /// Positioning note: with the current STATIC link profiles this position
 /// is visualization truth only — no propagation model consumes it. When
 /// geometry-based propagation lands, this same exported value feeds it,
 /// so the flag/plumbing shape stays put.
-pub fn net_snapshot(t_s: f64, profile: &Value, gcs: (f64, f64), links: Vec<Value>) -> Value {
+pub fn net_snapshot(
+    t_s: f64,
+    profile: &Value,
+    gcs: (f64, f64),
+    links: Vec<Value>,
+    prefixes: Vec<Value>,
+) -> Value {
     json!({
         "type": "net",
         "t": t_s,
         "profile": profile,
         "gcs": { "lat": gcs.0, "lon": gcs.1 },
         "links": links,
+        "prefixes": prefixes,
+        // Measurability provenance for the lens UI: names are read at the
+        // deployment's UDP bridge taps, never synthesized (nettap docs).
+        "prefix_source": "udp-bridge-taps",
     })
 }
 
@@ -269,11 +282,15 @@ mod tests {
             &json!({ "name": "apsta" }),
             (-35.3635, 149.1652),
             vec![json!({ "from": "a", "to": "b" })],
+            vec![json!({ "node": "a", "prefix": "/muas/v3/a/telemetry" })],
         );
         let stats = http_json("GET", &format!("{base}/netstats"), None).await.unwrap();
         assert_eq!(stats["links"].as_array().unwrap().len(), 1);
         assert_eq!(stats["gcs"], json!({ "lat": -35.3635, "lon": 149.1652 }));
         assert_eq!(stats["type"], json!("net"));
+        // The namespace-lens feed rides the same document (additive keys).
+        assert_eq!(stats["prefixes"].as_array().unwrap().len(), 1);
+        assert_eq!(stats["prefix_source"], json!("udp-bridge-taps"));
 
         // Single-anomaly removal through the dashboard seam (the UI's ✕):
         // remove_anomaly(id) → DELETE /anomalies/{id} → field truth.

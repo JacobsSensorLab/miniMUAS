@@ -38,6 +38,12 @@ pub fn vehicle_stream(vehicle_id: &str, stream: &str) -> String {
 /// `vehicle_stream(vid, TASK_QUEUE_STREAM)` → `/muas/v3/<vid>/tasks/queue`.
 pub const TASK_QUEUE_STREAM: &str = "tasks/queue";
 
+/// Stream segment of the per-vehicle RC-over-NDN status (a JSON
+/// [`crate::rc::RcStatus`], latest-wins, ~4 Hz while the RC task runs):
+/// `vehicle_stream(vid, RC_STATUS_STREAM)` → `/muas/v3/<vid>/rc/status`.
+/// Additive (RC-CONTROL R1); the dashboard R2 status strip consumes it.
+pub const RC_STATUS_STREAM: &str = "rc/status";
+
 /// Mission-scoped object name, e.g.
 /// `/muas/v3/mission/<mid>/<vid>/camera/<cam>/frame/<gps_ns>/<seq>`.
 pub fn mission_object(mission_id: &str, vehicle_id: &str, rest: &str) -> String {
@@ -93,6 +99,10 @@ mod tests {
         assert_eq!(
             vehicle_stream("iuas-01", TASK_QUEUE_STREAM),
             "/muas/v3/iuas-01/tasks/queue"
+        );
+        assert_eq!(
+            vehicle_stream("iuas-01", RC_STATUS_STREAM),
+            "/muas/v3/iuas-01/rc/status"
         );
     }
 }

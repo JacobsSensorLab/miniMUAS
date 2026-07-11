@@ -600,6 +600,67 @@ pub fn reorder(shared: &AgentShared, ordered_ids: &[String]) -> Result<bool, Str
 }
 
 // ---------------------------------------------------------------------------
+// RC-over-NDN arbitration (RC-CONTROL R1)
+// ---------------------------------------------------------------------------
+
+/// Outcome of [`rc_seize`].
+pub(crate) enum RcSeize {
+    /// Idle vehicle: the `rc-manual` busy claim is taken.
+    Engaged,
+    /// The active queue task was suspended through the split machinery —
+    /// its remainder sits at the FRONT of pending and resumes via [`kick`]
+    /// when the RC session releases.
+    EngagedPaused { paused_task_id: String },
+    /// Something owns the vehicle and policy refuses the engage.
+    Refused { busy: String, reason: &'static str },
+}
+
+/// RC engage arbitration, race-free under the queue + busy locks (same
+/// lock order as [`submit`]).
+///
+/// - Idle vehicle: claim `rc-manual` (the RC analogue of `occupy`).
+/// - Active mission task: only with the frame's ARM_GESTURE held AND
+///   `--rc-preempt pause-mission` — the active task is suspended exactly
+///   like a reorder displacement (`preempt_insert_at = 0`, abort raised;
+///   the runner snapshots its remainder on the way out and [`on_task_end`]
+///   enqueues the `origin=split` continuation at the front). The busy
+///   label hands to RC in the same critical section, which is what makes
+///   [`on_task_end`] KEEP the pending queue instead of flushing it (see
+///   the re-label branch there).
+/// - Non-queue owners (`takeoff`, `rtl`, a `--no-queue` legacy task, an
+///   override detour): nothing to split — refused.
+pub(crate) fn rc_seize(shared: &AgentShared, arm_gesture: bool, pause_allowed: bool) -> RcSeize {
+    let mut q = lock(&shared.tasks);
+    let mut busy = lock(&shared.busy);
+    if busy.is_empty() {
+        *busy = crate::rc::RC_MANUAL.to_string();
+        shared.abort.store(false, Ordering::Relaxed);
+        shared.operator_abort.store(false, Ordering::Relaxed);
+        return RcSeize::Engaged;
+    }
+    if !arm_gesture {
+        return RcSeize::Refused { busy: busy.clone(), reason: "arm-gesture-required" };
+    }
+    if *busy == "rtl" {
+        // Work is never taken from a return-to-launch (the v2 rule).
+        return RcSeize::Refused { busy: busy.clone(), reason: "rtl-owns-vehicle" };
+    }
+    if !pause_allowed {
+        return RcSeize::Refused { busy: busy.clone(), reason: "preempt-denied" };
+    }
+    let pausable = q.active.as_ref().filter(|active| active.kind == *busy);
+    let Some(active) = pausable else {
+        return RcSeize::Refused { busy: busy.clone(), reason: "unpausable-owner" };
+    };
+    let paused_task_id = active.task_id.clone();
+    q.preempt_insert_at = Some(0);
+    shared.operator_abort.store(false, Ordering::Relaxed);
+    shared.abort.store(true, Ordering::Relaxed);
+    *busy = crate::rc::RC_MANUAL.to_string();
+    RcSeize::EngagedPaused { paused_task_id }
+}
+
+// ---------------------------------------------------------------------------
 // the driver
 // ---------------------------------------------------------------------------
 
@@ -764,9 +825,16 @@ fn on_task_end(shared: &Arc<AgentShared>, task_id: &str, outcome: FlightOutcome)
     }
     let mut busy = lock(&shared.busy);
     if !busy.is_empty() && *busy != kind {
-        // Re-labelled (rtl owns the vehicle): stand down.
+        // Re-labelled: another command owns the vehicle. `rc-manual`
+        // (pause-mission preempt) SUSPENDS the queue — pending entries,
+        // the split continuation included, stay put and the RC release
+        // path restarts them via `kick`. Anything else (rtl) is the
+        // ladder: nothing queued survives it.
+        let rc_pause = *busy == crate::rc::RC_MANUAL;
         drop(busy);
-        flush_pending_locked(shared, &mut q, "ladder");
+        if !rc_pause {
+            flush_pending_locked(shared, &mut q, "ladder");
+        }
         publish_locked(shared, &mut q);
         return AfterTask::Stop;
     }

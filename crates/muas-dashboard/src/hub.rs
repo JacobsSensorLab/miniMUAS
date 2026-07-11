@@ -21,6 +21,7 @@
 //! `RecordedEvent`s (`{"t_ns": .., "event": ..}`) instead of v2's ad-hoc
 //! `{"ts": .., "m": ..}`; the ported frontend loads both.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -49,6 +50,10 @@ struct RecorderState {
 pub struct Hub {
     tx: broadcast::Sender<Outbound>,
     rec: Mutex<RecorderState>,
+    /// Every distinct `type` ever broadcast — the surface catalog's
+    /// runtime drift tripwire ([`crate::catalog`]): a message type that
+    /// isn't catalogued trips the smoke test's subset assertion.
+    observed: Mutex<BTreeSet<String>>,
 }
 
 impl Hub {
@@ -65,6 +70,7 @@ impl Hub {
         Self {
             tx,
             rec: Mutex::new(RecorderState { dir: record_dir, run, recorder: None }),
+            observed: Mutex::new(BTreeSet::new()),
         }
     }
 
@@ -75,8 +81,26 @@ impl Hub {
 
     /// Broadcast one JSON message to every client and the recorder.
     pub fn broadcast(&self, message: &Value) {
+        if let Some(t) = message.get("type").and_then(Value::as_str) {
+            self.observed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(t.to_string());
+        }
         self.record(message);
         let _ = self.tx.send(Outbound::Text(Arc::new(message.to_string())));
+    }
+
+    /// Every distinct message `type` this hub has broadcast (catalog
+    /// drift tripwire: must stay a subset of
+    /// [`crate::catalog::UNDERSTOOD_KINDS`]).
+    pub fn observed_types(&self) -> Vec<String> {
+        self.observed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .cloned()
+            .collect()
     }
 
     /// Broadcast one binary frame (never recorded — the v2 rule).

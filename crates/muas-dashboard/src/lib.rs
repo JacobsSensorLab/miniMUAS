@@ -22,6 +22,7 @@
 //! `/replays` serves the index and the files, and replay is frontend-driven
 //! through the same `dispatch()` handlers.
 
+pub mod catalog;
 pub mod config;
 pub mod detect;
 pub mod hub;
@@ -200,6 +201,9 @@ impl Dashboard {
             "task_queues": task_queues,
             "mission": m.hello_mission(),
             "recording": self.hub.is_recording(),
+            // Where this surface describes ITSELF (ROUND-3 §3½): render
+            // contracts, understood kinds, native widgets.
+            "catalog_url": "/catalog.json",
         });
         // Surveyed GCS position (--gcs): the map's network layer prefers
         // this over the NET.gcs export and the first-fix heuristic.

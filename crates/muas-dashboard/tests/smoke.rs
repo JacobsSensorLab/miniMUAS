@@ -65,6 +65,11 @@ async fn headless_backend_serves_ui_ws_and_fallbacks() {
     assert_eq!(hello["vehicles"], json!(["wuas-01", "iuas-01"]));
     assert_eq!(hello["mission"]["state"], json!("idle"));
     assert_eq!(hello["recording"], json!(false), "idle: no session armed");
+    assert_eq!(
+        hello["catalog_url"],
+        json!("/catalog.json"),
+        "hello advertises the surface catalog"
+    );
 
     // 3 — recording is session-scoped: idle traffic produced NOTHING, an
     // explicit Record request arms a session, and a command round-trip
@@ -244,6 +249,50 @@ async fn headless_backend_serves_ui_ws_and_fallbacks() {
         .await
         .unwrap();
     assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+
+    // 10 — the surface catalog (ROUND-3 §3½): served, typed, and honest.
+    let catalog: Value = http
+        .get(format!("{base}/catalog.json"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .expect("catalog json");
+    assert_eq!(catalog["type"], json!("surface_catalog"));
+    let kinds: Vec<&str> = catalog["understood_kinds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|k| k["kind"].as_str())
+        .collect();
+    for expected in ["telemetry", "event", "net", "task_queue", "sim_anomalies"] {
+        assert!(kinds.contains(&expected), "catalog understands {expected}");
+    }
+    let widgets = catalog["widgets"].as_array().unwrap();
+    assert!(!widgets.is_empty());
+    assert!(
+        widgets.iter().all(|w| w["ready"] == json!(true)),
+        "only ready-today widgets are catalogued"
+    );
+    assert!(
+        catalog["contracts"].as_array().unwrap().iter().any(|c| {
+            c["intent"] == json!("track.live") && c["renderer"] == json!("console.track.live")
+        }),
+        "contracts derive from the uas-console documents"
+    );
+
+    // 11 — runtime drift tripwire: every message type the hub actually
+    // broadcast during this whole session is catalogued. A new broadcast
+    // type cannot ship without registering itself in the catalog.
+    let observed = running.dash.hub.observed_types();
+    assert!(!observed.is_empty(), "the session broadcast something");
+    for t in &observed {
+        assert!(
+            kinds.contains(&t.as_str()),
+            "hub broadcast uncatalogued type \"{t}\" — add it to catalog::UNDERSTOOD_KINDS"
+        );
+    }
 
     drop(ws);
     running.shutdown().await;

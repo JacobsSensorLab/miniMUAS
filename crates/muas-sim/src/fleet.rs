@@ -29,9 +29,12 @@ use ndn_packet::Name;
 use ndn_rpc::FaceRpcCarrier;
 use ndn_service_core::ServiceId;
 use ndn_sim::{LinkConfig, NodeId, RunningSimulation, Simulation};
+use tokio_util::sync::CancellationToken;
 use uas_fleet_node::coordination::CoordEntry;
 use uas_fleet_node::flight_backend::FlightBackend;
 use uas_mavlink::BackendTelemetry;
+
+use crate::nettap::{self, PrefixStats};
 
 /// Lock a mutex, recovering from poisoning (same posture as the agent:
 /// a panicked task must not wedge the harness).
@@ -82,6 +85,13 @@ pub struct FleetSim {
     pub console: Option<NodeId>,
     pub agents: Vec<AgentHandle>,
     pub vehicle_ids: Vec<String>,
+    /// Per-`(node, prefix)` traffic counters from the bridge taps (see
+    /// [`crate::nettap`]). Populated only in console mode — the taps are
+    /// interposed for deployments (the namespace-lens feed), never for
+    /// the timing-sensitive scripted scenarios.
+    pub prefix_stats: Arc<PrefixStats>,
+    /// Stops the tap relays on shutdown.
+    tap_cancel: CancellationToken,
 }
 
 impl FleetSim {
@@ -171,6 +181,13 @@ impl FleetSim {
         let fabric = Arc::new(sim.start().await.map_err(|e| format!("fabric start: {e}"))?);
 
         // -- bridges (fabric edge, lossless loopback UDP) ----------------------
+        // Console mode (= a deployment) interposes a per-vehicle nettap
+        // relay on each bridge: agent ↔ tap ↔ bridge socket. The tap
+        // forwards datagrams verbatim and feeds the per-prefix counters
+        // the namespace lens renders from; scripted scenarios (no
+        // console) keep the direct, tap-free seam.
+        let prefix_stats = PrefixStats::new();
+        let tap_cancel = CancellationToken::new();
         let mut agent_links = Vec::with_capacity(specs.len());
         for (i, spec) in specs.iter().enumerate() {
             let agent_port = reserve_udp_port()?;
@@ -183,8 +200,23 @@ impl FleetSim {
             let bridge_addr = bridge_socket
                 .local_addr()
                 .map_err(|e| format!("bridge addr: {e}"))?;
+            let agent_remote = if with_console {
+                nettap::spawn_tap(
+                    spec.vehicle_id.clone(),
+                    prefix_stats.clone(),
+                    agent_addr,
+                    bridge_addr,
+                    tap_cancel.child_token(),
+                )
+                .await?
+            } else {
+                bridge_addr
+            };
+            // The bridge face targets whatever the agent talks to: the
+            // tap in console mode, the agent itself otherwise.
+            let bridge_peer = if with_console { agent_remote } else { agent_addr };
             let bridge_face = fabric
-                .bridge_udp_socket(nodes[i], bridge_socket, agent_addr)
+                .bridge_udp_socket(nodes[i], bridge_socket, bridge_peer)
                 .map_err(|e| format!("bridge {}: {e}", spec.vehicle_id))?;
             let own_prefix: Name = names::vehicle_prefix(&spec.vehicle_id)
                 .parse()
@@ -196,7 +228,7 @@ impl FleetSim {
                 .add_nexthop(&own_prefix, bridge_face, 0);
             agent_links.push(UdpLink {
                 local: agent_addr,
-                remote: bridge_addr,
+                remote: agent_remote,
                 route: Some(names::APP_PREFIX.to_string()),
             });
         }
@@ -228,13 +260,17 @@ impl FleetSim {
             console,
             agents,
             vehicle_ids,
+            prefix_stats,
+            tap_cancel,
         })
     }
 
     /// Bridge an external NDN engine (dashboard/GCS) onto the console node.
     /// Returns `(client_local, bridge_remote)`: the caller binds a UDP face
     /// at `client_local` toward `bridge_remote` and routes `/muas/v3` out of
-    /// it; every fetch/call then crosses the fabric's SimLinks.
+    /// it; every fetch/call then crosses the fabric's SimLinks. The
+    /// returned remote is a [`nettap`] relay labeled `"gcs"`, so the
+    /// dashboard's traffic lands in [`FleetSim::prefix_stats`] too.
     pub async fn bridge_client(&self) -> Result<(SocketAddr, SocketAddr), String> {
         let console = self
             .console
@@ -249,10 +285,18 @@ impl FleetSim {
         let bridge_addr = bridge_socket
             .local_addr()
             .map_err(|e| format!("console bridge addr: {e}"))?;
+        let tap_addr = nettap::spawn_tap(
+            "gcs",
+            self.prefix_stats.clone(),
+            client_addr,
+            bridge_addr,
+            self.tap_cancel.child_token(),
+        )
+        .await?;
         self.fabric
-            .bridge_udp_socket(console, bridge_socket, client_addr)
+            .bridge_udp_socket(console, bridge_socket, tap_addr)
             .map_err(|e| format!("console bridge: {e}"))?;
-        Ok((client_addr, bridge_addr))
+        Ok((client_addr, tap_addr))
     }
 
     /// The console node's engine — the deployment-side attachment point
@@ -355,11 +399,12 @@ impl FleetSim {
         Ok(VehicleServiceClient::new(carrier, ServiceId::new(prefix)))
     }
 
-    /// Stop every agent, then the fabric.
+    /// Stop every agent, the bridge taps, then the fabric.
     pub async fn shutdown(self) {
         for agent in self.agents {
             agent.shutdown().await;
         }
+        self.tap_cancel.cancel();
         self.fabric.shutdown().await;
     }
 }
