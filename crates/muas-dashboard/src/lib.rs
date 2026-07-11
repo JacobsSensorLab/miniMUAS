@@ -1100,9 +1100,13 @@ pub async fn start(
     dash.attach_engine(engine.clone(), cancel.clone());
     let mut tasks = ndn::spawn_pollers(&dash, &engine, &cancel);
     // RC pilot surface (RC-CONTROL R2): build the send host over the
-    // configured targets and spawn its 50 Hz pacing loop.
-    if !config.rc_targets.is_empty() {
-        let host = rc::RcHost::new(&config.rc_targets);
+    // configured vehicles on the selected carriage (default: ndf-spark over
+    // the engine — `/muas/v3/<vid>/rc/spark/<index>`; `--rc-data` demotes to
+    // the frame-as-Data comparison bearer), which the agent fetches over the
+    // fabric, and spawn the 50 Hz pacing loop.
+    if !config.rc_vehicles.is_empty() {
+        let host = rc::RcHost::with_carriage(&config.rc_vehicles, config.rc_carriage);
+        host.serve(&engine, &cancel).await?;
         dash.attach_rc(host.clone());
         tasks.push(tokio::spawn(host.run(cancel.clone())));
     }

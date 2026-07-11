@@ -208,29 +208,39 @@ fn rc_status_broadcasts_and_rides_hello() {
     assert_eq!(hello["rc"]["iuas-01"]["failsafe_state"], json!("manual"));
 }
 
-/// End-to-end honesty: a pilot's WS commands (`{"cmd":"rc",…}`) drive real
-/// uas-rc frames onto a bound [`UdpRcReceiver`] — the exact receiver the
-/// agent binds for `--rc listen:<addr>`. Nothing is short-circuited: the
-/// command layer feeds the RcHost, whose sender puts frames on the wire.
+/// End-to-end honesty: a pilot's WS commands (`{"cmd":"rc",…}`) publish real
+/// uas-rc **Sparks** over the DEFAULT engine carriage
+/// (`/muas/v3/<vid>/rc/spark/<index>`), and a `uas_rc::EngineSparkReceiver` on
+/// that engine (standing in for the agent) pulls + SP-3-judges them across a
+/// real Interest/Data exchange — no side socket. Nothing is short-circuited:
+/// the command layer feeds the RcHost, whose engine-Spark sender carries the
+/// pilot's frame (RC-CONTROL transport correction).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn pilot_ws_commands_drive_real_rc_frames() {
-    use std::collections::BTreeMap;
-    use std::time::{Duration, Instant};
-    use uas_rc::{RcFlags, UdpRcReceiver};
+async fn pilot_ws_commands_publish_real_rc_frames_over_the_engine() {
+    use std::time::Duration;
+    use ndn_engine::builder::{EngineBuilder, EngineConfig};
+    use ndn_packet::Name;
+    use tokio_util::sync::CancellationToken;
+    use uas_rc::{EngineSparkReceiver, RcFlags};
 
-    let mut rx = UdpRcReceiver::bind("127.0.0.1:0").unwrap();
-    let addr = rx.local_addr().unwrap();
-    let mut targets = BTreeMap::new();
-    targets.insert("iuas-01".to_string(), addr);
+    let (engine, _shutdown) =
+        EngineBuilder::new(EngineConfig::default()).build().await.expect("engine");
+    let cancel = CancellationToken::new();
 
-    let config = DashConfig { record_dir: None, rc_targets: targets, ..DashConfig::default() };
+    let config = DashConfig {
+        record_dir: None,
+        rc_vehicles: vec!["iuas-01".into()],
+        ..DashConfig::default()
+    };
     let dash = Arc::new(Dashboard::new(
         config,
         Arc::new(StubDetector),
         Arc::new(ScriptedCommander::answering(CmdResult::Ack(Ack::ok()))),
     ));
-    // Wire the send host exactly as `start()` does.
-    let host = muas_dashboard::rc::RcHost::new(&dash.config.rc_targets);
+    // Wire + serve the send host exactly as `start()` does (default carriage:
+    // ndf-spark over the engine).
+    let host = muas_dashboard::rc::RcHost::new(&dash.config.rc_vehicles);
+    host.serve(&engine, &cancel).await.expect("serve rc sparks");
     dash.attach_rc(host.clone());
 
     // Engage + push a right-roll, arm-gesture held — all through the WS surface.
@@ -239,17 +249,22 @@ async fn pilot_ws_commands_drive_real_rc_frames() {
         "cmd": "rc", "op": "input", "arm": true,
         "channels": [2000, 1500, 1600, 1500, 65535, 65535, 65535, 65535],
     }));
-    host.tick(0);
 
-    let deadline = Instant::now() + Duration::from_secs(2);
+    // Pull the pilot's Spark over the engine (the agent's carriage): pace a
+    // few ticks and fetch until the SP-3-judged frame arrives.
+    let prefix: Name = muas_contracts::names::vehicle_stream("iuas-01", "rc/spark").parse().unwrap();
+    let mut rx = EngineSparkReceiver::new(&engine, prefix, &cancel);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     let frame = loop {
-        if let Some(f) = rx.poll().unwrap() {
-            break f;
+        host.tick(0);
+        if let Some((frame, _hex)) = rx.poll().await {
+            break frame;
         }
-        assert!(Instant::now() < deadline, "no frame reached the agent RC socket");
-        std::thread::sleep(Duration::from_millis(2));
+        assert!(tokio::time::Instant::now() < deadline, "no Spark fetched over the engine");
+        tokio::time::sleep(Duration::from_millis(5)).await;
     };
-    assert_eq!(frame.channels[0], 2000, "ch1 roll deflection arrived over the wire");
+    cancel.cancel();
+    assert_eq!(frame.channels[0], 2000, "ch1 roll deflection arrived as a Spark over the engine");
     assert_eq!(frame.channels[2], 1600, "ch3 throttle arrived");
     assert!(frame.flags.contains(RcFlags::ARM_GESTURE), "the held arm gesture rode the flag byte");
 }

@@ -59,6 +59,30 @@ impl VehicleSpec {
     }
 }
 
+/// The RC frame name a pilot publishes toward a vehicle:
+/// `/muas/v3/<vid>/rc/frame` (RC-CONTROL carriage correction). The dashboard
+/// produces it; the agent fetches it over the fabric — so this ONE name
+/// routes toward the console (→ dashboard), unlike the rest of the vehicle
+/// prefix. It lives at `rc/frame` (a sibling of the agent-served `rc/status`)
+/// so steering it to the pilot does NOT shadow `rc/status` by longest-prefix
+/// match — `rc/frame` is not a prefix of `rc/status`. (Both still group under
+/// `/muas/v3/<vid>/rc` in the 4-component nettap accounting.)
+fn rc_frame_name(vehicle_id: &str) -> String {
+    names::vehicle_stream(vehicle_id, "rc/frame")
+}
+
+/// The RC **Spark** stream prefix a pilot publishes toward a vehicle:
+/// `/muas/v3/<vid>/rc/spark` (the DEFAULT carriage — ndf-spark over the
+/// engine). Like `rc/frame` it flows pilot → vehicle, so the vehicle node
+/// steers it toward the console (→ dashboard). It is a sibling of `rc/status`
+/// and `rc/frame` (not a prefix of either), so routing it to the pilot never
+/// shadows the agent's `rc/status` by longest-prefix match; per-seq Spark and
+/// checkpoint names (`rc/spark/<index>`, `rc/spark/anchor`) all sit under this
+/// one routed prefix and group under `/muas/v3/<vid>/rc` in nettap accounting.
+fn rc_spark_name(vehicle_id: &str) -> String {
+    names::vehicle_stream(vehicle_id, "rc/spark")
+}
+
 /// Reserve a free loopback UDP port by binding an ephemeral socket and
 /// dropping it. The agent re-binds the port moments later; the tiny reuse
 /// race is accepted (documented) — the OS ephemeral allocator does not
@@ -173,6 +197,17 @@ impl FleetSim {
             for (i, spec) in specs.iter().enumerate() {
                 sim.link(console, nodes[i], link.clone());
                 sim.add_route(console, &names::vehicle_prefix(&spec.vehicle_id), nodes[i]);
+                // RC-CONTROL carriage correction: the DASHBOARD produces the
+                // pilot → vehicle RC names, so the vehicle node steers them
+                // toward the console (→ dashboard) — more-specific routes than
+                // the vehicle prefix, which otherwise loops them to the agent.
+                // The console→dashboard leg is added in `bridge_client` (the
+                // dashboard face only exists there). Every other name under the
+                // vehicle prefix still routes to the agent. Both the DEFAULT
+                // Spark carriage (`rc/spark`) and the frame-as-Data comparison
+                // bearer (`rc/frame`) are steered.
+                sim.add_route(nodes[i], &rc_spark_name(&spec.vehicle_id), console);
+                sim.add_route(nodes[i], &rc_frame_name(&spec.vehicle_id), console);
             }
             Some(console)
         } else {
@@ -293,9 +328,27 @@ impl FleetSim {
             self.tap_cancel.child_token(),
         )
         .await?;
-        self.fabric
+        let dash_face = self
+            .fabric
             .bridge_udp_socket(console, bridge_socket, tap_addr)
             .map_err(|e| format!("console bridge: {e}"))?;
+        // RC-CONTROL carriage: RC flows pilot → vehicle, so route each pilot
+        // RC name from the console toward the dashboard face (a more-specific
+        // route than the vehicle prefix, which routes to the agent). The
+        // agent's fetch Interest reaches the dashboard producer; the Data
+        // returns on PIT breadcrumbs. Zero extra sockets — the dashboard bridge
+        // already exists. Both the DEFAULT Spark carriage (`rc/spark`) and the
+        // frame-as-Data comparison bearer (`rc/frame`) are routed.
+        if let Some(engine) = self.console_engine() {
+            for vid in &self.vehicle_ids {
+                for name in [rc_spark_name(vid), rc_frame_name(vid)] {
+                    let name: Name = name
+                        .parse()
+                        .map_err(|e| format!("rc name '{vid}': {e:?}"))?;
+                    engine.fib().add_nexthop(&name, dash_face, 0);
+                }
+            }
+        }
         Ok((client_addr, tap_addr))
     }
 

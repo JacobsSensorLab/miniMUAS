@@ -28,7 +28,8 @@ ndn-rpc = { workspace = true }
 ndn-service-core = { workspace = true }
 # RC-CONTROL R2 pilot surface: the wire frame, RatePacer, RcTarget selector,
 # and the plain-UDP UdpRcSender that aims at the agent's `--rc listen:<addr>`.
-uas-rc = { workspace = true }
+# RC pilot surface: the pacer/selector + the DEFAULT engine-Spark carriage.
+uas-rc = { workspace = true, features = ["spark", "engine"] }
 bytes = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

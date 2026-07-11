@@ -882,9 +882,12 @@ impl Agent {
         }
 
         // -- RC-over-NDN receiver task (RC-CONTROL R1; `--rc`, default off) ------
+        // Default carriage is named data over THIS engine (the frames ride
+        // the same faces/fabric as telemetry); `--rc-udp` is the demoted
+        // side-socket comparison bearer.
         if let Some(rc_config) = config.rc.clone() {
             tasks.push(tokio::spawn(
-                rc::run_rc_task(shared.clone(), rc_config, cancel.clone())
+                rc::run_rc_task(shared.clone(), rc_config, engine.clone(), cancel.clone())
                     .instrument(mission.clone()),
             ));
         }

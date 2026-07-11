@@ -61,14 +61,41 @@ impl IdlePolicy {
     }
 }
 
-/// RC-over-NDN receiver binding (`--rc`, RC-CONTROL R1; default off).
+/// RC receiver binding (`--rc`, RC-CONTROL R1; default off).
+///
+/// # Transport correction (2026-07-11)
+///
+/// The DEFAULT and only non-comparison carriage is
+/// [`EngineSpark`](Self::EngineSpark): **ndf-spark carried over the shared
+/// `ForwarderEngine` + faces** — the same fabric (in sim, the ndn-sim
+/// SimLinks) telemetry and coord ride. Stamped Spark wire bytes are published
+/// as named Data under per-seq stream names (`/muas/v3/<vid>/rc/spark/<index>`)
+/// and fetched over the fabric. RC is a STREAM, and Sparks give it what
+/// discrete Data cannot: **SP-3 replay refusal** (the control-safety
+/// property), **windowed merkle integrity**, and **checkpoint Blocks** (a
+/// durable RC-session record).
+///
+/// The other three are DEMOTED comparison bearers, never the default (see
+/// `docs/v3/RC-CONTROL.md` "Transport correction"):
+/// [`NdnData`](Self::NdnData) — frame-as-latest-wins-Data over the engine
+/// (`--rc-data`, the prior default: crosses the fabric but throws away the
+/// stream properties); [`Listen`](Self::Listen) / [`Spark`](Self::Spark) —
+/// UDP side sockets that bypass the fabric entirely (`--rc-udp`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RcTransport {
-    /// Plain-UDP frame codec bound on this address (bench transport, no
-    /// sender identity).
+    /// **Default.** ndf-spark carried over the engine: Sparks fetched off
+    /// `/muas/v3/<vid>/rc/spark/<index>` across the same faces/fabric as
+    /// telemetry, judged by SP-3, anchored by checkpoint Blocks.
+    EngineSpark,
+    /// COMPARISON bearer — frame-as-latest-wins-Data over the engine
+    /// (`--rc-data`): crosses the fabric but as discrete request/response Data
+    /// under `/muas/v3/<vid>/rc/frame`, without the Spark stream properties.
+    NdnData,
+    /// COMPARISON bearer — plain-UDP frame codec on a side socket (no
+    /// sender identity; bypasses the NDN fabric).
     Listen(SocketAddr),
-    /// ndf-spark binding bound on this address (SP-3 replay judging +
-    /// producer-instance admission).
+    /// COMPARISON bearer — ndf-spark over a side UDP socket (SP-3 replay
+    /// judging + producer-instance admission; still bypasses the fabric).
     Spark(SocketAddr),
 }
 
@@ -76,6 +103,8 @@ impl RcTransport {
     /// The `source` label published on rc/status and journaled on engage.
     pub fn label(&self) -> String {
         match self {
+            Self::EngineSpark => "engine-spark".to_string(),
+            Self::NdnData => "ndn-data".to_string(),
             Self::Listen(addr) => format!("listen:{addr}"),
             Self::Spark(addr) => format!("spark:{addr}"),
         }
@@ -373,9 +402,20 @@ SENSORS:
                                (embedders pass a full SensorFeedConfig instead)
 
 RC OVER NDN (R1; default off):
-    --rc <T>                   RC receiver binding: listen:<udp addr> (plain
-                               frame codec) | spark:<udp addr> (ndf-spark,
-                               replay-judged + instance admission)
+    --rc                       run the RC receiver over the DEFAULT carriage:
+                               ndf-spark carried over the engine — Sparks
+                               fetched off /muas/v3/<vid>/rc/spark/<index>
+                               across the same faces/fabric as telemetry
+                               (SP-3 replay refusal, merkle windows, checkpoint
+                               Blocks) — no side socket
+    --rc-data                  COMPARISON bearer (demoted; the prior default):
+                               frame-as-latest-wins-Data over the engine at
+                               /muas/v3/<vid>/rc/frame — crosses the fabric but
+                               without the Spark stream properties
+    --rc-udp <T>               COMPARISON bearer only (demoted): a side UDP
+                               socket that BYPASSES the NDN fabric.
+                               <addr> or listen:<addr> = plain frame codec;
+                               spark:<addr> = ndf-spark replay-judged codec
     --rc-admission <A,B,..>    admitted spark producer instances (hex) —
                                allow-configured stub; empty admits any
                                (R4 replaces this with AuthorityRecord grants)
@@ -428,8 +468,12 @@ pub fn parse_args(args: &[String]) -> Result<ParseOutcome, String> {
     let mut min_agl: Option<f64> = None;
     let mut max_agl: Option<f64> = None;
     let mut floor: Option<f64> = None;
-    // RC flags may arrive in any order; assembled after the loop.
-    let mut rc_transport: Option<RcTransport> = None;
+    // RC flags may arrive in any order; assembled after the loop. `--rc`
+    // selects the DEFAULT engine-Spark carriage; `--rc-data` and `--rc-udp`
+    // are the demoted comparison bearers (a comparison bearer wins if given
+    // alongside `--rc`).
+    let mut rc_ndn = false;
+    let mut rc_comparison: Option<RcTransport> = None;
     let mut rc_admission: Vec<String> = Vec::new();
     let mut rc_preempt: Option<RcPreempt> = None;
 
@@ -547,18 +591,15 @@ pub fn parse_args(args: &[String]) -> Result<ParseOutcome, String> {
                     }
                 };
             }
-            "--rc" => {
+            "--rc" => rc_ndn = true,
+            "--rc-data" => rc_comparison = Some(RcTransport::NdnData),
+            "--rc-udp" => {
                 let value = next(arg, &mut it)?;
-                let (kind, addr) = split_pair(&value, ':', arg)?;
-                let addr = parse_addr(addr, arg)?;
-                rc_transport = Some(match kind {
-                    "listen" => RcTransport::Listen(addr),
-                    "spark" => RcTransport::Spark(addr),
-                    other => {
-                        return Err(format!(
-                            "--rc: expected listen:<addr>|spark:<addr>, got '{other}:..'"
-                        ))
-                    }
+                rc_comparison = Some(match value.split_once(':') {
+                    Some(("spark", addr)) => RcTransport::Spark(parse_addr(addr, arg)?),
+                    Some(("listen", addr)) => RcTransport::Listen(parse_addr(addr, arg)?),
+                    // A bare host:port is a plain-UDP listen address.
+                    _ => RcTransport::Listen(parse_addr(&value, arg)?),
                 });
             }
             "--rc-admission" => {
@@ -597,6 +638,9 @@ pub fn parse_args(args: &[String]) -> Result<ParseOutcome, String> {
     if config.carrier == CarrierKind::Ndnsf && config.ndnsf_listen.is_none() {
         return Err("--carrier ndnsf requires --ndnsf-listen (see --help)".to_string());
     }
+    // A comparison bearer (`--rc-data` / `--rc-udp`) wins if given; otherwise
+    // `--rc` selects the DEFAULT engine-Spark carriage.
+    let rc_transport = rc_comparison.or_else(|| rc_ndn.then_some(RcTransport::EngineSpark));
     match rc_transport {
         Some(transport) => {
             config.rc = Some(RcConfig {
@@ -606,7 +650,10 @@ pub fn parse_args(args: &[String]) -> Result<ParseOutcome, String> {
             });
         }
         None if !rc_admission.is_empty() || rc_preempt.is_some() => {
-            return Err("--rc-admission/--rc-preempt require --rc (see --help)".to_string());
+            return Err(
+                "--rc-admission/--rc-preempt require --rc/--rc-data/--rc-udp (see --help)"
+                    .to_string(),
+            );
         }
         None => {}
     }
@@ -759,11 +806,11 @@ mod tests {
     fn rc_flags_parse_and_default_off() {
         assert_eq!(AgentConfig::default().rc, None, "RC defaults OFF");
 
+        // `--rc` selects the DEFAULT engine-Spark carriage (the correction).
         let ParseOutcome::Run(config) = parse_args(&args(&[
             "--vehicle-id",
             "iuas-02",
             "--rc",
-            "listen:127.0.0.1:14650",
             "--rc-admission",
             "aabb,ccdd",
             "--rc-preempt",
@@ -775,32 +822,54 @@ mod tests {
         let rc = config.rc.expect("--rc enables the receiver");
         assert_eq!(
             rc.transport,
-            RcTransport::Listen("127.0.0.1:14650".parse().unwrap())
+            RcTransport::EngineSpark,
+            "ndf-spark over the engine is the default"
         );
-        assert_eq!(rc.transport.label(), "listen:127.0.0.1:14650");
+        assert_eq!(rc.transport.label(), "engine-spark");
         assert_eq!(rc.admission, vec!["aabb".to_string(), "ccdd".to_string()]);
         assert_eq!(rc.preempt, RcPreempt::PauseMission);
         assert_eq!(rc.hold_after_ms, 500, "uas-rc ladder defaults");
         assert_eq!(rc.rtl_after_ms, 3000);
 
-        // Spark binding + implicit defaults (deny, allow-any).
+        // `--rc-data` is the demoted frame-as-Data COMPARISON bearer.
         let ParseOutcome::Run(config) =
-            parse_args(&args(&["--vehicle-id", "a", "--rc", "spark:0.0.0.0:14650"])).unwrap()
+            parse_args(&args(&["--vehicle-id", "a", "--rc-data"])).unwrap()
+        else {
+            panic!("expected Run");
+        };
+        assert_eq!(config.rc.unwrap().transport, RcTransport::NdnData);
+
+        // `--rc-udp <addr>` is the demoted COMPARISON bearer (plain UDP).
+        let ParseOutcome::Run(config) =
+            parse_args(&args(&["--vehicle-id", "a", "--rc-udp", "127.0.0.1:14650"])).unwrap()
         else {
             panic!("expected Run");
         };
         let rc = config.rc.unwrap();
-        assert!(matches!(rc.transport, RcTransport::Spark(_)));
+        assert_eq!(rc.transport, RcTransport::Listen("127.0.0.1:14650".parse().unwrap()));
+        assert_eq!(rc.transport.label(), "listen:127.0.0.1:14650");
         assert_eq!(rc.preempt, RcPreempt::Deny, "preempt defaults to deny");
-        assert!(rc.admission.is_empty(), "admission stub defaults allow-any");
 
-        // Refusals: bad shapes, and RC sub-flags without --rc.
-        assert!(parse_args(&args(&["--vehicle-id", "a", "--rc", "serial:/dev/tty"])).is_err());
+        // A comparison bearer wins even alongside `--rc`.
+        let ParseOutcome::Run(config) = parse_args(&args(&[
+            "--vehicle-id", "a", "--rc", "--rc-udp", "spark:0.0.0.0:14650",
+        ]))
+        .unwrap() else {
+            panic!("expected Run");
+        };
+        assert!(matches!(config.rc.unwrap().transport, RcTransport::Spark(_)));
+        let ParseOutcome::Run(config) =
+            parse_args(&args(&["--vehicle-id", "a", "--rc", "--rc-data"])).unwrap()
+        else {
+            panic!("expected Run");
+        };
+        assert_eq!(config.rc.unwrap().transport, RcTransport::NdnData);
+
+        // Refusals: bad shapes, and RC sub-flags without --rc/--rc-data/--rc-udp.
+        assert!(parse_args(&args(&["--vehicle-id", "a", "--rc-udp", "nope"])).is_err());
         assert!(parse_args(&args(&["--vehicle-id", "a", "--rc-preempt", "deny"])).is_err());
         assert!(
-            parse_args(&args(&["--vehicle-id", "a", "--rc", "listen:127.0.0.1:1",
-                "--rc-preempt", "sometimes"]))
-            .is_err()
+            parse_args(&args(&["--vehicle-id", "a", "--rc", "--rc-preempt", "sometimes"])).is_err()
         );
     }
 

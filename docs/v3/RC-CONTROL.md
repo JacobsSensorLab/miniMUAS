@@ -69,14 +69,25 @@ The rule, matching how the network layer already treats bearers:
 - **UDP is a comparison bearer only**, behind an explicit flag, exactly as
   AP/STA mode is a comparison bearer for the network — never the default,
   never the thing a demo shows first.
-- Carriage: ndf-spark over the engine is the intended path (ephemeral,
-  sequenced, loss-honest — the RC profile). If the framework's spark does
-  not yet offer a turnkey named-data-over-engine carriage (the R1 spark
-  binding was spark-over-UDP), that gap is itself a maintainer feedback
-  item — file it — and the interim path is RC frames as fast-cycling named
-  Data objects served/fetched over the engine like the latest-wins
-  telemetry streams. Either way the frames cross the fabric as **named
-  data**, not a side socket.
+- Carriage: **ndf-spark carried over the engine is the DEFAULT.** RC is a
+  stream — ephemeral, sequenced, high-rate, loss-honest — which is exactly
+  the Sparkstream profile, and Sparks give RC what discrete Data objects
+  cannot: **SP-3 replay refusal** (the control-safety property, refusing
+  replayed/stale-instance frames before the ledger sees them — already
+  tested), **windowed merkle integrity**, and **checkpoint Blocks** (Blocks
+  remember: a durable RC-session record cut from the moving stream). Frame-
+  as-latest-wins-Data and UDP are kept as **comparison bearers only**.
+- The mechanism: ndf-spark's `SparkCarrier`/`SparkSource` traits
+  (stream_core.rs) are dumb byte pipes — `SparkEmitter` stamps/windows/cuts
+  checkpoints, `SparkAcceptor` judges (SP-3), both transport-agnostic. The
+  reference `SparkProducer::over(NamedPublisher)` rides ndn-surface SHM
+  (same-host only); the R1 spark path paired the emitter with a UDP socket.
+  The correct default is a `SparkCarrier`/`SparkSource` pair backed by the
+  **ForwarderEngine**: stamped spark wire bytes carried as named Data under
+  a per-seq RC stream name (`/muas/v3/<vid>/rc/<seq>`), crossing the same
+  faces/SimLinks as every other stream. That engine-backed Spark binding is
+  itself the "spark-over-engine carriage" gap from maintainer report #2 —
+  we build it here and offer it upstream as the reusable primitive.
 
 This correction is the immediate RC work; R3–R5 below assume it.
 

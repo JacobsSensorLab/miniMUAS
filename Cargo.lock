@@ -2065,6 +2065,7 @@ dependencies = [
  "ed25519-dalek",
  "manifest",
  "ndf-core",
+ "ndf-manifest",
  "ndf-nfn",
  "ndf-policy",
  "ndf-replication-transport",
@@ -4574,7 +4575,12 @@ dependencies = [
 name = "uas-rc"
 version = "0.1.0-alpha.0"
 dependencies = [
+ "bytes",
  "ndf-spark",
+ "ndn-app",
+ "ndn-engine",
+ "ndn-packet",
+ "tokio-util",
  "tracing",
 ]
 

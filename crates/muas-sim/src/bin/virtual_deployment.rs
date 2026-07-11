@@ -328,6 +328,12 @@ fn agent_config_for(index: usize, run_id: &str, run_dir: &Path, config: &mut Age
     // Synthetic sensors on every vehicle: frames/audio render from the
     // anomaly ground truth the agent fetches OVER the fabric.
     config.sensor_feed = muas_agent::SensorFeedConfig::synthetic();
+    // RC over the DEFAULT carriage — ndf-spark carried over the engine: the
+    // agent fetches per-seq Sparks off `/muas/v3/<vid>/rc/spark/<index>` across
+    // the same faces/fabric as telemetry (SP-3 replay refusal, merkle windows,
+    // checkpoint Blocks) — no side socket. The dashboard Pilot surface emits
+    // those Sparks (default carriage too); the `--verify` RC check drives one.
+    config.rc = Some(muas_agent::RcConfig::new(muas_agent::RcTransport::EngineSpark));
 }
 
 fn build_run_config(run_id: &str, profile: &str, link: &LinkConfig, configs: &[AgentConfig]) -> RunConfig {
@@ -647,6 +653,8 @@ struct WsProbe {
     net: Option<Value>,
     /// Latest per-vehicle `capabilities` messages (sensor layer feed).
     capabilities: HashMap<String, Value>,
+    /// Latest per-vehicle `rc` status (RC-CONTROL R2 pilot strip feed).
+    rc: HashMap<String, Value>,
     /// Binary WS frames seen (video relay output).
     binary_frames: usize,
 }
@@ -665,6 +673,7 @@ impl WsProbe {
             events: Vec::new(),
             net: None,
             capabilities: HashMap::new(),
+            rc: HashMap::new(),
             binary_frames: 0,
         })
     }
@@ -731,6 +740,11 @@ impl WsProbe {
                 }
             }
             Some("event") => self.events.push(message),
+            Some("rc") => {
+                if let Some(vid) = message.get("vehicle").and_then(Value::as_str) {
+                    self.rc.insert(vid.to_string(), message["status"].clone());
+                }
+            }
             Some("net") => self.net = Some(message),
             Some("capabilities") => {
                 if let Some(vid) = message.get("vehicle").and_then(Value::as_str) {
@@ -1120,6 +1134,105 @@ async fn run_verify(
     });
     log.line("verify.progress", json!({ "stage": "net+sensor feeds", "ok": feeds_ok }));
 
+    // 10b — RC over the DEFAULT carriage: ndf-spark carried over the engine
+    // (transport correction). The Pilot surface emits RC **Sparks** on
+    // `/muas/v3/iuas-02/rc/spark/<index>` over the dashboard engine; iuas-02's
+    // agent FETCHES them across the SimLinks, SP-3-judges them, and its real RC
+    // receiver admits the survivors — the same fabric telemetry rides, no side
+    // socket. Three independent proofs it is no shortcut and is truly a stream:
+    //  (a) the agent's rc/status reaches the WS with a live `manual` failsafe
+    //      state and a small silence age — the Sparks reached the receiver
+    //      (and the sim backend moves under the stick deflection);
+    //  (b) the GCS bridge tap counted RC Data SERVED under the `/rc` prefix
+    //      (the pilot serves Sparks + checkpoints; the GCS merely consumes
+    //      rc/status), so the Sparks crossed the same SimLinks as telemetry;
+    //  (c) the agent anchor-verified a checkpoint Block cut from the moving
+    //      stream (`rc/status.anchors > 0`) — windowed merkle integrity
+    //      end-to-end, the durable RC-session record only Sparks give.
+    const RC_VID: &str = "iuas-02";
+    probe.send(json!({ "cmd": "rc", "op": "engage", "target": RC_VID })).await?;
+    // Stream right-roll stick input at ~20 Hz (the browser cadence), pumping
+    // the WS between sends, until the receiver is engaged AND a checkpoint has
+    // anchored — or a deadline. The pilot keeps publishing 50 Hz Sparks the
+    // whole time (the session stays engaged), so windows keep completing.
+    let roll = json!([2000, 1500, 1500, 1500, 65535, 65535, 65535, 65535]);
+    let manual = |p: &WsProbe| {
+        p.rc
+            .get(RC_VID)
+            .map(|s| {
+                s["failsafe_state"] == json!("manual")
+                    && s["age_ms"].as_u64().map(|a| a < 500).unwrap_or(false)
+            })
+            .unwrap_or(false)
+    };
+    let anchored = |p: &WsProbe| {
+        p.rc.get(RC_VID).and_then(|s| s["anchors"].as_u64()).unwrap_or(0) > 0
+    };
+    let mut rc_sent = 0;
+    let rc_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while tokio::time::Instant::now() < rc_deadline {
+        let _ = probe
+            .send(json!({
+                "cmd": "rc", "op": "input", "channels": roll.clone(), "arm": true, "mode": 0,
+            }))
+            .await;
+        rc_sent += 1;
+        probe.pump(Duration::from_millis(50)).await;
+        if manual(&probe) && anchored(&probe) {
+            break;
+        }
+    }
+    // (a) the agent's receiver saw the Sparks (engaged, low silence age).
+    let rc_responded = manual(&probe);
+    // (c) a checkpoint Block was cut, crossed the fabric, and anchor-verified.
+    let rc_anchored = anchored(&probe);
+    // (b) the Sparks crossed the SimLinks: the GCS tap counted RC Data.
+    let rc_crossed = fleet
+        .prefix_stats
+        .snapshot()
+        .iter()
+        .any(|row| row.node == "gcs" && row.prefix.ends_with("/rc") && row.counters.out_data > 0);
+    probe.send(json!({ "cmd": "rc", "op": "disengage" })).await?;
+    let rc_rows: Vec<Value> = fleet
+        .prefix_stats
+        .snapshot()
+        .iter()
+        .filter(|r| r.prefix.ends_with("/rc"))
+        .map(|r| {
+            json!({
+                "node": r.node,
+                "prefix": r.prefix,
+                "out_data": r.counters.out_data,
+                "out_interests": r.counters.out_interests,
+                "in_data": r.counters.in_data,
+                "in_interests": r.counters.in_interests,
+            })
+        })
+        .collect();
+    checks.push(Check {
+        name: "rc-spark-over-fabric",
+        pass: rc_responded && rc_crossed && rc_anchored,
+        details: json!({
+            "vehicle": RC_VID,
+            "carriage": "engine-spark",
+            "frames_sent": rc_sent,
+            "responded": rc_responded,
+            "crossed": rc_crossed,
+            "anchored": rc_anchored,
+            "rc_status": probe.rc.get(RC_VID).cloned(),
+            "rc_prefix_rows": rc_rows,
+        }),
+    });
+    log.line(
+        "verify.progress",
+        json!({
+            "stage": "rc spark-over-fabric",
+            "responded": rc_responded,
+            "crossed": rc_crossed,
+            "anchored": rc_anchored,
+        }),
+    );
+
     // 11 — RTL ALL from the dashboard; everyone lands and disarms (raster
     // and investigate runners abort within one control cycle).
     probe.send(json!({ "cmd": "all", "command": "rtl" })).await?;
@@ -1265,6 +1378,11 @@ async fn run(args: Args) -> Result<i32, String> {
         }],
         gcs: Some(gcs),
         strategy: args.strategy.clone(),
+        // RC-CONTROL R2 pilot surface over named data: the dashboard serves
+        // `/muas/v3/<vid>/rc` for the inspectors on its engine; the agents
+        // fetch it across the SimLinks (proven by the `--verify` RC check +
+        // the nettap `/rc` prefix counters).
+        rc_vehicles: vec!["iuas-01".into(), "iuas-02".into()],
         ..muas_dashboard::DashConfig::default()
     };
     // SimpleDetector: real detection over fabric-fetched frames; the NDN

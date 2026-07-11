@@ -47,6 +47,13 @@ pub struct RcStatus {
     pub age_ms: Option<u64>,
     /// Silence-ladder state (see [`failsafe_state`]).
     pub failsafe_state: String,
+    /// Checkpoint windows anchor-verified over the engine-Spark carriage
+    /// (windowed merkle integrity: a cut checkpoint Block that crossed the
+    /// fabric and matched the samples received). 0 for the comparison bearers
+    /// (UDP / frame-as-Data cut no checkpoints). Additive; older publishers
+    /// omit it (`0`).
+    #[serde(default)]
+    pub anchors: u64,
 }
 
 #[cfg(test)]
@@ -63,6 +70,7 @@ mod tests {
             seq_gap_pct: 3.5,
             age_ms: Some(18),
             failsafe_state: failsafe_state::MANUAL.into(),
+            anchors: 3,
         };
         let bytes = serde_json::to_vec(&status).unwrap();
         assert_eq!(serde_json::from_slice::<RcStatus>(&bytes).unwrap(), status);

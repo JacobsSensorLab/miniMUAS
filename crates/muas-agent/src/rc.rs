@@ -56,16 +56,21 @@
 //! to spinning motors). On the sim backend overrides move the kinematic
 //! model regardless, which is exactly what the SITL-less tests observe.
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use ndn_app::{Consumer, EngineAppExt};
+use ndn_engine::ForwarderEngine;
+use ndn_packet::encode::InterestBuilder;
+use ndn_packet::Name;
+use muas_contracts::names;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use uas_rc::{
-    FailsafeConfig, RcAdmission, RcEvent, RcFlags, RcIntent, RcReceiverTask, RcSource,
-    SparkRcReceiver, UdpRcReceiver,
+    instance_hex, EngineSparkReceiver, FailsafeConfig, RcAdmission, RcEvent, RcFlags, RcFrame,
+    RcIngest, RcIntent, RcReceiverTask, RcSource, SparkRcReceiver, UdpRcReceiver,
 };
 
 use crate::config::{RcConfig, RcPreempt, RcTransport};
@@ -82,13 +87,78 @@ const RC_TICK: Duration = Duration::from_millis(20);
 /// rc/status republish floor (transitions publish immediately).
 const STATUS_PERIOD: Duration = Duration::from_millis(250);
 
+/// Latest-wins RC fetch Interest lifetime (sub-tick so a miss is silence,
+/// not a stall — loss is the failsafe's signal, never a retransmit).
+const RC_FETCH_LIFETIME: Duration = Duration::from_millis(18);
+
 /// Build the configured binding and run the receiver loop until cancel.
+///
+/// The DEFAULT carriage is [`RcTransport::EngineSpark`]: **ndf-spark carried
+/// over the engine** — a fetch loop pulls per-seq Sparks off
+/// `/muas/v3/<vid>/rc/spark/<index>` across the same faces/fabric as
+/// telemetry, judges them (SP-3 replay refusal), anchor-verifies checkpoint
+/// Blocks, and pushes the decoded frames into an [`RcIngest`] the receiver
+/// task drains. The receiver's admission / failsafe / arbitration are
+/// byte-identical to every bearer; only the byte source moved to
+/// spark-over-engine. `--rc-data` (frame-as-Data) and `--rc-udp` (side
+/// socket) are the demoted comparison bearers.
 pub(crate) async fn run_rc_task(
     shared: Arc<AgentShared>,
     config: RcConfig,
+    engine: ForwarderEngine,
     cancel: CancellationToken,
 ) {
+    // Windows anchor-verified by the engine-Spark path (checkpoint Blocks) —
+    // surfaced to rc/status; stays 0 for the comparison bearers.
+    let anchors = Arc::new(AtomicU64::new(0));
     let source = match &config.transport {
+        RcTransport::EngineSpark => {
+            // Fetch per-seq Sparks off `/muas/v3/<vid>/rc/spark/<index>` over
+            // the engine, judge SP-3, anchor-verify checkpoints, and feed the
+            // receiver — the corrected default (spark-over-fabric). The stream
+            // lives under `rc/spark` (a sibling of the agent's own `rc/status`)
+            // so the pilot→vehicle name is NOT a prefix of `rc/status` — a FIB
+            // route steering it to the pilot cannot shadow rc/status by LPM.
+            let prefix =
+                match names::vehicle_stream(&shared.vehicle_id, "rc/spark").parse::<Name>() {
+                    Ok(name) => name,
+                    Err(err) => {
+                        warn!(?err, "rc: bad rc spark name; rc receiver disabled");
+                        return;
+                    }
+                };
+            let (source, ingest) = RcSource::ingest();
+            let receiver = EngineSparkReceiver::new(&engine, prefix, &cancel);
+            let admission = RcAdmission {
+                allowed_instances: config.admission.clone(),
+                allowed_senders: Vec::new(),
+            };
+            tokio::spawn(rc_engine_spark_fetch_loop(
+                receiver,
+                ingest,
+                admission,
+                anchors.clone(),
+                cancel.clone(),
+            ));
+            source
+        }
+        RcTransport::NdnData => {
+            // Fetch `/muas/v3/<vid>/rc/frame` latest-wins over the engine and
+            // feed the receiver: the frame-as-Data COMPARISON bearer (crosses
+            // the fabric, no Spark stream properties). `rc/frame` is a sibling
+            // of `rc/status` so it cannot shadow it by LPM. No side socket.
+            let name = match names::vehicle_stream(&shared.vehicle_id, "rc/frame").parse::<Name>() {
+                Ok(name) => name,
+                Err(err) => {
+                    warn!(?err, "rc: bad rc frame name; rc receiver disabled");
+                    return;
+                }
+            };
+            let (source, ingest) = RcSource::ingest();
+            let consumer = engine.app_consumer(cancel.child_token());
+            tokio::spawn(rc_ndn_fetch_loop(consumer, name, ingest, cancel.clone()));
+            source
+        }
         RcTransport::Listen(addr) => match UdpRcReceiver::bind(addr) {
             Ok(rx) => RcSource::Udp(rx),
             Err(err) => {
@@ -125,7 +195,90 @@ pub(crate) async fn run_rc_task(
     );
     let label = config.transport.label();
     info!(source = %label, preempt = config.preempt.as_str(), "rc receiver up");
-    run_rc_loop(shared, config, task, label, cancel).await;
+    run_rc_loop(shared, config, task, label, anchors, cancel).await;
+}
+
+/// The engine-Spark byte source (the corrected default): fetch per-seq Sparks
+/// off `<vid>/rc/spark/<index>` over the engine, judge each with SP-3
+/// ([`EngineSparkReceiver`]: replayed/stale-instance Sparks refused before the
+/// frame ledger), admit by producer instance, and push the survivors into
+/// `ingest`. Loss-honest by construction: a fetch miss is silence (no
+/// retransmit), read by the receiver's ladder exactly as a lost datagram.
+///
+/// Alongside the sticks, the loop anchor-verifies the latest checkpoint Block
+/// (windowed merkle integrity): each [`EngineSparkReceiver::anchored`] count
+/// is published to rc/status — proof a checkpoint was cut, crossed the fabric,
+/// and matched the samples received.
+async fn rc_engine_spark_fetch_loop(
+    mut receiver: EngineSparkReceiver,
+    ingest: RcIngest,
+    admission: RcAdmission,
+    anchors: Arc<AtomicU64>,
+    cancel: CancellationToken,
+) {
+    let mut interval = tokio::time::interval(RC_TICK);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut ticks: u64 = 0;
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            _ = interval.tick() => {}
+        }
+        // One Spark per tick: SP-3 + instance admission judge it before the
+        // frame ledger; an admitted stick pushes into the shared ingest.
+        if let Some((frame, hex)) = receiver
+            .poll_admitted(|instance| admission.admits_instance(&instance_hex(instance)))
+            .await
+        {
+            ingest.push(frame, Some(hex));
+        }
+        // Re-judge any held (cross-channel racing) checkpoint after the fresh
+        // Spark; anchor-verify the latest checkpoint periodically (the anchor
+        // rides a slower cadence than the 50 Hz sticks).
+        let _ = receiver.rejudge_pending();
+        ticks += 1;
+        if ticks.is_multiple_of(10) {
+            let _ = receiver.poll_checkpoint().await;
+        }
+        anchors.store(receiver.anchored(), Ordering::Relaxed);
+    }
+}
+
+/// Pull the latest RC frame off `<vid>/rc` over the engine at ~50 Hz and
+/// push it into `ingest` — the named-data carriage's byte source.
+///
+/// Loss-honest by construction: a fetch that finds no fresh frame (a paced
+/// gap, a dropped Data on the SimLink) simply yields nothing this tick, and
+/// the receiver's silence ladder reads that gap exactly as it would a lost
+/// datagram. Duplicate fetches of the same frame are dropped by the
+/// receiver's seq ledger. No retransmit, no acknowledgement.
+async fn rc_ndn_fetch_loop(
+    mut consumer: Consumer,
+    name: Name,
+    ingest: RcIngest,
+    cancel: CancellationToken,
+) {
+    let mut interval = tokio::time::interval(RC_TICK);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            _ = interval.tick() => {}
+        }
+        let interest = InterestBuilder::new(name.clone())
+            .must_be_fresh()
+            .lifetime(RC_FETCH_LIFETIME);
+        if let Ok(data) = consumer.fetch_with(interest).await {
+            if let Some(bytes) = data.content() {
+                if let Ok(frame) = RcFrame::decode(bytes) {
+                    // Frame-as-Data carries no Spark instance; admission by
+                    // NDN grant lands at R4 (NDN naming/signing is the
+                    // addressing today). Push unattributed, like the bench.
+                    ingest.push(frame, None);
+                }
+            }
+        }
+    }
 }
 
 /// One engaged-session ledger (loop-local state).
@@ -148,6 +301,7 @@ pub(crate) async fn run_rc_loop(
     config: RcConfig,
     mut task: RcReceiverTask,
     source_label: String,
+    anchors: Arc<AtomicU64>,
     cancel: CancellationToken,
 ) {
     let t0 = std::time::Instant::now();
@@ -219,7 +373,14 @@ pub(crate) async fn run_rc_loop(
 
         let status_due = last_status.is_none_or(|t| t.elapsed() >= STATUS_PERIOD);
         if transition || status_due {
-            publish_status(&shared, &task, now_ms, session.engaged, &source_label);
+            publish_status(
+                &shared,
+                &task,
+                now_ms,
+                session.engaged,
+                &source_label,
+                anchors.load(Ordering::Relaxed),
+            );
             last_status = Some(std::time::Instant::now());
         }
     }
@@ -378,6 +539,7 @@ fn publish_status(
     now_ms: u64,
     engaged: bool,
     source_label: &str,
+    anchors: u64,
 ) {
     let snapshot = task.status(now_ms);
     let status = muas_contracts::rc::RcStatus {
@@ -388,6 +550,7 @@ fn publish_status(
         seq_gap_pct: snapshot.seq_gap_pct,
         age_ms: snapshot.silence_ms,
         failsafe_state: snapshot.state.as_str().to_string(),
+        anchors,
     };
     match serde_json::to_vec(&status) {
         Ok(bytes) => *lock(&shared.latest_rc) = Some(Bytes::from(bytes)),
@@ -472,6 +635,7 @@ mod tests {
             config,
             task,
             format!("listen:{addr}"),
+            Arc::new(AtomicU64::new(0)),
             cancel.clone(),
         ));
         (addr, cancel)
@@ -825,5 +989,141 @@ mod tests {
         let ack = service(&shared).rc_disengage().await;
         assert!(!ack.accepted);
         assert_eq!(ack.code, "rc-not-engaged");
+    }
+
+    /// The named-data carriage, engine-loopback: a producer serves the
+    /// vehicle's `<vid>/rc` frame latest-wins over one engine; the agent's
+    /// fetch loop pulls it over the SAME engine (a real Interest/Data
+    /// exchange across the app faces — no side socket) and the receiver
+    /// surfaces the stick sample with the pilot's channels intact.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ndn_fetch_loop_pulls_frames_over_the_engine() {
+        use ndn_engine::builder::{EngineBuilder, EngineConfig};
+
+        let (engine, _shutdown) = EngineBuilder::new(EngineConfig::default())
+            .build()
+            .await
+            .expect("engine");
+        let name: Name = names::vehicle_stream("iuas-77", "rc/frame").parse().expect("rc name");
+
+        // A pilot-side producer publishes one frame (full right roll) as the
+        // latest-wins Data content on the rc name.
+        let mut sticks = CENTERED;
+        sticks[0] = 2000;
+        let frame = RcFrame { seq: 0, t_ms: 0, channels: sticks, flags: RcFlags::EMPTY };
+        let content = Bytes::from(frame.encode().to_vec());
+        let node = engine.app_node(CancellationToken::new().child_token());
+        let _guard = node
+            .serve(name.clone(), move |interest, responder| {
+                let content = content.clone();
+                async move {
+                    let _ = responder.respond((*interest.name).clone(), content).await;
+                }
+            })
+            .await
+            .expect("serve rc frame");
+
+        // The agent's carriage: fetch loop → ingest → receiver task.
+        let (source, ingest) = RcSource::ingest();
+        let mut task =
+            RcReceiverTask::new(source, FailsafeConfig::default(), RcAdmission::allow_any());
+        let cancel = CancellationToken::new();
+        tokio::spawn(rc_ndn_fetch_loop(
+            engine.app_consumer(cancel.child_token()),
+            name,
+            ingest,
+            cancel.clone(),
+        ));
+
+        let mut roll = None;
+        let ok = wait_until(5.0, || {
+            let mut out = Vec::new();
+            task.poll(0, &mut out).expect("poll");
+            for event in out {
+                if let RcEvent::Frame(f) = event {
+                    roll = Some(f.channels[0]);
+                }
+            }
+            roll.is_some()
+        })
+        .await;
+        cancel.cancel();
+        assert!(ok, "no RC frame crossed the engine");
+        assert_eq!(roll, Some(2000), "the pilot's roll deflection survived the named-data hop");
+    }
+
+    /// The DEFAULT engine-Spark carriage, engine-loopback: a pilot-side
+    /// [`EngineSparkSender`] serves per-seq Sparks (+ checkpoint Blocks) on
+    /// `<vid>/rc/spark`; the agent's engine-Spark fetch loop pulls them over
+    /// the SAME engine (SP-3 judged, no side socket), the receiver surfaces
+    /// the stick with the pilot's channels intact, and the anchor counter
+    /// climbs — proof a checkpoint was cut, crossed the fabric, and verified.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn engine_spark_loop_pulls_sparks_and_anchors_over_the_engine() {
+        use ndn_engine::builder::{EngineBuilder, EngineConfig};
+        use uas_rc::EngineSparkSender;
+
+        let (engine, _shutdown) = EngineBuilder::new(EngineConfig::default())
+            .build()
+            .await
+            .expect("engine");
+        let prefix: Name = names::vehicle_stream("iuas-78", "rc/spark").parse().expect("rc name");
+
+        // A pilot-side sender streams right-roll Sparks, anchoring every 4.
+        let cancel = CancellationToken::new();
+        let mut sender = EngineSparkSender::serve(&engine, prefix.clone(), Some(4), &cancel)
+            .await
+            .expect("serve spark");
+        let mut sticks = CENTERED;
+        sticks[0] = 2000;
+        {
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                let mut seq = 0u32;
+                let mut interval = tokio::time::interval(Duration::from_millis(20));
+                loop {
+                    tokio::select! {
+                        _ = cancel.cancelled() => break,
+                        _ = interval.tick() => {}
+                    }
+                    let frame = RcFrame { seq, t_ms: seq * 20, channels: sticks, flags: RcFlags::EMPTY };
+                    sender.send(&frame, i64::from(seq) * 20_000).await;
+                    seq += 1;
+                }
+            });
+        }
+
+        // The agent's carriage: engine-Spark fetch loop → ingest → receiver.
+        let (source, ingest) = RcSource::ingest();
+        let mut task =
+            RcReceiverTask::new(source, FailsafeConfig::default(), RcAdmission::allow_any());
+        let anchors = Arc::new(AtomicU64::new(0));
+        let receiver = EngineSparkReceiver::new(&engine, prefix, &cancel);
+        tokio::spawn(rc_engine_spark_fetch_loop(
+            receiver,
+            ingest,
+            RcAdmission::allow_any(),
+            anchors.clone(),
+            cancel.clone(),
+        ));
+
+        let mut roll = None;
+        let got_stick = wait_until(6.0, || {
+            let mut out = Vec::new();
+            task.poll(0, &mut out).expect("poll");
+            for event in out {
+                if let RcEvent::Frame(f) = event {
+                    roll = Some(f.channels[0]);
+                }
+            }
+            roll.is_some()
+        })
+        .await;
+        // The checkpoint economy rides a slower cadence than the sticks.
+        let anchored = wait_until(6.0, || anchors.load(Ordering::Relaxed) > 0).await;
+        cancel.cancel();
+        assert!(got_stick, "no RC Spark crossed the engine");
+        assert_eq!(roll, Some(2000), "the pilot's roll survived the spark-over-engine hop");
+        assert!(anchored, "no checkpoint window anchored over the fabric");
     }
 }

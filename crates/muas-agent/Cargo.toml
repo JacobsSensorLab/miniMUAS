@@ -21,8 +21,9 @@ uas-flight = { workspace = true }
 uas-mavlink = { workspace = true }
 uas-fleet-data = { workspace = true }
 uas-fleet-node = { workspace = true }
-# RC-over-NDN receiver substrate (R1): frames, silence ladder, admission stub.
-uas-rc = { workspace = true, features = ["spark"] }
+# RC-over-NDN receiver substrate (R1): frames, silence ladder, admission stub,
+# and the DEFAULT engine-backed Spark carriage (`engine` → spark-over-fabric).
+uas-rc = { workspace = true, features = ["spark", "engine"] }
 
 # NDN stack: engine + faces + app SDK + service carriers.
 ndn-engine = { workspace = true }
