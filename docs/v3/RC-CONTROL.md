@@ -47,6 +47,39 @@ dedicated P2P bond per aircraft.
    what silence policy applies, whether broadcast is honored — strategy
    records, not constants (ROUND-3 §2).
 
+## Transport correction (2026-07-11) — named data over the fabric, not UDP
+
+R1/R2 shipped over a direct dashboard→agent **UDP socket**. That was
+wrong and is being corrected. The socket bypasses the NDN fabric
+entirely: no named addressing, no NDN security, no broadcast-native
+1-to-many, and — most damning — RC frames never cross the ndn-sim
+SimLinks that every other stream (telemetry, coord, services) rides. The
+one capability whose entire purpose is to demonstrate **data-centric
+control from the network layer to the physical layer** was the one
+shortcutting the data-centric stack.
+
+The rule, matching how the network layer already treats bearers:
+
+- **Named data over the engine/faces is the ONLY default.** RC frames are
+  published under `/muas/v3/<vid>/rc` and travel the same
+  `ForwarderEngine` + faces as telemetry — across the ndn-sim SimLinks in
+  sim, across real faces (UDP/AP-STA, and ultimately monitor-mode
+  **named-data radio**) in the field. This is what makes the frames
+  name-addressed, NDN-secured, cacheable, and broadcast-native for free.
+- **UDP is a comparison bearer only**, behind an explicit flag, exactly as
+  AP/STA mode is a comparison bearer for the network — never the default,
+  never the thing a demo shows first.
+- Carriage: ndf-spark over the engine is the intended path (ephemeral,
+  sequenced, loss-honest — the RC profile). If the framework's spark does
+  not yet offer a turnkey named-data-over-engine carriage (the R1 spark
+  binding was spark-over-UDP), that gap is itself a maintainer feedback
+  item — file it — and the interim path is RC frames as fast-cycling named
+  Data objects served/fetched over the engine like the latest-wins
+  telemetry streams. Either way the frames cross the fabric as **named
+  data**, not a side socket.
+
+This correction is the immediate RC work; R3–R5 below assume it.
+
 ## Remaining path (in order)
 
 - **R1 — agent RC receiver task**: subscribe `<vid>/rc` (spark binding),
