@@ -19,6 +19,48 @@ Format:
 
 ## Open
 
+## [2026-07-11] Engine-backed Spark carriage — a reusable primitive we built and offer upstream
+- **Project:** ndf-rs (ndf-spark)
+- **Type:** missing-feature (lift-ready code available)
+- **Context:** RC-over-NDN needed a Sparkstream that CROSSES THE FABRIC.
+  ndf-spark's only shipped binding (`SparkProducer::over(NamedPublisher)`)
+  rides ndn-surface SHM (same-host); the core was otherwise only exercised
+  over raw UDP. The `SparkCarrier`/`SparkSource` seams are transport-
+  agnostic by design, but nothing binds them to a `ForwarderEngine`.
+- **Detail:** we built `EngineSparkCarrier`/`EngineSparkSource`
+  (uas-rc `engine_spark.rs`, ~200 lines over the core): the producer serves
+  stamped Spark wire bytes as named Data under `<stream>/<seq>` (+ latest-
+  wins checkpoints at `<stream>/anchor`); the consumer fetches by index.
+  SparkEmitter/SparkAcceptor are reused verbatim — SP-3 replay refusal, gap
+  verdicts, and merkle anchoring all pass over the engine identically to
+  UDP. This is the first Spark binding that is name-addressed, NDN-secured,
+  forwarder-routed, and cacheable. Every streaming NDF consumer needs it;
+  it's exactly the "spark-over-engine carriage" gap. **The one design note
+  to upstream:** a *pull* binding needs a **live-edge guard** the SHM push
+  ring doesn't — commit an index skip only when a LATER index confirms the
+  stream advanced, otherwise hold (a stalled producer must read as silence,
+  not a runaway cursor). Ship an engine binding with this guard, or
+  document it as the contract every pull `SparkSource` must satisfy. A
+  push/notify engine primitive would remove the need for the guard and is
+  the natural follow-on. Lift-ready in uas-rc.
+- **Naming caveat worth a doc line (bit us, cost a live-verify cycle):** a
+  stream whose PRODUCER is a different node than the consumer must NOT be
+  named under a prefix the consumer itself serves — the consumer's own
+  producer registration shadows its fetch and the Interest never leaves the
+  node. Control/streaming names for producer≠consumer flows want their own
+  namespace.
+
+## [2026-07-11] Thank-you: you're clearing report #2 in real time
+- **Project:** ndn-workspace / ndf-rs
+- **Type:** praise
+- **Detail:** across this session your tree twice went transiently
+  non-compiling as you landed our asks — the `Invocation`/`Response`
+  metadata slot (`invoke_meta`, backward-compatible) and provider-authz
+  enforcement (`ProviderAuthorizer`/`ServicePolicy`). We waited out each
+  and rebuilt clean. This is the two-way street working. Next on our side:
+  adopt the metadata slot to retire our hand-rolled in-band trace-context
+  smuggling.
+
 ## [2026-07-10] No metadata slot on Invocation/Response — trace context must be smuggled per-op
 - **Project:** ndn-workspace (ndn-service-core)
 - **Type:** missing-feature (flagship item)

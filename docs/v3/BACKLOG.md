@@ -9,25 +9,31 @@ ARCHITECTURE.md milestones, not here.
 Status key: 🔴 not started · 🟡 partial/stub · 🟠 built wrong, correcting ·
 🔵 designed only · ⚫ hardware-gated.
 
-## Corrections (built, but wrong — highest priority)
+## Corrections
 
-- 🟠 **RC transport must be named-data over the NDN fabric, not UDP.**
-  RC frames currently ride a direct dashboard→agent UDP socket that
-  bypasses the fabric (no named addressing, no NDN security, no
-  broadcast-native 1-to-many). This contradicts the project's north star
-  (data-centric network→physical) and RC-CONTROL.md's own vision. UDP must
-  be demoted to an explicit *comparison bearer* only (as AP/STA is for the
-  network layer); named data over the engine/faces is the default. See
-  RC-CONTROL.md "Transport correction". **In progress.**
+- ✅ **RC transport is now named-data Sparkstream over the NDN fabric**
+  (done 2026-07-11, miniMUAS `62391dc` / uas-fleet `fc46bab`). RC rides
+  ndf-spark carried over the ForwarderEngine as named Data under a
+  `/muas/v3/rc/<vid>` control plane, crossing the same SimLinks/faces as
+  every other stream — with SP-3 replay refusal, merkle windows, and
+  checkpoint Blocks. Frame-as-Data (`--rc-data`) and UDP (`--rc-udp`) are
+  explicit comparison bearers. Live-verified 13/13: engaged, crossed the
+  SimLinks (nettap), checkpoint anchor-verified. Two bugs fixed en route:
+  the UDP-bypass (the original mark-miss) and a self-shadow (frames named
+  under the vehicle's own served prefix, so the agent fetched itself).
 
 ## Named but not built
 
-- 🔴 **Strategy authoring tools** (owner asked explicitly, twice). Pluggable
-  authoring frontends that all emit strategy records: forms/JSON editor
-  first (cheap), then LLM-assisted (draft-from-intent, Pilot-style —
-  drafts never sign), then node-graph. None exist yet — only the record
-  format + evaluator. Must be manifested/render-contract-surfaced, not
-  dashboard-hardcoded. **Starting now.**
+- ✅ **Strategy authoring tools** (done 2026-07-11, uas-console `1193d41` /
+  uas-fleet `c380fdf`). `StrategyAuthor` trait with Forms (deterministic
+  editor + validators), LLM (LlmBackend seam + RuleStubLlm; authors hold
+  no runtime so they structurally cannot sign) and NodeGraph (typed graph
+  → compiler) backends — all emit identical records (backend-agnostic).
+  review→diff-vs-active→sign→publish is the only signing path; NDF-surfaced
+  as uas-console render contracts (`strategy.autosign` is a Refuse
+  verdict). Objective-record authoring seam present for onboard autonomy.
+  Remaining: mount the authoring surface in the miniMUAS dashboard (a
+  builder-mode concern), and a real LLM/node-graph editor behind the seams.
 - 🔵 **Onboard objective/metric-based autonomy.** `ObjectiveRecord` is a
   record-only stub; the onboard interpreter that plans from objectives over
   uas-flight primitives (so external command and onboard autonomy are two
