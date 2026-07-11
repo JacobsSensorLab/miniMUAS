@@ -59,28 +59,17 @@ impl VehicleSpec {
     }
 }
 
-/// The RC frame name a pilot publishes toward a vehicle:
-/// `/muas/v3/<vid>/rc/frame` (RC-CONTROL carriage correction). The dashboard
-/// produces it; the agent fetches it over the fabric — so this ONE name
-/// routes toward the console (→ dashboard), unlike the rest of the vehicle
-/// prefix. It lives at `rc/frame` (a sibling of the agent-served `rc/status`)
-/// so steering it to the pilot does NOT shadow `rc/status` by longest-prefix
-/// match — `rc/frame` is not a prefix of `rc/status`. (Both still group under
-/// `/muas/v3/<vid>/rc` in the 4-component nettap accounting.)
-fn rc_frame_name(vehicle_id: &str) -> String {
-    names::vehicle_stream(vehicle_id, "rc/frame")
-}
-
-/// The RC **Spark** stream prefix a pilot publishes toward a vehicle:
-/// `/muas/v3/<vid>/rc/spark` (the DEFAULT carriage — ndf-spark over the
-/// engine). Like `rc/frame` it flows pilot → vehicle, so the vehicle node
-/// steers it toward the console (→ dashboard). It is a sibling of `rc/status`
-/// and `rc/frame` (not a prefix of either), so routing it to the pilot never
-/// shadows the agent's `rc/status` by longest-prefix match; per-seq Spark and
-/// checkpoint names (`rc/spark/<index>`, `rc/spark/anchor`) all sit under this
-/// one routed prefix and group under `/muas/v3/<vid>/rc` in nettap accounting.
-fn rc_spark_name(vehicle_id: &str) -> String {
-    names::vehicle_stream(vehicle_id, "rc/spark")
+/// The pilot→vehicle RC control-plane prefix: `/muas/v3/rc/<vid>` (the
+/// dashboard produces, the agent fetches). It lives OUTSIDE the vehicle's
+/// own served prefix on purpose — an agent that serves `/muas/v3/<vid>`
+/// cannot fetch a name under it (its own producer registration shadows the
+/// fetch and it never leaves the node), so control frames get their own
+/// `/muas/v3/rc/<vid>` namespace that no agent serves. Every vehicle node
+/// and the console route it toward the pilot; both the Spark carriage
+/// (`/muas/v3/rc/<vid>/spark/<index>`, `.../anchor`) and the Data bearer
+/// (`/muas/v3/rc/<vid>/frame`) sit under it and group there in nettap.
+fn rc_control_prefix(vehicle_id: &str) -> String {
+    names::rc_control_prefix(vehicle_id)
 }
 
 /// Reserve a free loopback UDP port by binding an ephemeral socket and
@@ -206,8 +195,7 @@ impl FleetSim {
                 // vehicle prefix still routes to the agent. Both the DEFAULT
                 // Spark carriage (`rc/spark`) and the frame-as-Data comparison
                 // bearer (`rc/frame`) are steered.
-                sim.add_route(nodes[i], &rc_spark_name(&spec.vehicle_id), console);
-                sim.add_route(nodes[i], &rc_frame_name(&spec.vehicle_id), console);
+                sim.add_route(nodes[i], &rc_control_prefix(&spec.vehicle_id), console);
             }
             Some(console)
         } else {
@@ -341,12 +329,10 @@ impl FleetSim {
         // frame-as-Data comparison bearer (`rc/frame`) are routed.
         if let Some(engine) = self.console_engine() {
             for vid in &self.vehicle_ids {
-                for name in [rc_spark_name(vid), rc_frame_name(vid)] {
-                    let name: Name = name
-                        .parse()
-                        .map_err(|e| format!("rc name '{vid}': {e:?}"))?;
-                    engine.fib().add_nexthop(&name, dash_face, 0);
-                }
+                let name: Name = rc_control_prefix(vid)
+                    .parse()
+                    .map_err(|e| format!("rc control prefix '{vid}': {e:?}"))?;
+                engine.fib().add_nexthop(&name, dash_face, 0);
             }
         }
         Ok((client_addr, tap_addr))

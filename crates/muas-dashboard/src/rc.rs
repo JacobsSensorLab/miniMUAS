@@ -263,7 +263,7 @@ impl RcHost {
             RcCarriage::Spark => {
                 let mut senders = BTreeMap::new();
                 for vid in &self.vehicles {
-                    let prefix: Name = names::vehicle_stream(vid, "rc/spark")
+                    let prefix: Name = names::rc_control_name(vid, "spark")
                         .parse()
                         .map_err(|e| format!("bad rc spark name for {vid}: {e:?}"))?;
                     let sender =
@@ -280,7 +280,7 @@ impl RcHost {
                     // `rc/frame` (a sibling of the agent's `rc/status`) so the
                     // frame name is not a prefix of `rc/status` — see the agent
                     // fetch loop.
-                    let name: Name = names::vehicle_stream(vid, "rc/frame")
+                    let name: Name = names::rc_control_name(vid, "frame")
                         .parse()
                         .map_err(|e| format!("bad rc frame name for {vid}: {e:?}"))?;
                     let slot = self.slots[vid].clone();
@@ -570,7 +570,7 @@ mod tests {
         sticks[CH_THROTTLE] = 1600;
         host.set_input(sticks, false, 0);
 
-        let prefix: Name = names::vehicle_stream("iuas-02", "rc/spark").parse().unwrap();
+        let prefix: Name = names::rc_control_name("iuas-02", "spark").parse().unwrap();
         let mut rx = uas_rc::EngineSparkReceiver::new(&engine, prefix, &cancel);
 
         // Pace one Spark per virtual tick; pull each over the engine.
@@ -606,7 +606,7 @@ mod tests {
 
         // No tick() — only the e-stop's own immediate carry can publish.
         host.estop(true);
-        let prefix: Name = names::vehicle_stream("iuas-02", "rc/spark").parse().unwrap();
+        let prefix: Name = names::rc_control_name("iuas-02", "spark").parse().unwrap();
         let mut rx = uas_rc::EngineSparkReceiver::new(&engine, prefix, &cancel);
         let (frame, _hex) = rx.poll().await.expect("e-stop spark published");
         assert!(
@@ -621,7 +621,7 @@ mod tests {
     /// Fetch `/muas/v3/<vid>/rc/frame` (the Data comparison bearer) over an
     /// engine until a frame arrives.
     async fn fetch_rc(consumer: &mut ndn_app::Consumer, vid: &str) -> Option<RcFrame> {
-        let name: Name = names::vehicle_stream(vid, "rc/frame").parse().ok()?;
+        let name: Name = names::rc_control_name(vid, "frame").parse().ok()?;
         let deadline = Instant::now() + Duration::from_secs(3);
         while Instant::now() < deadline {
             let interest = InterestBuilder::new(name.clone())
@@ -721,7 +721,7 @@ mod tests {
         // A disengaged host publishes nothing: the slot is cleared and the
         // fetch finds no Data.
         let mut consumer = engine.app_consumer(cancel.child_token());
-        let name: Name = names::vehicle_stream("iuas-02", "rc/frame").parse().unwrap();
+        let name: Name = names::rc_control_name("iuas-02", "frame").parse().unwrap();
         let interest = InterestBuilder::new(name)
             .must_be_fresh()
             .lifetime(Duration::from_millis(100));

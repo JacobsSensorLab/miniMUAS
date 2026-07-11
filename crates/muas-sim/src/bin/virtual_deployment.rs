@@ -1191,13 +1191,13 @@ async fn run_verify(
         .prefix_stats
         .snapshot()
         .iter()
-        .any(|row| row.node == "gcs" && row.prefix.ends_with("/rc") && row.counters.out_data > 0);
+        .any(|row| row.node == "gcs" && row.prefix.starts_with("/muas/v3/rc/") && row.counters.out_data > 0);
     probe.send(json!({ "cmd": "rc", "op": "disengage" })).await?;
     let rc_rows: Vec<Value> = fleet
         .prefix_stats
         .snapshot()
         .iter()
-        .filter(|r| r.prefix.ends_with("/rc"))
+        .filter(|r| r.prefix.starts_with("/muas/v3/rc/") || r.prefix.ends_with("/rc"))
         .map(|r| {
             json!({
                 "node": r.node,

@@ -120,7 +120,7 @@ pub(crate) async fn run_rc_task(
             // so the pilot→vehicle name is NOT a prefix of `rc/status` — a FIB
             // route steering it to the pilot cannot shadow rc/status by LPM.
             let prefix =
-                match names::vehicle_stream(&shared.vehicle_id, "rc/spark").parse::<Name>() {
+                match names::rc_control_name(&shared.vehicle_id, "spark").parse::<Name>() {
                     Ok(name) => name,
                     Err(err) => {
                         warn!(?err, "rc: bad rc spark name; rc receiver disabled");
@@ -147,7 +147,7 @@ pub(crate) async fn run_rc_task(
             // feed the receiver: the frame-as-Data COMPARISON bearer (crosses
             // the fabric, no Spark stream properties). `rc/frame` is a sibling
             // of `rc/status` so it cannot shadow it by LPM. No side socket.
-            let name = match names::vehicle_stream(&shared.vehicle_id, "rc/frame").parse::<Name>() {
+            let name = match names::rc_control_name(&shared.vehicle_id, "frame").parse::<Name>() {
                 Ok(name) => name,
                 Err(err) => {
                     warn!(?err, "rc: bad rc frame name; rc receiver disabled");
@@ -1004,7 +1004,7 @@ mod tests {
             .build()
             .await
             .expect("engine");
-        let name: Name = names::vehicle_stream("iuas-77", "rc/frame").parse().expect("rc name");
+        let name: Name = names::rc_control_name("iuas-77", "frame").parse().expect("rc name");
 
         // A pilot-side producer publishes one frame (full right roll) as the
         // latest-wins Data content on the rc name.
@@ -1067,7 +1067,7 @@ mod tests {
             .build()
             .await
             .expect("engine");
-        let prefix: Name = names::vehicle_stream("iuas-78", "rc/spark").parse().expect("rc name");
+        let prefix: Name = names::rc_control_name("iuas-78", "spark").parse().expect("rc name");
 
         // A pilot-side sender streams right-roll Sparks, anchoring every 4.
         let cancel = CancellationToken::new();

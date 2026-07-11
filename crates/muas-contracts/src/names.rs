@@ -44,6 +44,29 @@ pub const TASK_QUEUE_STREAM: &str = "tasks/queue";
 /// Additive (RC-CONTROL R1); the dashboard R2 status strip consumes it.
 pub const RC_STATUS_STREAM: &str = "rc/status";
 
+/// Pilot→vehicle RC control-plane name: `/muas/v3/rc/<vid>/<kind>`
+/// (`kind` = `spark` | `frame` for the two pilot-served carriages).
+///
+/// RC frames flow pilot → vehicle: the DASHBOARD is the producer and the
+/// vehicle's AGENT is the consumer. They must NOT live under the vehicle's
+/// own served prefix (`/muas/v3/<vid>/…`) — an agent that both serves that
+/// prefix and tries to fetch a name under it answers the fetch locally and
+/// never forwards it out to the pilot (the fetch is shadowed by its own
+/// producer registration). So control frames live in this SEPARATE `/rc/`
+/// namespace that no agent serves; the agent's existing `/muas/v3`→fabric
+/// route carries the fetch out to the pilot. (Agent-served `rc/status`
+/// stays under the vehicle prefix — there the agent IS the producer.)
+pub fn rc_control_name(vehicle_id: &str, kind: &str) -> String {
+    format!("{APP_PREFIX}/rc/{vehicle_id}/{kind}")
+}
+
+/// FIB prefix for one vehicle's RC control plane: `/muas/v3/rc/<vid>`.
+/// Every vehicle node and the console route this toward the pilot
+/// (dashboard); a sibling of the vehicle data prefix, never a parent of it.
+pub fn rc_control_prefix(vehicle_id: &str) -> String {
+    format!("{APP_PREFIX}/rc/{vehicle_id}")
+}
+
 /// Mission-scoped object name, e.g.
 /// `/muas/v3/mission/<mid>/<vid>/camera/<cam>/frame/<gps_ns>/<seq>`.
 pub fn mission_object(mission_id: &str, vehicle_id: &str, rest: &str) -> String {
