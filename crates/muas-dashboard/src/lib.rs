@@ -74,6 +74,9 @@ pub struct Dashboard {
     last_sample: Mutex<HashMap<String, Value>>,
     /// Everything captured this session (map layer + playback modal).
     sensor_data: Mutex<Vec<Value>>,
+    /// Latest task-queue snapshot per vehicle (tile queue strip; rides the
+    /// hello message so a fresh client renders the strip immediately).
+    task_queues: Mutex<HashMap<String, Value>>,
     /// Per-vehicle video relay enable flags.
     video_flags: Mutex<HashMap<String, Arc<AtomicBool>>>,
     pub detector: Arc<dyn DetectionProvider>,
@@ -106,6 +109,7 @@ impl Dashboard {
             mission: Mutex::new(Mission::new(mission_cfg)),
             last_sample: Mutex::new(HashMap::new()),
             sensor_data: Mutex::new(Vec::new()),
+            task_queues: Mutex::new(HashMap::new()),
             video_flags: Mutex::new(HashMap::new()),
             detector,
             commander,
@@ -182,6 +186,10 @@ impl Dashboard {
             .collect();
         let sensor_meta: serde_json::Map<String, Value> =
             m.sensor_meta.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let task_queues: serde_json::Map<String, Value> = lock(&self.task_queues)
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         let mut hello = json!({
             "type": "hello",
             "vehicles": self.vehicles(),
@@ -189,6 +197,7 @@ impl Dashboard {
             "capabilities": capabilities,
             "sensor_meta": sensor_meta,
             "sensor_data": *lock(&self.sensor_data),
+            "task_queues": task_queues,
             "mission": m.hello_mission(),
             "recording": self.hub.is_recording(),
         });
@@ -233,6 +242,26 @@ impl Dashboard {
             }
         }
         self.hub.broadcast(&json!({ "type": "sensor_data", "item": item }));
+    }
+
+    /// Store + broadcast one vehicle's task-queue snapshot (the 1 Hz
+    /// `tasks/queue` poller feeds this). Content dedup: an unchanged queue
+    /// is silent — new WS clients get the stored copy via the hello
+    /// message instead. Returns whether a broadcast went out.
+    pub fn on_task_queue(&self, vehicle: &str, status: Value) -> bool {
+        {
+            let mut queues = lock(&self.task_queues);
+            if queues.get(vehicle) == Some(&status) {
+                return false;
+            }
+            queues.insert(vehicle.to_string(), status.clone());
+        }
+        self.hub.broadcast(&json!({
+            "type": "task_queue",
+            "vehicle": vehicle,
+            "status": status,
+        }));
+        true
     }
 
     // ── recording sessions ──────────────────────────────────────────────────
@@ -438,6 +467,7 @@ impl Dashboard {
             }
             "flight" => self.cmd_flight(message),
             "task_abort" => self.cmd_task_abort(message),
+            "queue_reorder" => self.cmd_queue_reorder(message),
             "job_cancel" => {
                 // Queued (not yet dispatched) job removal is pure mission-
                 // machine state; in-flight jobs are cancelled by task_abort
@@ -582,6 +612,63 @@ impl Dashboard {
                         // reads "aborted", not "completed".
                         dash.with_mission(|m| m.note_task_abort(&vid));
                     }
+                    let mut m = json!({
+                        "id": id,
+                        "vehicle": vid,
+                        "command": command,
+                        "ok": ack.accepted,
+                        "detail": ack.detail,
+                    });
+                    if !ack.accepted {
+                        m["error"] = json!(ack.detail);
+                    }
+                    dash.emit_event("command.result", m);
+                }
+                CmdResult::Timeout => dash.emit_event(
+                    "command.timeout",
+                    json!({ "id": id, "vehicle": vid, "command": command }),
+                ),
+                CmdResult::Error(err) => dash.emit_event(
+                    "command.result",
+                    json!({
+                        "id": id,
+                        "vehicle": vid,
+                        "command": command,
+                        "ok": false,
+                        "detail": err,
+                        "error": err,
+                    }),
+                ),
+            }
+        });
+    }
+
+    /// Reorder one vehicle's task queue (`queue_reorder`): the UI sends the
+    /// FULL desired id order — active first unless deliberately displaced
+    /// (displacement splits the active task agent-side; the strip warned
+    /// before the drop committed). Full command lifecycle (sent →
+    /// acked/refused → toast) so the strip can revert its optimistic order
+    /// on a refusal (`bad-reorder` / `queue-disabled`).
+    fn cmd_queue_reorder(self: &Arc<Self>, message: &Value) {
+        let Some(vid) = self.vehicle_of(message) else { return };
+        let ids: Vec<String> = message
+            .get("ordered_task_ids")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .unwrap_or_default();
+        if ids.is_empty() {
+            return;
+        }
+        let id = format!("cmd-{}", hub::now_ns() / 1_000_000 % 100_000_000_000);
+        let command = "queue_reorder".to_string();
+        self.emit_event(
+            "command.sent",
+            json!({ "id": id, "vehicle": vid, "command": command }),
+        );
+        let dash = self.clone();
+        tokio::spawn(async move {
+            match dash.commander.queue_reorder(vid.clone(), ids).await {
+                CmdResult::Ack(ack) => {
                     let mut m = json!({
                         "id": id,
                         "vehicle": vid,

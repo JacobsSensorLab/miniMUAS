@@ -117,8 +117,14 @@ pub trait Commander: Send + Sync {
     fn investigate(&self, vehicle: String, order: InvestigateOrder) -> BoxFuture<CmdResult>;
     /// Scoped cancel of one named task (`task_abort`): `label` is the
     /// vehicle's busy label (`raster-search`, `investigate`,
-    /// `sensor-override`, `takeoff`, `rtl`) or `watchpoint:<id>`.
+    /// `sensor-override`, `takeoff`, `rtl`), a queue id (`tsk-<n>` removes
+    /// that pending entry), or `watchpoint:<id>`.
     fn task_abort(&self, vehicle: String, label: String) -> BoxFuture<CmdResult>;
+    /// `queue_reorder`: the FULL desired queue order (every current queue
+    /// task id — active first unless deliberately displaced; displacement
+    /// splits the active task agent-side).
+    fn queue_reorder(&self, vehicle: String, ordered_task_ids: Vec<String>)
+        -> BoxFuture<CmdResult>;
     /// `sensor/capture`.
     fn sensor_capture(
         &self,
@@ -172,6 +178,11 @@ impl Commander for ScriptedCommander {
     }
     fn task_abort(&self, vehicle: String, label: String) -> BoxFuture<CmdResult> {
         let op = format!("task_abort/{label}");
+        self.answer(vehicle, &op)
+    }
+    fn queue_reorder(&self, vehicle: String, ordered_task_ids: Vec<String>)
+        -> BoxFuture<CmdResult> {
+        let op = format!("queue_reorder/{}", ordered_task_ids.join(","));
         self.answer(vehicle, &op)
     }
     fn sensor_capture(

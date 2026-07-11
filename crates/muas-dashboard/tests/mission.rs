@@ -892,6 +892,9 @@ async fn frames_keep_flowing_while_the_investigate_call_hangs() {
         fn task_abort(&self, vehicle: String, _label: String) -> BoxFuture<CmdResult> {
             self.log(vehicle, "task_abort")
         }
+        fn queue_reorder(&self, vehicle: String, _ids: Vec<String>) -> BoxFuture<CmdResult> {
+            self.log(vehicle, "queue_reorder")
+        }
         fn sensor_capture(
             &self,
             vehicle: String,
@@ -1118,4 +1121,126 @@ fn events_and_targets_keep_the_v2_wire_shape() {
     for key in ["sensor", "vehicle", "status", "artifacts"] {
         assert!(j.get(key).is_some(), "job dict missing {key}");
     }
+}
+
+// ───────────────────────────── task-queue strip ─────────────────────────────
+
+fn queue_fixture() -> Value {
+    json!({
+        "vehicle_id": "iuas-01",
+        "gps_time_ns": 42u64,
+        "depth_limit": 4,
+        "tasks": [
+            { "task_id": "tsk-3", "kind": "investigate",
+              "params_digest": "orbit r=6m @ 8m [00c0ffee]",
+              "state": "active", "origin": "dispatch", "enqueued_ns": 40u64,
+              "started_ns": 41u64,
+              "progress": { "pct": 40.0, "detail": "orbit 1/2", "eta_s": 33.0 },
+              "est_duration_s": 60.0 },
+            { "task_id": "tsk-5", "kind": "raster-search",
+              "params_digest": "5 legs @ 6m [3fa2c81b]",
+              "state": "pending", "origin": "split", "parent": "tsk-2",
+              "enqueued_ns": 42u64, "eta_to_start_s": 33.0,
+              "est_duration_s": 90.0 },
+        ],
+    })
+}
+
+/// The tasks/queue poller path: `on_task_queue` broadcasts the additive
+/// `{"type":"task_queue",vehicle,status}` message, dedups unchanged
+/// snapshots, and the latest copy rides the hello snapshot (mirrors the
+/// coord-poller relay + hello patterns).
+#[test]
+fn task_queue_snapshots_broadcast_once_and_ride_hello() {
+    let commander = Arc::new(ScriptedCommander::answering(CmdResult::Ack(Ack::ok())));
+    let config = DashConfig { record_dir: None, ..DashConfig::default() };
+    let dash = Dashboard::new(config, Arc::new(ScriptedDetector::default()), commander);
+    let mut rx = dash.hub.subscribe();
+
+    let status = queue_fixture();
+    assert!(dash.on_task_queue("iuas-01", status.clone()), "first snapshot broadcasts");
+    let muas_dashboard::hub::Outbound::Text(text) = rx.try_recv().expect("broadcast out")
+    else {
+        panic!("task_queue rides a text frame")
+    };
+    let msg: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(msg["type"], json!("task_queue"));
+    assert_eq!(msg["vehicle"], json!("iuas-01"));
+    assert_eq!(msg["status"], status);
+
+    // Unchanged queue: silent (the 1 Hz poll must not spam the WS).
+    assert!(!dash.on_task_queue("iuas-01", status.clone()), "dedup on content");
+    assert!(rx.try_recv().is_err(), "no rebroadcast");
+
+    // New clients get the stored copy through hello.
+    let hello = dash.hello();
+    assert_eq!(hello["task_queues"]["iuas-01"], status);
+
+    // A changed queue broadcasts again.
+    let mut moved = status;
+    moved["gps_time_ns"] = json!(43u64);
+    assert!(dash.on_task_queue("iuas-01", moved));
+}
+
+/// The `queue_reorder` WS command: full ordered id list through the
+/// commander, with the same command lifecycle (sent → acked) as
+/// task_abort so the strip's optimistic reorder gets its toasts and its
+/// refusal-revert signal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn queue_reorder_command_calls_the_service_with_the_lifecycle() {
+    let commander = Arc::new(ScriptedCommander::answering(CmdResult::Ack(Ack::ok())));
+    let config = DashConfig { record_dir: None, ..DashConfig::default() };
+    let dash = Arc::new(Dashboard::new(
+        config,
+        Arc::new(ScriptedDetector::default()),
+        commander.clone(),
+    ));
+    let mut rx = dash.hub.subscribe();
+    dash.handle_command(&json!({
+        "cmd": "queue_reorder",
+        "vehicle": "iuas-01",
+        "ordered_task_ids": ["tsk-5", "tsk-3", "tsk-4"],
+    }));
+    // Empty/absent id lists and unknown vehicles are ignored outright.
+    dash.handle_command(&json!({ "cmd": "queue_reorder", "vehicle": "iuas-01" }));
+    dash.handle_command(&json!({
+        "cmd": "queue_reorder", "vehicle": "nope", "ordered_task_ids": ["tsk-1"],
+    }));
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let calls = commander.calls.lock().unwrap().clone();
+        if !calls.is_empty() {
+            assert_eq!(
+                calls,
+                vec![("iuas-01".to_string(), "queue_reorder/tsk-5,tsk-3,tsk-4".to_string())],
+                "exactly one reorder reaches the service, ids in order"
+            );
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "reorder never sent");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    // Lifecycle events: command.sent then an acked command.result.
+    let mut kinds = Vec::new();
+    let event_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while kinds.len() < 2 {
+        assert!(tokio::time::Instant::now() < event_deadline, "lifecycle incomplete: {kinds:?}");
+        match rx.try_recv() {
+            Ok(muas_dashboard::hub::Outbound::Text(text)) => {
+                let v: Value = serde_json::from_str(&text).unwrap();
+                if v["command"] == json!("queue_reorder") {
+                    kinds.push((
+                        v["kind"].as_str().unwrap_or("").to_string(),
+                        v["ok"].clone(),
+                    ));
+                }
+            }
+            Ok(_) => {}
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+        }
+    }
+    assert_eq!(kinds[0], ("command.sent".to_string(), Value::Null));
+    assert_eq!(kinds[1], ("command.result".to_string(), json!(true)));
 }

@@ -440,6 +440,48 @@ h3.sech .chev { display: inline-block; width: 14px; color: var(--cds-text-helper
 }
 #alist .arow.sel { outline: 1px dashed var(--cds-text-primary); }
 
+/* ---- per-vehicle task-queue strip (bottom of each vehicle tile) ---------- */
+.qstrip { margin-top: var(--sp-03); border-top: 1px solid var(--cds-border-subtle);
+  padding-top: var(--sp-02); }
+.qhead { display: flex; align-items: center; gap: var(--sp-02);
+  font-size: 11px; letter-spacing: .32px; color: var(--cds-text-secondary);
+  cursor: pointer; user-select: none; }
+.qhead:hover { color: var(--cds-text-primary); }
+.qhead .chev { width: 12px; font-size: 9px; color: var(--cds-text-helper); }
+.qhead .qcount { font-family: var(--font-mono); font-size: 10px;
+  color: var(--cds-text-helper); }
+.qactive { display: flex; align-items: center; gap: var(--sp-02);
+  background: var(--cds-layer-02); padding: 3px var(--sp-03);
+  margin-top: var(--sp-02); font-size: 11px; }
+.qactive .qkind { font-weight: 600; }
+.qactive.qsplit-target { outline: 1px dashed var(--cds-support-warning); }
+.qbar { flex: 1; min-width: 40px; height: 4px; background: var(--cds-background); }
+.qfill { display: block; height: 100%; background: var(--cds-interactive); }
+.qeta, .qchip .qmeta { font-family: var(--font-mono); font-size: 10px;
+  color: var(--cds-text-helper); white-space: nowrap; }
+.qsplitwarn { display: none; color: var(--cds-support-warning);
+  font-size: 10px; white-space: nowrap; }
+.qactive.qsplit-target .qsplitwarn { display: inline; }
+.qchips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+  margin-top: var(--sp-02); }
+.qchip { display: inline-flex; align-items: center; gap: 4px; height: 20px;
+  padding: 0 var(--sp-03); border: 1px solid var(--cds-border-subtle);
+  background: var(--cds-layer-01); color: var(--cds-text-secondary);
+  font-size: 11px; letter-spacing: .32px; cursor: grab; }
+.qchip:hover { background: var(--cds-layer-02); color: var(--cds-text-primary); }
+.qchip.dragging { opacity: .35; }
+.qchip.qdrop-before { box-shadow: -2px 0 0 0 var(--cds-interactive); }
+.qchip.qdrop-after { box-shadow: 2px 0 0 0 var(--cds-interactive); }
+.qbadge { background: #302400; color: #f1c21b; border-radius: 8px;
+  font-size: 9px; padding: 0 5px; }
+.qdone { font-size: 10px; color: var(--cds-text-helper);
+  font-family: var(--font-mono); }
+#qpop { position: fixed; z-index: 50; display: none; max-width: 250px;
+  background: var(--cds-layer-01); border: 1px solid var(--cds-border-subtle);
+  padding: var(--sp-03) var(--sp-05); font: 400 12px var(--font-mono); }
+#qpop .row { color: var(--cds-text-secondary); margin-bottom: 2px; }
+#qpop .row b { color: var(--cds-text-primary); }
+
 /* ---- display (viz config) panel -------------------------------------------- */
 #dispPanel .row { display: grid; grid-template-columns: 1fr 76px 34px;
   gap: var(--sp-03); align-items: center; margin-bottom: 6px; }
@@ -725,6 +767,9 @@ opportunistic: fire whenever the vehicle happens to pass within range.">
   </div>
 </div>
 
+<!-- task-queue chip details popover (queue strip; taskpop pattern, panel-side) -->
+<div id="qpop"></div>
+
 <script>
 "use strict";
 const M_PER_DEG_LAT = 111111;
@@ -791,6 +836,7 @@ function dispatch(m){
   else if (m.type === "event") onEvent(m);
   else if (m.type === "capabilities") onCaps(m);
   else if (m.type === "sensor_data") pushSensorData(m.item);
+  else if (m.type === "task_queue") onTaskQueue(m);
   else if (m.type === "video_stats") onVideoStats(m);
   else if (m.type === "net") NET = m;
   else if (m.type === "sim_anomalies"){
@@ -1201,6 +1247,9 @@ function resetUIState(){
   TASKINGS = []; lastEvtT = 0; closeTaskPop();
   SMETA = {}; NET = null; GCS = null; simAnoms = []; selAnom = null;
   covTrack = []; gcsHome = null;
+  QSTATUS = {}; QOPT = {}; MISSION_ID = "";
+  qpop.style.display = "none";
+  VEHICLES.forEach(v => renderQueue(v));
   renderAnomList();
   CMDS.list = []; CMDS.byId = {}; renderCmdLog();
   // the log buffer resets but the ACTIVE FILTERS survive replay
@@ -2529,7 +2578,8 @@ function onHello(m){
         <button class="cds-btn cds-btn--ghost" style="font-size:12px"
           title="clean sync + poweroff of the companion computer; refused while armed or mid-task"
           onclick="cmdShutdown('${vid}')">⏻ Power off companion</button>
-      </div>`;
+      </div>
+      <div class="qstrip" id="queue-${vid}" style="display:none"></div>`;
     cards.appendChild(tile);
     // enable toggle
     const en = document.getElementById(`en-${vid}`);
@@ -2572,6 +2622,11 @@ function onHello(m){
     tog.onclick = flip;
     tog.onkeydown = e => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); flip(); } };
   });
+  // queue-strip snapshot: the freshest tasks/queue copy per vehicle rides
+  // hello so a page refresh renders the strips immediately
+  QSTATUS = m.task_queues || {};
+  QOPT = {};
+  VEHICLES.forEach(v => renderQueue(v));
   if (m.capabilities)
     Object.entries(m.capabilities).forEach(([v, sensors]) =>
       onCaps({vehicle:v, sensors, sensor_meta: SMETA[v]}));
@@ -2705,6 +2760,294 @@ function onVideoStats(m){
   const el = document.getElementById(`vstats-${m.vehicle}`);
   if (el) el.textContent = `${m.fps} fps · ${m.kbps} kbps · #${m.seq}`;
 }
+
+// ---------- per-vehicle task-queue strip ----------
+// Rendered under each vehicle tile from its `tasks/queue` snapshot
+// (TaskQueueStatus): active-task bar (progress % + eta, scoped ✕), pending
+// chips in run order (drag to reorder, click for details, ✕ removes), split
+// continuations visually parented (↳ + badge), the finished tail collapsed
+// behind a count. Empty queue = strip hidden. Reorders send queue_reorder
+// with the FULL id order and render optimistically; a refusal reverts to
+// server truth (toast rides the normal command lifecycle). The helpers
+// between the markers are pure — scratchpad/dash_queue_test.js extracts
+// and unit-tests them (the dash_geom/dash_filter harness pattern).
+// ---- queue pure model (extracted by dash_queue_test.js) ----
+const QKIND_ICON = { "raster-search":"▤", "investigate":"◎",
+                     "sensor-override":"⌖" };
+const qFinished = t => ["done","aborted","failed"].includes(t.state);
+function fmtDur(s){
+  if (!(isFinite(s) && s >= 0)) return "–";
+  s = Math.round(s);
+  return s < 60 ? `${s}s`
+    : `${Math.floor(s/60)}m${String(s%60).padStart(2,"0")}s`;
+}
+// TaskQueueStatus → strip model: the active task, pending in run order,
+// the finished tail (collapsed to a count when rendered), and whether the
+// strip shows at all (no active AND no pending = hidden — the strip only
+// exists for active nodes).
+function queueModel(status){
+  const tasks = (status && status.tasks) || [];
+  const active = tasks.find(t => t.state === "active") || null;
+  const pending = tasks.filter(t => t.state === "pending");
+  const finished = tasks.filter(qFinished);
+  return { active, pending, finished, show: !!active || pending.length > 0 };
+}
+// Drag drop → the FULL ordered id list queue_reorder wants. Slots span the
+// whole queue: slot 0 sits AHEAD of the active task — dropping there
+// displaces it, and the agent SPLITS it (remainder resumes after the
+// prioritized task); pending chips occupy slots (active ? 1 : 0)…
+function buildReorder(activeId, pendingIds, fromId, toSlot){
+  const rest = pendingIds.filter(id => id !== fromId);
+  const displacesActive = !!activeId && toSlot === 0;
+  if (displacesActive)
+    return { ids: [fromId, activeId, ...rest], displacesActive };
+  const at = Math.max(0, Math.min(rest.length, toSlot - (activeId ? 1 : 0)));
+  rest.splice(at, 0, fromId);
+  return { ids: activeId ? [activeId, ...rest] : rest, displacesActive };
+}
+// Optimistic view: live (active+pending) tasks re-sorted to the sent id
+// order; ids the server hasn't published drop out, tasks it added keep
+// their place after the ordered ones; the finished tail stays put.
+function applyOrderedIds(tasks, ids){
+  const live = tasks.filter(t => !qFinished(t));
+  const byId = new Map(live.map(t => [t.task_id, t]));
+  const ordered = ids.map(id => byId.get(id)).filter(Boolean);
+  const extras = live.filter(t => !ids.includes(t.task_id));
+  return ordered.concat(extras, tasks.filter(qFinished));
+}
+// Has the server caught up with an optimistic order? Compare the live
+// queue order against the sent order over their COMMON ids — a split
+// rename (old active → done + a fresh continuation id) still matches.
+function queueOrderMatches(tasks, ids){
+  const live = tasks.filter(t => !qFinished(t)).map(t => t.task_id);
+  const a = live.filter(id => ids.includes(id));
+  const b = ids.filter(id => live.includes(id));
+  return a.length === b.length && a.every((id, i) => id === b[i]);
+}
+// Optimistic-state reducer on a fresh server snapshot: clear once the
+// server order matches (or the optimism expired — server truth wins after
+// 4 s); otherwise keep riding the optimistic order.
+function queueApplyServer(q, tasks, nowMs){
+  if (q && q.optimistic &&
+      (queueOrderMatches(tasks, q.optimistic) || nowMs - q.since > 4000))
+    return { optimistic: null, since: 0 };
+  return q || { optimistic: null, since: 0 };
+}
+// ---- end queue pure model ----
+let QSTATUS = {};     // vid -> latest TaskQueueStatus (server truth)
+let QOPT = {};        // vid -> {optimistic: [ids]|null, since: ms}
+let MISSION_ID = "";  // current mission id (job → queue-task digest hint)
+const QDRAG = { vid: null, tid: null, slot: null };
+const qEsc = s => String(s == null ? "" : s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+function onTaskQueue(m){
+  QSTATUS[m.vehicle] = m.status;
+  QOPT[m.vehicle] = queueApplyServer(QOPT[m.vehicle],
+    (m.status && m.status.tasks) || [], Date.now());
+  renderQueue(m.vehicle);
+  renderTargets();      // investigating jobs may reveal their task id
+}
+function queueRevert(vid){
+  if (QOPT[vid] && QOPT[vid].optimistic){
+    QOPT[vid] = { optimistic: null, since: 0 };
+    renderQueue(vid);
+  }
+}
+// the strip status as rendered: server truth + any optimistic order
+function queueView(vid){
+  const server = QSTATUS[vid];
+  const q = QOPT[vid];
+  return server && q && q.optimistic
+    ? Object.assign({}, server,
+        { tasks: applyOrderedIds(server.tasks || [], q.optimistic) })
+    : server;
+}
+// collapse state persists per vehicle (the tool-section pattern)
+const QSEC_KEY = vid => `muas3.qsec.${vid}`;
+function qOpen(vid){
+  try { return localStorage.getItem(QSEC_KEY(vid)) !== "0"; }
+  catch (e) { return true; }
+}
+function renderQueue(vid){
+  const host = document.getElementById(`queue-${vid}`);
+  if (!host) return;
+  const model = queueModel(queueView(vid));
+  if (!model.show){ host.style.display = "none"; host.innerHTML = ""; return; }
+  host.style.display = "";
+  const open = qOpen(vid);
+  const parts = [`
+    <div class="qhead" data-qtoggle="${vid}"
+         title="this vehicle's task queue (from its tasks/queue stream)">
+      <span class="chev">${open ? "▾" : "▸"}</span>task queue
+      <span class="qcount">${model.pending.length} pending${
+        model.finished.length ? ` · ${model.finished.length} done` : ""}</span>
+    </div>`];
+  if (open){
+    const a = model.active;
+    if (a){
+      const pr = a.progress;
+      parts.push(`
+      <div class="qactive" data-slot="0"
+           title="${qEsc(a.params_digest)}${pr && pr.detail
+             ? " — " + qEsc(pr.detail) : ""}">
+        <span>${QKIND_ICON[a.kind] || "•"}</span>
+        <span class="qkind">${qEsc(a.kind)}</span>
+        ${pr ? `<span class="qbar"><span class="qfill" style="width:${
+            Math.max(0, Math.min(100, pr.pct)).toFixed(0)}%"></span></span>
+          <span class="qeta">${pr.pct.toFixed(0)}% · ${fmtDur(pr.eta_s)}</span>`
+          : `<span class="qbar"></span>`}
+        <span class="qsplitwarn">will split ▣</span>
+        <button class="xabort" data-qabort="${qEsc(a.kind)}" data-vid="${vid}"
+          title="Cancel '${qEsc(a.kind)}' on ${vid} (scoped abort — vehicle idles, no RTL)">✕</button>
+      </div>`);
+    }
+    const base = a ? 1 : 0;
+    parts.push(`<div class="qchips">${model.pending.map((t, i) => {
+      const meta = [
+        t.eta_to_start_s != null ? `in ${fmtDur(t.eta_to_start_s)}` : null,
+        t.est_duration_s > 0 ? `~${fmtDur(t.est_duration_s)}` : null,
+      ].filter(Boolean).join(" · ");
+      return `
+      <span class="qchip" draggable="true" data-tid="${qEsc(t.task_id)}"
+            data-vid="${vid}" data-slot="${base + i}"
+            title="${qEsc(t.params_digest)} — click for details, drag to reorder">
+        ${t.origin === "split" ? "↳ " : ""}${QKIND_ICON[t.kind] || "•"} ${qEsc(t.kind)}
+        ${meta ? `<span class="qmeta">${meta}</span>` : ""}
+        ${t.origin === "split" ? `<span class="qbadge"
+          title="continuation of ${qEsc(t.parent || "?")}">split</span>` : ""}
+        <button class="xabort" data-qabort="${qEsc(t.task_id)}" data-vid="${vid}"
+          title="Remove ${qEsc(t.task_id)} from the queue (never flies)">✕</button>
+      </span>`;
+    }).join("")}${model.finished.length ? `
+      <span class="qdone" title="${qEsc(model.finished
+        .map(t => `${t.task_id} ${t.state}`).join(" · "))}">+${
+        model.finished.length} done</span>` : ""}
+    </div>`);
+  }
+  host.innerHTML = parts.join("");
+}
+// Best-effort job → queue-task linkage (display only): an investigating
+// job shows its queue task id once the vehicle's tasks/queue snapshot
+// reveals a matching investigate task (vehicle + kind, narrowed by the
+// mission id when the params digest carries it). The authoritative job
+// lifecycle stays the mission machine's — this only annotates.
+function jobQueueTaskId(vehicle){
+  const st = QSTATUS[vehicle];
+  const live = ((st && st.tasks) || []).filter(t => t.kind === "investigate"
+    && (t.state === "active" || t.state === "pending"));
+  const narrowed = MISSION_ID
+    ? live.filter(t => (t.params_digest || "").includes(MISSION_ID)) : live;
+  const pool = narrowed.length ? narrowed : live;
+  if (pool.length === 1) return pool[0].task_id;
+  const act = pool.find(t => t.state === "active");
+  return act ? act.task_id : "";
+}
+// delegated handlers survive the strip innerHTML rebuilds (cmdlog pattern)
+cards.addEventListener("click", e => {
+  const tgl = e.target.closest("[data-qtoggle]");
+  if (tgl){
+    const vid = tgl.dataset.qtoggle;
+    try { localStorage.setItem(QSEC_KEY(vid), qOpen(vid) ? "0" : "1"); }
+    catch (err) {}
+    renderQueue(vid);
+    return;
+  }
+  const x = e.target.closest("button[data-qabort]");
+  if (x){
+    // active bar ✕ aborts by busy label (the kind); a pending chip ✕
+    // aborts by queue id (tsk-<n> removes just that entry)
+    send({cmd:"task_abort", vehicle:x.dataset.vid, label:x.dataset.qabort});
+    return;
+  }
+  const chip = e.target.closest(".qchip");
+  if (chip) openQPop(chip);
+});
+function openQPop(chip){
+  const st = QSTATUS[chip.dataset.vid];
+  const t = st && (st.tasks || []).find(x => x.task_id === chip.dataset.tid);
+  if (!t) return;
+  qpop.innerHTML = [
+    `<div class="row"><b>${qEsc(t.task_id)}</b> · ${qEsc(t.kind)}</div>`,
+    `<div class="row">${qEsc(t.params_digest)}</div>`,
+    `<div class="row">origin ${qEsc(t.origin)}${t.parent
+      ? ` · continues ${qEsc(t.parent)}` : ""}</div>`,
+    t.eta_to_start_s != null
+      ? `<div class="row">starts in ~${fmtDur(t.eta_to_start_s)}</div>` : "",
+    t.est_duration_s > 0
+      ? `<div class="row">est duration ${fmtDur(t.est_duration_s)}</div>` : "",
+  ].join("");
+  const r = chip.getBoundingClientRect();
+  qpop.style.display = "block";
+  qpop.style.left = `${Math.max(8, Math.min(r.left, innerWidth - 260))}px`;
+  qpop.style.top = `${Math.min(r.bottom + 6, innerHeight - 130)}px`;
+}
+document.addEventListener("click", e => {
+  if (qpop.style.display === "block" && !qpop.contains(e.target) &&
+      !e.target.closest(".qchip"))
+    qpop.style.display = "none";
+});
+function clearQDropMarks(vid){
+  const host = vid && document.getElementById(`queue-${vid}`);
+  if (!host) return;
+  host.querySelectorAll(".qdrop-before,.qdrop-after").forEach(el =>
+    el.classList.remove("qdrop-before", "qdrop-after"));
+  const a = host.querySelector(".qactive");
+  if (a) a.classList.remove("qsplit-target");
+}
+cards.addEventListener("dragstart", e => {
+  const chip = e.target.closest(".qchip");
+  if (!chip) return;
+  QDRAG.vid = chip.dataset.vid; QDRAG.tid = chip.dataset.tid; QDRAG.slot = null;
+  chip.classList.add("dragging");
+  e.dataTransfer.effectAllowed = "move";
+  try { e.dataTransfer.setData("text/plain", chip.dataset.tid); } catch (err) {}
+});
+cards.addEventListener("dragend", e => {
+  const chip = e.target.closest(".qchip");
+  if (chip) chip.classList.remove("dragging");
+  clearQDropMarks(QDRAG.vid);
+  QDRAG.vid = QDRAG.tid = QDRAG.slot = null;
+});
+cards.addEventListener("dragover", e => {
+  if (!QDRAG.tid) return;
+  const strip = e.target.closest(".qstrip");
+  if (!strip || strip.id !== `queue-${QDRAG.vid}`) return; // same vehicle only
+  const chip = e.target.closest(".qchip");
+  const activeBar = e.target.closest(".qactive");
+  if (!chip && !activeBar) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "move";
+  clearQDropMarks(QDRAG.vid);
+  if (activeBar){
+    // ahead of the active task: the drop would preempt it — surface the
+    // split consequence BEFORE it commits
+    QDRAG.slot = 0;
+    activeBar.classList.add("qsplit-target");
+    return;
+  }
+  const slot = +chip.dataset.slot;
+  const before = e.clientX < chip.getBoundingClientRect().left
+    + chip.getBoundingClientRect().width / 2;
+  QDRAG.slot = before ? slot : slot + 1;
+  chip.classList.add(before ? "qdrop-before" : "qdrop-after");
+});
+cards.addEventListener("drop", e => {
+  if (!QDRAG.tid || QDRAG.slot == null) return;
+  const strip = e.target.closest(".qstrip");
+  if (!strip || strip.id !== `queue-${QDRAG.vid}`) return;
+  e.preventDefault();
+  const vid = QDRAG.vid;
+  const model = queueModel(queueView(vid));
+  const { ids } = buildReorder(model.active ? model.active.task_id : null,
+    model.pending.map(t => t.task_id), QDRAG.tid, QDRAG.slot);
+  // optimistic: render the new order now; the queue_reorder lifecycle
+  // (sent → acked/refused toasts) rides the normal command path, and a
+  // refusal/timeout reverts to server truth in queueRevert
+  QOPT[vid] = { optimistic: ids, since: Date.now() };
+  clearQDropMarks(vid);
+  renderQueue(vid);
+  send({cmd:"queue_reorder", vehicle:vid, ordered_task_ids: ids});
+});
 
 // ---------- command lifecycle: toasts + the Commands mini-log ----------
 // Every operator command gets a visible lifecycle — sent → acked/refused
@@ -3020,9 +3363,16 @@ function renderTargets(){
                 margin-bottom:8px">
       <span><b>#${t.index} ${t.object_id}</b> · ${(t.confidence*100).toFixed(1)}%
         <div class="mono">${t.lat.toFixed(6)}, ${t.lon.toFixed(6)}</div>
-        <div>${(t.jobs || []).map(j => `
+        <div>${(t.jobs || []).map(j => {
+          // display-only queue linkage: the task id the vehicle's queue
+          // stream reveals for an investigating job (best-effort match)
+          const tid = j.status === "investigating" && j.vehicle
+            ? jobQueueTaskId(j.vehicle) : "";
+          return `
           <span class="cds-tag ${TGT_TAG[j.status]||'cds-tag--gray'}"
-                title="${j.vehicle || 'not assigned yet'}">${j.sensor} ${j.status}</span>
+                title="${j.vehicle || 'not assigned yet'}${tid
+                  ? ` · queue ${tid}` : ''}">${j.sensor} ${j.status}${tid
+                  ? ` <span style="font-family:var(--font-mono);font-size:10px">${tid}</span>` : ''}</span>
           ${j.status === "queued" || j.status === "investigating"
             ? `<button class="xabort" onclick="cancelJob(${t.index},'${j.sensor}')"
                  title="${j.status === "queued"
@@ -3031,7 +3381,7 @@ function renderTargets(){
             : ""}
           ${(j.artifacts || []).map(a => `<a target="_blank"
             href="/artifact?name=${encodeURIComponent(a)}">${j.sensor === "audio"
-              ? "audio" : "capture"} ↗</a>`).join(" ")}`).join(" ")}
+              ? "audio" : "capture"} ↗</a>`).join(" ")}`; }).join(" ")}
         </div>
       </span>
       <span class="cds-tag ${TGT_TAG[t.status]||'cds-tag--gray'}">${t.status}</span>
@@ -3065,6 +3415,12 @@ function onEvent(m){
     line.classList.add("err");
   cmdLifecycle(m);
   taskingLifecycle(m);
+  // queue_reorder refusal/timeout: drop the strip's optimistic order (the
+  // toast already rode the command lifecycle like any other command)
+  if (m.command === "queue_reorder" &&
+      (m.kind === "command.timeout" ||
+       (m.kind === "command.result" && m.ok === false)))
+    queueRevert(m.vehicle);
   // detect responses complete out of capture order (each frame's round
   // trip varies): slot a late line below the LEADING run of higher-seq
   // detect lines so the log still reads in frame order — but never below
@@ -3105,6 +3461,7 @@ function onEvent(m){
     case "mission.started":
       setState("searching"); targets = []; UNCONF = []; mapEvents = [];
       hoverEvt = null;
+      MISSION_ID = m.mission_id || "";   // job → queue-task digest hint
       covTrack = [];             // live coverage shading restarts per mission
       renderTargets(); break;
     case "target.unconfirmed":

@@ -23,9 +23,10 @@ use uas_fleet_data::kinds::{CapabilityProfile, FrameHeader, SearchStatus, Teleme
 
 use muas_contracts::names;
 use muas_contracts::services::{
-    InvestigateRequest, RasterRequest, SensorRequest, TakeoffRequest, VehicleServiceClient,
-    VideoRequest,
+    InvestigateRequest, QueueReorderRequest, RasterRequest, SensorRequest, TakeoffRequest,
+    VehicleServiceClient, VideoRequest,
 };
+use muas_contracts::tasks::TaskQueueStatus;
 
 use crate::config::UdpLink;
 use crate::mission::{InvestigateOrder, RasterOrder};
@@ -216,6 +217,15 @@ impl Commander for NdnCommander {
         })
     }
 
+    fn queue_reorder(&self, vehicle: String, ordered_task_ids: Vec<String>)
+        -> BoxFuture<CmdResult> {
+        let clients = self.short.clone();
+        Box::pin(async move {
+            let Some(client) = clients.get(&vehicle) else { return no_vehicle(&vehicle) };
+            to_result(client.queue_reorder(QueueReorderRequest { ordered_task_ids }).await)
+        })
+    }
+
     fn sensor_capture(&self, vehicle: String, request: SensorRequest) -> BoxFuture<CmdResult> {
         let clients = self.long.clone();
         Box::pin(async move {
@@ -259,6 +269,12 @@ pub fn spawn_pollers(
             cancel.clone(),
         )));
         tasks.push(tokio::spawn(coord_poller(
+            dash.clone(),
+            engine.app_consumer(cancel.child_token()),
+            vid.clone(),
+            cancel.clone(),
+        )));
+        tasks.push(tokio::spawn(task_queue_poller(
             dash.clone(),
             engine.app_consumer(cancel.child_token()),
             vid,
@@ -499,6 +515,35 @@ async fn coord_poller(
             "vehicle": vehicle,
             "entries": entries,
         }));
+    }
+}
+
+/// 1 Hz task-queue follower: relays one vehicle's ordered task queue
+/// (`tasks/queue` latest-wins JSON, [`TaskQueueStatus`]) into the queue
+/// strip under its dashboard tile. Content dedup + the hello snapshot live
+/// in [`Dashboard::on_task_queue`] (mirrors the coord poller's shape).
+async fn task_queue_poller(
+    dash: Arc<Dashboard>,
+    mut consumer: Consumer,
+    vehicle: String,
+    cancel: CancellationToken,
+) {
+    let name = names::vehicle_stream(&vehicle, names::TASK_QUEUE_STREAM);
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => break,
+            _ = interval.tick() => {}
+        }
+        let Some(payload) = fetch_latest(&mut consumer, &name).await else { continue };
+        let Ok(status) = serde_json::from_slice::<Value>(&payload) else { continue };
+        // Tolerant additive decode, but the pinned shape must hold (the
+        // telemetry poller's validate-then-forward-the-raw-JSON pattern).
+        if serde_json::from_value::<TaskQueueStatus>(status.clone()).is_err() {
+            continue;
+        }
+        dash.on_task_queue(&vehicle, status);
     }
 }
 
