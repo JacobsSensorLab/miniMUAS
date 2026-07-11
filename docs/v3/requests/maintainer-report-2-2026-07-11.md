@@ -114,6 +114,69 @@ before, and this is the higher-leverage version of that.
     read-only compile for CI drift-checks. Ask: a shared store convention +
     `bench check` (verify pins without rewriting).
 
+## Tier 0 — three shared DESIGN SURFACES, not facades (highest leverage)
+
+The items above are mostly ~50-line facades. These three are bigger: they
+are surfaces the whole ecosystem will build against, and if each consumer
+invents its own, the fragmentation is permanent (private widget libraries,
+incompatible network views, no shared vocabulary). Promoting them is the
+difference between an ecosystem and a pile of apps.
+
+A. **A render-contract WIDGET KIT (the "kit").** flotilla render contracts
+   say what a lens CAN express; nothing ships the lenses. So every consumer
+   hand-builds the same primitives — we cataloged 24 surface-native widgets
+   (gauge, dial, sparkline, tile, log-strip, track layer, …), the waterline
+   suite built its own panel set, and the next consumer will build a third.
+   These are the exact same widgets binding the exact same contracts. Ask:
+   a shared, contract-keyed widget kit (`flotilla-kit`?) — a library of
+   `Via::Native` renderers that ANY surface can register, so a gauge that
+   Expresses `series.gauge` is written once and reused, and a user composing
+   a surface draws from a stocked shelf instead of a blank page. Our
+   `/catalog.json` (a surface publishing its own expressible contracts +
+   ready widgets, drift-tested) is a concrete proposal for how a surface
+   advertises what it can do; we'd happily see that pattern standardized so
+   surfaces are interoperable, not just individually malleable. This is the
+   practical substrate under the "malleable software" goal NDF is chasing —
+   without a kit, malleability is a blank editor nobody can use.
+
+B. **A NETWORK-VISUALIZATION vocabulary + data feed (draw the medium, not
+   the link).** We wrote `docs/v3/NETWORK-VIZ.md` Rev 2 after catching
+   ourselves committing the unicast fallacy VISUALLY on a broadcast medium
+   (per-pair lines for radio) — which is exactly the waterline suite's
+   founding "draw the medium, not the link" doctrine, independently
+   rediscovered. The data-centric views this enables are NDN-general, not
+   ours: per-namespace interest/data heatmaps, **named-data traceroute**
+   (reconstruct a Data's path from per-hop OTel spans — the ndn-observability
+   / ndn-otel-bridge feed already almost has this), **data-centric ping**
+   (round-trip freshness per name prefix), and a namespace lens over every
+   element. These want to live at the ndn-observability / ndn-sim layer as
+   a standard feed + a small shared rendering vocabulary, so every NDN
+   console (ours, Sextant, a future NFD dashboard) speaks the same visual
+   language for the same semantics. We built the per-prefix half privately
+   (item 4); the design belongs upstream and we'll donate NETWORK-VIZ.md as
+   a starting spec.
+
+C. **The root-cause doctrine (UNTRAPPED).** We wrote `docs/v3/UNTRAPPED.md`
+   — "liberated, but still thinks like a prisoner" — because our own build
+   kept clumping named data back into app-shaped silos even though the
+   substrate had freed it. Its diagnosis is that the silo is *locally
+   optimal*: minting a private kind is cheaper than discovering and reusing
+   a shared one, the commons is invisible at authoring time, and meaning is
+   treated as exhaust. **Every tier-1 item in this report is an instance of
+   that gradient** — we hand-rolled record-fold and matcher-explain and the
+   widget kit because reusing didn't exist or wasn't discoverable, and
+   minting was one sprint away. The cures it names are structural and land
+   squarely in YOUR court: make reuse cheaper than minting (stratum search +
+   one-command adopt at authoring time; a `bench`/lint hint "this new kind
+   matches an existing stratum on N/M fields"); make discovery ambient
+   (surface catalogs, "N other consumers read this kind" counts); measure
+   the clump (kinds-per-consumer, single-reader chains — the substrate can
+   audit its own liberation). We're forwarding UNTRAPPED.md not as
+   philosophy but as a product backlog for the framework: if the tooling
+   doesn't flip the gradient, every early user — us, waterline, the next —
+   will keep re-siloing by habit, and this report's tier-1 list will just
+   regrow. It is written to propagate; please read it and pass it on.
+
 ## What this costs the ecosystem (the argument for promoting these)
 
 We are, as far as we know, the most complete external NDF consumer right
