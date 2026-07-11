@@ -22,6 +22,7 @@ pub mod config;
 pub mod coord;
 pub mod journal;
 pub mod mission;
+pub mod queue;
 pub mod sensor;
 pub mod service_impl;
 pub mod telemetry;
@@ -215,7 +216,20 @@ pub struct AgentShared {
     pub extras: Vec<String>,
     pub backend: SharedBackend,
     /// Active long-running task label; empty = idle (the v2 busy guard).
+    /// With the queue engine on, this is always the ACTIVE queue task's
+    /// kind — it swaps straight between queue items (no idle gap), so
+    /// dashboard busy→idle completion fires when the whole queue drains.
     pub busy: Mutex<String>,
+    /// The per-vehicle task queue (see [`queue`]).
+    pub tasks: Mutex<queue::QueueState>,
+    /// Accept-and-queue semantics on (`queue_enabled`, default). Off keeps
+    /// the v2 busy-refusal behavior for raster/investigate/override.
+    pub queue_enabled: bool,
+    /// Pending-depth limit (`queue-full` beyond it). POLICY HOOK (ROUND-3
+    /// §2): becomes strategy-record-driven.
+    pub queue_depth: usize,
+    /// Freshest task-queue snapshot (served under `tasks/queue`).
+    pub latest_tasks: Mutex<Option<Bytes>>,
     /// The v2 abort flag: raised by rtl/land/hold, cleared when a new task
     /// starts; every mission loop honors it within one control cycle.
     pub abort: std::sync::atomic::AtomicBool,
@@ -302,6 +316,10 @@ impl AgentShared {
             extras: Vec::new(),
             backend,
             busy: Mutex::new(String::new()),
+            tasks: Mutex::new(queue::QueueState::default()),
+            queue_enabled: true,
+            queue_depth: queue::DEFAULT_QUEUE_DEPTH,
+            latest_tasks: Mutex::new(None),
             abort: std::sync::atomic::AtomicBool::new(false),
             operator_abort: std::sync::atomic::AtomicBool::new(false),
             watchpoints: Mutex::new(Vec::new()),
@@ -492,6 +510,10 @@ impl Agent {
             extras: config.extras.clone(),
             backend: backend.clone(),
             busy: Mutex::new(String::new()),
+            tasks: Mutex::new(queue::QueueState::default()),
+            queue_enabled: config.queue_enabled,
+            queue_depth: config.queue_depth,
+            latest_tasks: Mutex::new(None),
             abort: std::sync::atomic::AtomicBool::new(false),
             operator_abort: std::sync::atomic::AtomicBool::new(false),
             watchpoints: Mutex::new(Vec::new()),
@@ -560,13 +582,14 @@ impl Agent {
         let node = engine.app_node(cancel.child_token());
         let mut serve_guards = Vec::new();
         type ReadLatest = fn(&AgentShared) -> Option<Bytes>;
-        let streams: [(&str, ReadLatest); 6] = [
+        let streams: [(&str, ReadLatest); 7] = [
             ("telemetry/live", |s| lock(&s.latest_telemetry).clone()),
             ("telemetry/state", |s| lock(&s.latest_state).clone()),
             ("search/status", |s| lock(&s.latest_search).clone()),
             ("coord/status", |s| Some(lock(&s.latest_coord).clone())),
             ("video/live", |s| lock(&s.latest_video).clone()),
             ("sensor/last", |s| lock(&s.latest_sensor).clone()),
+            (names::TASK_QUEUE_STREAM, |s| lock(&s.latest_tasks).clone()),
         ];
         for (stream, read) in streams {
             let name: Name = names::vehicle_stream(&config.vehicle_id, stream)

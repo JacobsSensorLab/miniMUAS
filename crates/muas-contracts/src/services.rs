@@ -56,6 +56,15 @@ macro_rules! json_frame {
 /// carries the policy rejection `code` (see
 /// [`PolicyRejection::code`]) and a human-readable `detail`.
 ///
+/// # Advisory codes on ACCEPTED acks (additive)
+///
+/// `code` is a *rejection* code when `accepted == false`. An accepted ack
+/// normally carries an empty code, but MAY carry an advisory code — today
+/// only [`QUEUED`]: the request was accepted into the vehicle's task queue
+/// rather than started immediately (`detail` carries the task id, queue
+/// position, and ETA-to-start). Consumers that only branch on `accepted`
+/// (the v2/v3 dashboard command paths) keep working unchanged.
+///
 /// # `detail` is not an error (ROUND-3 command.result semantics)
 ///
 /// `detail` is the provider's free-form note in BOTH directions: on an
@@ -67,7 +76,8 @@ macro_rules! json_frame {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Ack {
     pub accepted: bool,
-    /// Machine-readable rejection code; empty when accepted.
+    /// Machine-readable rejection code; empty when accepted (except the
+    /// advisory [`QUEUED`] code — see the type docs).
     #[serde(default)]
     pub code: String,
     /// Human-readable detail (rejection reason or acceptance note).
@@ -75,7 +85,21 @@ pub struct Ack {
     pub detail: String,
 }
 
+/// Advisory ack code: accepted into the task queue (not started yet).
+pub const QUEUED: &str = "queued";
+
 impl Ack {
+    /// Accepted-and-queued (advisory code [`QUEUED`]): the task will run
+    /// when the queue reaches it; `detail` names the task id + position +
+    /// ETA-to-start.
+    pub fn queued(detail: impl Into<String>) -> Self {
+        Self {
+            accepted: true,
+            code: QUEUED.to_string(),
+            detail: detail.into(),
+        }
+    }
+
     /// Accepted, no note.
     pub fn ok() -> Self {
         Self {
@@ -259,6 +283,16 @@ pub struct VideoRequest {
     pub quality: u32,
 }
 
+/// `queue_reorder`: the full desired queue order — every current queue task
+/// id (the ACTIVE task's id plus every pending id), in the order they should
+/// run. Placing anything ahead of the active task preempts it: the active
+/// task SPLITS (its remainder continues as a new `origin=split` entry at the
+/// active id's position in this list).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct QueueReorderRequest {
+    pub ordered_task_ids: Vec<String>,
+}
+
 json_frame!(
     Ack,
     TakeoffRequest,
@@ -266,6 +300,7 @@ json_frame!(
     InvestigateRequest,
     SensorRequest,
     VideoRequest,
+    QueueReorderRequest,
 );
 
 // ---------------------------------------------------------------------------
@@ -304,14 +339,23 @@ pub trait VehicleService {
     /// Scoped cancellation of ONE named task — the surgical alternative to
     /// the blanket RTL/Land/Hold ladder. `label` must equal the vehicle's
     /// current busy label (`raster-search`, `investigate`,
-    /// `sensor-override`, `takeoff`, `rtl`) or name an armed watchpoint as
-    /// `watchpoint:<id>`. The task terminates within one control cycle,
+    /// `sensor-override`, `takeoff`, `rtl`), name an armed watchpoint as
+    /// `watchpoint:<id>`, or name a queue entry by id (`tsk-<n>`: a PENDING
+    /// entry is removed from the queue without touching the flight; the
+    /// ACTIVE entry's id is equivalent to its label). The active task
+    /// terminates within one control cycle,
     /// the vehicle is released, and the post-task idle policy takes over —
     /// no automatic RTL (that stays the ladder's job). A label that
     /// matches nothing is refused with code `no-such-task`. Watchpoints
     /// ride along with whatever the vehicle is doing, so removing one
     /// never touches the active task.
     async fn task_abort(&self, label: String) -> Ack;
+    /// Reorder the vehicle's task queue (see [`QueueReorderRequest`]).
+    /// Ids must equal the current queue's id set exactly; displacing the
+    /// active task from position 0 splits it (remainder continues as an
+    /// `origin=split` entry). Refused `bad-reorder` on any id mismatch,
+    /// `queue-disabled` when the engine is off.
+    async fn queue_reorder(&self, req: QueueReorderRequest) -> Ack;
     /// Live video stream control.
     async fn video_control(&self, req: VideoRequest) -> Ack;
     /// Authorized companion shutdown; `confirm` must equal the vehicle id.
@@ -415,5 +459,31 @@ mod tests {
         }
         // Accepted acks never carry a rejection code.
         assert!(Ack::ok_detail("note").code.is_empty());
+    }
+
+    /// The accept-and-queue ack: accepted=true with the advisory `queued`
+    /// code — consumers that only branch on `accepted` treat it as a plain
+    /// accept (verified against the dashboard's dispatch mapping).
+    #[test]
+    fn queued_ack_is_accepted_with_advisory_code() {
+        let ack = Ack::queued("task tsk-3 queued at position 2; starts in ~38 s");
+        assert!(ack.accepted);
+        assert_eq!(ack.code, QUEUED);
+        let decoded = Ack::decode(&ack.encode()).unwrap();
+        assert_eq!(decoded, ack);
+        // Wire shape unchanged: the same three keys as every ack.
+        let value: serde_json::Value = serde_json::from_slice(&ack.encode()).unwrap();
+        let mut keys: Vec<&str> =
+            value.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["accepted", "code", "detail"]);
+    }
+
+    #[test]
+    fn queue_reorder_request_round_trips() {
+        let req = QueueReorderRequest {
+            ordered_task_ids: vec!["tsk-2".into(), "tsk-1".into(), "tsk-3".into()],
+        };
+        assert_eq!(QueueReorderRequest::decode(&req.encode()).unwrap(), req);
     }
 }

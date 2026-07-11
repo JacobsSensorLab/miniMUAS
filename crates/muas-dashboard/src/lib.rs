@@ -447,6 +447,19 @@ impl Dashboard {
                 let actions = self.with_mission(|m| m.cancel_job(index, sensor));
                 self.apply_actions(actions);
             }
+            "candidate_promote" => {
+                // "Investigate anyway" on an end-of-raster unconfirmed
+                // candidate: normal queue/dispatch path; reopens a
+                // completed mission until the re-armed jobs land.
+                let index = message.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let actions = self.with_mission(|m| m.promote_unconfirmed(index));
+                self.apply_actions(actions);
+            }
+            "candidate_dismiss" => {
+                let index = message.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let actions = self.with_mission(|m| m.dismiss_unconfirmed(index));
+                self.apply_actions(actions);
+            }
             "all" => self.cmd_all(message),
             "video" => self.cmd_video(message),
             "sensor" => self.cmd_sensor(message),

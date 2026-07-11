@@ -139,6 +139,50 @@ impl RasterPlan {
     pub fn capture_count(&self) -> usize {
         self.captures.iter().map(Vec::len).sum()
     }
+
+    /// The remainder of this plan after a split: legs from `start_leg` on,
+    /// with the first `skip_captures` capture points of `start_leg` (the
+    /// ones the parent already fired) removed. Capture `leg` indices are
+    /// remapped to the trimmed plan; `along_m` stays in the (unchanged) leg
+    /// frame, so the along-track firing rule is untouched. `None` when
+    /// nothing is left.
+    ///
+    /// Earlier legs need no capture bookkeeping: the raster never leaves a
+    /// leg with captures unfired ("never wait at a leg end" fires
+    /// stragglers on advance), so a split's remaining work is always
+    /// (whole legs after the current one) + (uncaptured tail of it).
+    pub fn remainder(&self, start_leg: usize, skip_captures: usize) -> Option<RasterPlan> {
+        if start_leg >= self.legs.len() {
+            return None;
+        }
+        let legs: Vec<[(f64, f64); 2]> = self.legs[start_leg..].to_vec();
+        let mut captures: Vec<Vec<CapturePoint>> = self.captures[start_leg..]
+            .iter()
+            .map(|leg| {
+                leg.iter()
+                    .map(|c| CapturePoint { leg: c.leg - start_leg, ..*c })
+                    .collect()
+            })
+            .collect();
+        let skip = skip_captures.min(captures[0].len());
+        captures[0].drain(..skip);
+        let mut path_len_m = 0.0;
+        let mut prev_end: Option<(f64, f64)> = None;
+        for leg in &legs {
+            if let Some(prev) = prev_end {
+                path_len_m += dist_m(prev, leg[0]);
+            }
+            path_len_m += leg_axis(leg[0], leg[1]).1;
+            prev_end = Some(leg[1]);
+        }
+        Some(RasterPlan {
+            legs,
+            captures,
+            agl_m: self.agl_m,
+            speed_m_s: self.speed_m_s,
+            path_len_m,
+        })
+    }
 }
 
 /// Build the raster plan for a corner-defined request. The corner list is
@@ -355,6 +399,52 @@ impl RasterFlight {
 
     pub fn legs_total(&self) -> usize {
         self.plan.legs.len()
+    }
+
+    /// Split/resume snapshot: `(first leg still to fly, captures already
+    /// fired on it)` — indices into THIS flight's plan. Exact at any point
+    /// between ticks (captures only fire inside [`RasterFlight::tick`]).
+    pub fn resume_state(&self) -> (usize, usize) {
+        match &self.state {
+            RasterState::ToLegStart { leg, .. } => (*leg, 0),
+            RasterState::OnLeg { leg, pending, .. } => {
+                (*leg, self.plan.captures[*leg].len() - pending.len())
+            }
+            RasterState::Done(_) => (self.plan.legs.len(), 0),
+        }
+    }
+
+    /// Remaining path length from `here`, metres (progress/ETA).
+    pub fn remaining_path_m(&self, here: (f64, f64)) -> f64 {
+        let (leg, to_leg_start) = match &self.state {
+            RasterState::ToLegStart { leg, .. } => (*leg, true),
+            RasterState::OnLeg { leg, .. } => (*leg, false),
+            RasterState::Done(_) => return 0.0,
+        };
+        let mut remaining = if to_leg_start {
+            dist_m(here, self.plan.legs[leg][0])
+                + leg_axis(self.plan.legs[leg][0], self.plan.legs[leg][1]).1
+        } else {
+            dist_m(here, self.plan.legs[leg][1])
+        };
+        let mut prev_end = self.plan.legs[leg][1];
+        for next in &self.plan.legs[leg + 1..] {
+            remaining += dist_m(prev_end, next[0]) + leg_axis(next[0], next[1]).1;
+            prev_end = next[1];
+        }
+        remaining
+    }
+
+    /// `(percent complete, eta seconds)` from remaining path ÷ commanded
+    /// speed (the queue-stream progress numbers).
+    pub fn progress(&self, here: (f64, f64)) -> (f64, f64) {
+        let remaining = self.remaining_path_m(here);
+        let pct = if self.plan.path_len_m > 1e-6 {
+            (100.0 * (1.0 - remaining / self.plan.path_len_m)).clamp(0.0, 100.0)
+        } else {
+            100.0
+        };
+        (pct, remaining / self.plan.speed_m_s)
     }
 
     /// One control tick: re-send the target if due, fire along-track
@@ -1005,6 +1095,9 @@ pub(crate) async fn takeoff_task(shared: Arc<AgentShared>, agl_m: f64) {
         // the mission runners (a plain refusal never set operator_abort).
         operator_abort_handoff(&shared, "takeoff");
     }
+    // Takeoff stays OUTSIDE the task queue, but tasks accepted during the
+    // climb queued behind it — start them now that the vehicle is free.
+    crate::queue::kick(&shared);
 }
 
 // ---------------------------------------------------------------------------
@@ -1070,8 +1163,16 @@ impl SearchStatusPub {
 }
 
 /// Fly an accepted raster request (busy label `"raster-search"` is already
-/// set and the abort flag cleared by the ack handler).
-pub(crate) async fn run_raster(shared: Arc<AgentShared>, req: RasterRequest, plan: RasterPlan) {
+/// set and the abort flag cleared by the ack handler / queue engine).
+/// Runs the flight and its status/journal reporting; the CALLER owns the
+/// vehicle-release epilogue (the [`run_raster`] wrapper keeps the legacy
+/// clear-busy + idle-policy behavior; the queue driver hands off to the
+/// next queue entry instead).
+pub(crate) async fn raster_flight_loop(
+    shared: &Arc<AgentShared>,
+    req: &RasterRequest,
+    plan: RasterPlan,
+) -> FlightOutcome {
     const LABEL: &str = "raster-search";
     let status = SearchStatusPub {
         shared: shared.clone(),
@@ -1092,15 +1193,18 @@ pub(crate) async fn run_raster(shared: Arc<AgentShared>, req: RasterRequest, pla
     lock(&shared.backend).as_dyn().set_cruise_speed(plan.speed_m_s);
 
     let agl = plan.agl_m;
-    if !ensure_airborne(&shared, agl, LABEL).await {
+    if !ensure_airborne(shared, agl, LABEL).await {
         status.push(search_state::FAILED, 0, 0, "airborne failed", &[]);
         shared.journal.event(
             "search.finished",
             serde_json::json!({ "mission_id": req.mission_id, "outcome": "failed",
                                "note": "could not reach search altitude" }),
         );
-        clear_busy(&shared, LABEL);
-        return;
+        return if interrupted(shared, LABEL) {
+            FlightOutcome::Aborted
+        } else {
+            FlightOutcome::TimedOut
+        };
     }
 
     let mut clock = MissionClock::start();
@@ -1114,7 +1218,14 @@ pub(crate) async fn run_raster(shared: Arc<AgentShared>, req: RasterRequest, pla
     let mut recent_frames: Vec<String> = Vec::new();
     let outcome = loop {
         interval.tick().await;
-        if interrupted(&shared, LABEL) {
+        if interrupted(shared, LABEL) {
+            // Exact split snapshot: captures only fire inside tick, so the
+            // state as of the last tick is the last word (split fidelity).
+            let (leg, fired_in_leg) = flight.resume_state();
+            crate::queue::save_resume(
+                shared,
+                crate::queue::ResumeSnapshot::Raster { leg, fired_in_leg },
+            );
             break FlightOutcome::Aborted;
         }
         // A sensor-override detour owns the vehicle: freeze the state
@@ -1136,10 +1247,34 @@ pub(crate) async fn run_raster(shared: Arc<AgentShared>, req: RasterRequest, pla
             }
             continue;
         }
-        let outcome = {
+        let (outcome, here) = {
             let mut backend = lock(&shared.backend);
-            flight.tick(now_s, backend.as_dyn(), &mut events)
+            let outcome = flight.tick(now_s, backend.as_dyn(), &mut events);
+            let here = backend.as_dyn_ref().position().unwrap_or((0.0, 0.0, 0.0));
+            (outcome, here)
         };
+        // Queue-stream progress: legs done/total + frames, ETA from the
+        // remaining path length ÷ commanded speed. The resume snapshot
+        // rides along so a preemption between reports stays capture-exact
+        // (the interrupted branch above re-saves it anyway).
+        {
+            let (pct, eta_s) = flight.progress((here.0, here.1));
+            let (leg, fired_in_leg) = flight.resume_state();
+            crate::queue::note_progress(
+                shared,
+                muas_contracts::tasks::TaskProgress {
+                    pct,
+                    detail: format!(
+                        "leg {}/{}, {} frames",
+                        (flight.leg() + 1).min(flight.legs_total()),
+                        flight.legs_total(),
+                        flight.frames
+                    ),
+                    eta_s,
+                },
+                Some(crate::queue::ResumeSnapshot::Raster { leg, fired_in_leg }),
+            );
+        }
         let mut pushed = false;
         for event in events.drain(..) {
             match event {
@@ -1156,7 +1291,7 @@ pub(crate) async fn run_raster(shared: Arc<AgentShared>, req: RasterRequest, pla
                     // journal-only capture).
                     let pose = crate::sensor::SensorPose { lat_deg, lon_deg, agl_m, heading_deg };
                     let published = crate::sensor::publish_raster_capture(
-                        &shared,
+                        shared,
                         &req.mission_id,
                         flight.frames,
                         &pose,
@@ -1222,6 +1357,16 @@ pub(crate) async fn run_raster(shared: Arc<AgentShared>, req: RasterRequest, pla
         }),
     );
     info!(outcome = outcome.as_str(), frames = flight.frames, "raster search finished");
+    outcome
+}
+
+/// Fly an accepted raster request with the LEGACY release epilogue
+/// (clear-busy + idle policy / operator handoff) — the pre-queue path,
+/// kept for `--no-queue` and the direct-spawn unit tests. Queue-driven
+/// rasters run [`raster_flight_loop`] under the queue driver instead.
+pub(crate) async fn run_raster(shared: Arc<AgentShared>, req: RasterRequest, plan: RasterPlan) {
+    const LABEL: &str = "raster-search";
+    let outcome = raster_flight_loop(&shared, &req, plan).await;
     clear_busy(&shared, LABEL);
     if matches!(outcome, FlightOutcome::Completed | FlightOutcome::TimedOut) {
         apply_idle_policy(&shared, LABEL);
@@ -1237,9 +1382,12 @@ const INVESTIGATE_SPEED_M_S: f64 = 3.0;
 /// already set and the abort flag cleared by the ack handler). The flight
 /// pattern is selected by [`select_investigate_pattern`]: carrot orbit for
 /// camera work, acoustic flyover for audio-only jobs.
-pub(crate) async fn run_investigate(shared: Arc<AgentShared>, req: InvestigateRequest) {
+pub(crate) async fn investigate_flight_loop(
+    shared: &Arc<AgentShared>,
+    req: &InvestigateRequest,
+) -> FlightOutcome {
     const LABEL: &str = "investigate";
-    let pattern = select_investigate_pattern(&req, shared.extras.iter().any(|e| e == "audio"));
+    let pattern = select_investigate_pattern(req, shared.extras.iter().any(|e| e == "audio"));
     shared.journal.event(
         "investigate.started",
         serde_json::json!({
@@ -1255,18 +1403,22 @@ pub(crate) async fn run_investigate(shared: Arc<AgentShared>, req: InvestigateRe
     );
     lock(&shared.backend).as_dyn().set_cruise_speed(INVESTIGATE_SPEED_M_S);
 
-    let outcome = if ensure_airborne(&shared, req.agl_m, LABEL).await {
+    let outcome = if ensure_airborne(shared, req.agl_m, LABEL).await {
         if pattern == investigate_pattern::FLYOVER {
-            fly_flyover(&shared, &req, LABEL).await
+            fly_flyover(shared, req, LABEL).await
         } else {
-            fly_orbit(&shared, &req, LABEL).await
+            fly_orbit(shared, req, LABEL).await
         }
     } else {
         shared.journal.event(
             "investigate.airborne_failed",
             serde_json::json!({ "agl_m": req.agl_m }),
         );
-        FlightOutcome::TimedOut
+        if interrupted(shared, LABEL) {
+            FlightOutcome::Aborted
+        } else {
+            FlightOutcome::TimedOut
+        }
     };
 
     shared.journal.event(
@@ -1278,6 +1430,15 @@ pub(crate) async fn run_investigate(shared: Arc<AgentShared>, req: InvestigateRe
         }),
     );
     info!(outcome = outcome.as_str(), pattern, "investigate finished");
+    outcome
+}
+
+/// Fly an accepted investigate request with the LEGACY release epilogue —
+/// see [`run_raster`] for the split; queue-driven investigations run
+/// [`investigate_flight_loop`] under the queue driver.
+pub(crate) async fn run_investigate(shared: Arc<AgentShared>, req: InvestigateRequest) {
+    const LABEL: &str = "investigate";
+    let outcome = investigate_flight_loop(&shared, &req).await;
     clear_busy(&shared, LABEL);
     if matches!(outcome, FlightOutcome::Completed | FlightOutcome::TimedOut) {
         apply_idle_policy(&shared, LABEL);
@@ -1296,6 +1457,7 @@ async fn fly_orbit(shared: &Arc<AgentShared>, req: &InvestigateRequest, label: &
         turns,
         INVESTIGATE_SPEED_M_S,
     );
+    let radius_m = req.radius_m.max(2.0);
     let t0 = tokio::time::Instant::now();
     let mut interval = tokio::time::interval(CONTROL_TICK);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -1303,6 +1465,15 @@ async fn fly_orbit(shared: &Arc<AgentShared>, req: &InvestigateRequest, label: &
     loop {
         interval.tick().await;
         if interrupted(shared, label) {
+            // Split snapshot: remaining turns from the ACCUMULATED bearing
+            // (swept_turns integrates measured motion, so the continuation
+            // flies exactly what is left).
+            crate::queue::save_resume(
+                shared,
+                crate::queue::ResumeSnapshot::Investigate {
+                    remaining_turns: (turns - flight.swept_turns()).max(0.0),
+                },
+            );
             break FlightOutcome::Aborted;
         }
         let now_s = t0.elapsed().as_secs_f64();
@@ -1317,6 +1488,22 @@ async fn fly_orbit(shared: &Arc<AgentShared>, req: &InvestigateRequest, label: &
                     .event("investigate.orbit_entered", serde_json::json!({}));
             }
         }
+        // Queue-stream progress: accumulated bearing ÷ target turns, ETA
+        // from the remaining arc ÷ angular rate (commanded speed on the
+        // circle).
+        let swept = flight.swept_turns();
+        let remaining = (turns - swept).max(0.0);
+        crate::queue::note_progress(
+            shared,
+            muas_contracts::tasks::TaskProgress {
+                pct: (100.0 * swept / turns.max(1e-6)).clamp(0.0, 100.0),
+                detail: format!("orbit {swept:.2}/{turns:.2} turns"),
+                eta_s: remaining * std::f64::consts::TAU * radius_m / INVESTIGATE_SPEED_M_S,
+            },
+            Some(crate::queue::ResumeSnapshot::Investigate {
+                remaining_turns: remaining,
+            }),
+        );
         if let Some(outcome) = outcome {
             break outcome;
         }
@@ -1350,13 +1537,28 @@ async fn fly_flyover(
             "cruise_agl_m": req.agl_m,
         }),
     );
+    // Remaining passes for split/resume: flyover geometry is a fixed
+    // number of waypoints per pass, so remaining passes = ceil of the
+    // un-flown waypoint fraction (a continuation re-flies whole passes).
+    let passes = (req.turns.round() as usize).max(1);
+    let per_pass = (points.len() / passes).max(1);
     let mut flight = WaypointFlight::new(points, INVESTIGATE_SPEED_M_S, 0.0);
     let t0 = tokio::time::Instant::now();
     let mut interval = tokio::time::interval(CONTROL_TICK);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let remaining_passes = |flight: &WaypointFlight| {
+        let (idx, total) = flight.progress();
+        total.saturating_sub(idx).div_ceil(per_pass)
+    };
     loop {
         interval.tick().await;
         if interrupted(shared, label) {
+            crate::queue::save_resume(
+                shared,
+                crate::queue::ResumeSnapshot::Investigate {
+                    remaining_turns: remaining_passes(&flight) as f64,
+                },
+            );
             break FlightOutcome::Aborted;
         }
         let now_s = t0.elapsed().as_secs_f64();
@@ -1364,6 +1566,21 @@ async fn fly_flyover(
             let mut backend = lock(&shared.backend);
             flight.tick(now_s, backend.as_dyn())
         };
+        let (idx, total) = flight.progress();
+        crate::queue::note_progress(
+            shared,
+            muas_contracts::tasks::TaskProgress {
+                pct: if total > 0 { 100.0 * idx as f64 / total as f64 } else { 100.0 },
+                detail: format!("flyover waypoint {idx}/{total}"),
+                // Coarse: a fixed per-waypoint hop budget beats re-summing
+                // the remaining path every tick.
+                eta_s: total.saturating_sub(idx) as f64
+                    * (2.0 * req.radius_m.max(2.0) / INVESTIGATE_SPEED_M_S + 2.0),
+            },
+            Some(crate::queue::ResumeSnapshot::Investigate {
+                remaining_turns: remaining_passes(&flight) as f64,
+            }),
+        );
         if let Some(outcome) = outcome {
             break outcome;
         }
@@ -1546,6 +1763,88 @@ mod tests {
             assert!(pair[1] - pair[0] <= TARGET_RESEND_S + SIM_TICK_S + 1e-9);
         }
         assert!(backend.gotos.len() >= legs_total * 2);
+    }
+
+    /// Split fidelity, scripted time: suspend a raster mid-leg, build the
+    /// remainder from the exact resume snapshot, fly it to completion —
+    /// remaining captures = total − fired, and the union of planned points
+    /// is exactly the plan's capture set (no duplicates, none lost).
+    #[test]
+    fn raster_split_remainder_fires_exactly_the_unfired_captures() {
+        let plan = plan_raster(&raster_req(120.0, 60.0, 20.0, 15.0)).unwrap();
+        let total = plan.capture_count();
+        let all_points: Vec<(u64, u64)> = plan
+            .captures
+            .iter()
+            .flatten()
+            .map(|c| (c.lat_deg.to_bits(), c.lon_deg.to_bits()))
+            .collect();
+
+        let mut sim = SimFlightBackend::new(ORIGIN.0, ORIGIN.1);
+        assert!(sim.ensure_airborne(8.0));
+        sim.set_cruise_speed(plan.speed_m_s);
+
+        // Fly the parent until roughly a third of the captures fired, then
+        // "preempt" it between ticks (where every interruption lands).
+        let mut flight = RasterFlight::new(plan.clone(), 0.0);
+        let mut events = Vec::new();
+        let mut now = 0.0;
+        while (flight.frames as usize) < total / 3 {
+            assert!(flight.tick(now, &mut sim, &mut events).is_none(), "ended too early");
+            sim.advance(SIM_TICK_S);
+            now += SIM_TICK_S;
+            assert!(now < 600.0, "parent never reached a third of the captures");
+        }
+        let fired_first: Vec<(u64, u64)> = events
+            .iter()
+            .filter_map(|e| match e {
+                MissionEvent::Capture { point, .. } => {
+                    Some((point.lat_deg.to_bits(), point.lon_deg.to_bits()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fired_first.len(), flight.frames as usize);
+
+        let (leg, fired_in_leg) = flight.resume_state();
+        let remainder = plan.remainder(leg, fired_in_leg).expect("work remains");
+        assert_eq!(
+            remainder.capture_count(),
+            total - fired_first.len(),
+            "remaining captures = total - fired"
+        );
+
+        // The continuation flies from wherever the vehicle is now.
+        let mut cont = RasterFlight::new(remainder, now);
+        let mut cont_events = Vec::new();
+        let outcome = loop {
+            if let Some(outcome) = cont.tick(now, &mut sim, &mut cont_events) {
+                break outcome;
+            }
+            sim.advance(SIM_TICK_S);
+            now += SIM_TICK_S;
+            assert!(now < 1200.0, "continuation never completed");
+        };
+        assert_eq!(outcome, FlightOutcome::Completed);
+
+        let mut union: Vec<(u64, u64)> = fired_first;
+        union.extend(cont_events.iter().filter_map(|e| match e {
+            MissionEvent::Capture { point, .. } => {
+                Some((point.lat_deg.to_bits(), point.lon_deg.to_bits()))
+            }
+            _ => None,
+        }));
+        assert_eq!(union.len(), total, "every capture fired across the split");
+        let mut sorted = union.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), total, "no capture point fired twice");
+        let mut expected = all_points;
+        expected.sort_unstable();
+        assert_eq!(sorted, expected, "the union is exactly the planned capture set");
+
+        // Degenerate remainders: past the last leg there is nothing left.
+        assert!(plan.remainder(plan.legs.len(), 0).is_none());
     }
 
     #[test]
@@ -1891,6 +2190,10 @@ mod tests {
             )
             .unwrap();
             s.sensor_feed = Some(Arc::new(feed));
+            // This test pins the LEGACY (--no-queue) semantics: a second
+            // override while one is flying refuses busy. With the queue
+            // engine on it queues instead (see queue.rs tests).
+            s.queue_enabled = false;
         });
         let req = raster_req(120.0, 60.0, 20.0, 15.0);
         let plan = plan_raster(&req).unwrap();
@@ -1984,8 +2287,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn override_is_rejected_mid_investigation_and_on_the_ground() {
         use muas_contracts::services::{sensor_mode, SensorRequest, VehicleService};
-        // Mid-investigation: the pinned v2 rejection.
-        let (shared, backend) = bench_shared("iuas-90", "investigate");
+        // Mid-investigation: the pinned v2 rejection — the LEGACY
+        // (--no-queue) behavior; with the queue engine on the override
+        // queues behind the investigation instead (see queue.rs tests).
+        let (shared, backend) =
+            bench_shared_with("iuas-90", "investigate", None, |s| s.queue_enabled = false);
         lock(&backend).as_dyn().ensure_airborne(8.0);
         let service = crate::service_impl::VehicleServiceImpl::new(shared);
         let ack = service

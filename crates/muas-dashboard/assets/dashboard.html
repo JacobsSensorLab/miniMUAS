@@ -220,6 +220,46 @@ h3:first-child { margin-top: 0; }
 #log .n.hit { border-left-color: var(--cds-support-success); }
 #log .n.err { border-left-color: var(--cds-support-error); }
 
+/* ---- event log filter bar (chips = union; vehicle/text intersect) ----- */
+#logfilter { margin-bottom: var(--sp-03); }
+#logchips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: var(--sp-02); }
+.logchip {
+  display: inline-flex; align-items: center; gap: 4px; height: 20px;
+  padding: 0 var(--sp-03); border: 1px solid var(--cds-border-subtle);
+  border-radius: 10px; background: var(--cds-layer-01);
+  color: var(--cds-text-secondary); font-size: 11px; letter-spacing: .32px;
+  cursor: pointer;
+}
+.logchip:hover { background: var(--cds-layer-02); }
+.logchip.on {
+  background: var(--cds-layer-selected-inverse); color: var(--cds-text-inverse);
+  border-color: transparent;
+}
+.logchip .ct { font-family: var(--font-mono); font-size: 10px; opacity: .75; }
+#logfilter .rowf { display: flex; gap: var(--sp-02); align-items: center; }
+#logvid {
+  flex: 0 0 38%; height: 24px; padding: 0 var(--sp-02);
+  background: var(--cds-field-01); color: var(--cds-text-primary);
+  border: none; border-bottom: 1px solid var(--cds-border-strong);
+  border-radius: 0; font-size: 11px;
+}
+#logtext {
+  flex: 1; min-width: 0; height: 24px; padding: 0 var(--sp-03);
+  background: var(--cds-field-01); color: var(--cds-text-primary);
+  border: none; border-bottom: 1px solid var(--cds-border-strong);
+  border-radius: 0; font: 400 11px var(--font-mono);
+}
+#logtext::placeholder { color: var(--cds-text-placeholder); }
+
+/* ---- unconfirmed candidate cards (end-of-raster, operator-disposed) ---- */
+#detCard .unconf {
+  border-left: 3px solid var(--cds-support-warning);
+  padding-left: var(--sp-03);
+}
+#detCard .unconf .ubtn {
+  height: 22px; padding: 0 var(--sp-03); font-size: 11px; margin-top: 4px;
+}
+
 /* ---- map overlays ------------------------------------------------------------------ */
 #mission-banner {
   position: absolute; top: var(--sp-03); left: var(--sp-03); z-index: 5;
@@ -233,6 +273,19 @@ h3:first-child { margin-top: 0; }
   background: var(--cds-support-warning); color: var(--cds-text-inverse);
   padding: var(--sp-02) var(--sp-05); font-size: 12px; font-weight: 600;
   display: none; z-index: 5;
+}
+
+/* ---- sensor-tasking popover (anchored at the clicked map glyph) --------- */
+.taskpop {
+  position: absolute; z-index: 6; display: none; max-width: 220px;
+  background: var(--cds-layer-01); border: 1px solid var(--cds-border-subtle);
+  padding: var(--sp-03) var(--sp-05); font: 400 12px var(--font-mono);
+}
+.taskpop .row { color: var(--cds-text-secondary); margin-bottom: 2px; }
+.taskpop .row b { color: var(--cds-text-primary); }
+.taskpop button {
+  margin-top: var(--sp-03); height: 26px; padding: 0 var(--sp-04);
+  font-size: 12px;
 }
 
 /* ---- map follow / orientation cluster (top right, pictogram-first) ------- */
@@ -556,6 +609,18 @@ opportunistic: fire whenever the vehicle happens to pass within range.">
   <img id="thumb" alt="trigger frame">
 
   <h3>Event log</h3>
+  <div id="logfilter">
+    <div id="logchips"></div>
+    <div class="rowf">
+      <select id="logvid" title="show only this vehicle's events (intersects with the category chips)">
+        <option value="">all vehicles</option>
+      </select>
+      <input id="logtext" type="text" placeholder="filter text…"
+        title="substring match on the rendered line (intersects with chips + vehicle)">
+      <button id="logclear" class="xabort" style="visibility:hidden"
+        title="clear all event-log filters">✕</button>
+    </div>
+  </div>
   <div id="log"></div>
 </div>
 
@@ -568,6 +633,7 @@ opportunistic: fire whenever the vehicle happens to pass within range.">
     <span><span class="k">targets</span><b id="mtargets">0</b></span>
   </div>
   <div class="pickhint" id="pickhint">click the map…</div>
+  <div class="taskpop" id="taskpop"></div>
   <div id="mapctl">
     <div class="mapctl-row" id="followSeg" role="group" aria-label="map follow mode">
       <button data-fm="free" title="Free — pan and zoom by hand">
@@ -775,6 +841,10 @@ let plan = null;
 let drones = {};
 let targets = [];   // mission targets: {index, object_id, confidence, lat,
                     //  lon, frame, status, artifacts}
+let UNCONF = [];    // end-of-raster unconfirmed candidates: {index,
+                    //  object_id, hits, need, confidence, lat, lon, frame,
+                    //  status: unconfirmed|promoted|dismissed}
+let ucandSel = null;  // index of the unconfirmed marker whose popover is open
 let picking = null;
 
 function resize(){ const r = cv.parentElement.getBoundingClientRect();
@@ -996,6 +1066,7 @@ let hoverEvt = null;          // event under the cursor (tooltip)
 const EVT_STYLE = kind =>
   kind === "detect.hit"        ? "#42be65" :
   kind === "detect.candidate"  ? "#f1c21b" :
+  kind === "target.unconfirmed" ? "#f1c21b" :
   kind === "mission.target_found" ? "#fa4d56" :
   kind.startsWith("target.")   ? "#4589ff" : "#a8a8a8";
 function pushMapEvent(m){
@@ -1009,6 +1080,65 @@ let showData = true;
 let sensorData = [];          // {vehicle,sensor,kind,name,lat,lon,t,source,label}
 let CAPS = {};                // vid -> ["camera","audio"]
 const SENSOR_COLOR = { camera:"#78a9ff", audio:"#ff832b" };
+// ---------- active sensor taskings (watchpoints + override detours) ------
+// Tracked from the sensor.request → sensor.result lifecycle so a tasking
+// can be inspected AND cancelled from its own map glyph: clicking it opens
+// a popover whose Cancel routes exactly like the mini-log ✕ —
+// task_abort `sensor-override` for a detour, `watchpoint:<id>` for an
+// armed watchpoint (the id rides the accept ack detail).
+let TASKINGS = [];  // {req,vehicle,sensor,mode,label,lat,lon,radius_m,t0,expires_s,state}
+let taskSel = null;           // req of the tasking whose popover is open
+let lastEvtT = 0;             // newest event time seen (replay-safe clock)
+function taskingLifecycle(m){
+  lastEvtT = Math.max(lastEvtT, m.t || 0);
+  if (m.kind === "sensor.request" &&
+      typeof m.lat === "number" && typeof m.lon === "number"){
+    // a targeted tasking (override detour / watchpoint arm) was sent;
+    // "now (here)" captures carry no target and never pin a glyph
+    TASKINGS.push({ req:m.request, vehicle:m.vehicle, sensor:m.sensor,
+      mode:m.mode, label:m.mode === "override" ? "sensor-override" : null,
+      lat:m.lat, lon:m.lon, radius_m:6, t0:m.t, expires_s:600,
+      state:"sent" });
+    if (TASKINGS.length > 24) TASKINGS.shift();
+  } else if (m.kind === "sensor.result"){
+    const i = TASKINGS.findIndex(x => x.req === m.request);
+    if (m.status === "accepted"){
+      if (i < 0) return;
+      const tk = TASKINGS[i];
+      tk.state = "active";
+      const msg = m.message || "";
+      const wp = msg.match(/\bwp-\d+\b/);
+      if (wp) tk.label = `watchpoint:${wp[0]}`;
+      else if (!tk.label) tk.label = "sensor-override";
+      const r = msg.match(/within (\d+(?:\.\d+)?) m/);
+      if (r) tk.radius_m = +r[1];
+      const ex = msg.match(/expires in (\d+(?:\.\d+)?) s/);
+      if (ex) tk.expires_s = +ex[1];
+      else if (!wp) tk.expires_s = null;   // a detour has no arm window
+    } else {
+      // captured / expired / rejected / failed: the tasking is over.
+      // Delayed watchpoint outcomes arrive under an agent-minted request
+      // id, so fall back to the oldest tasking of that vehicle+sensor.
+      let j = i >= 0 ? i : TASKINGS.findIndex(x =>
+        x.vehicle === m.vehicle && x.sensor === m.sensor);
+      if (j >= 0) dropTasking(TASKINGS[j].req);
+    }
+  } else if ((m.kind === "sensor.timeout" || m.kind === "sensor.failed") &&
+             m.request){
+    dropTasking(m.request);
+  } else if (m.kind === "command.result" && m.ok === true &&
+             /^abort /.test(m.command || "")){
+    // the scoped cancel was ACCEPTED (map popover, mini-log ✕, task chip)
+    const label = m.command.slice(6);
+    const j = TASKINGS.findIndex(x =>
+      x.vehicle === m.vehicle && x.label === label);
+    if (j >= 0) dropTasking(TASKINGS[j].req);
+  }
+}
+function dropTasking(req){
+  TASKINGS = TASKINGS.filter(x => x.req !== req);
+  if (taskSel === req) closeTaskPop();
+}
 // ---------- sensor viz layer: ground quads / FoV cones + audio reach ----------
 // Rendered from each vehicle's ADVERTISED sensor_meta (capability profile,
 // additive key) — sensors are dynamic; nothing airframe-specific lives here.
@@ -1066,13 +1196,16 @@ const fmtClock = s => {
   return `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
 };
 function resetUIState(){
-  drones = {}; targets = []; mapEvents = []; sensorData = [];
+  drones = {}; targets = []; UNCONF = []; mapEvents = []; sensorData = [];
   hoverEvt = null; plan = null;
+  TASKINGS = []; lastEvtT = 0; closeTaskPop();
   SMETA = {}; NET = null; GCS = null; simAnoms = []; selAnom = null;
   covTrack = []; gcsHome = null;
   renderAnomList();
   CMDS.list = []; CMDS.byId = {}; renderCmdLog();
-  log.innerHTML = "";
+  // the log buffer resets but the ACTIVE FILTERS survive replay
+  // enter/exit (LOGF is localStorage-backed state, not buffer state)
+  log.innerHTML = ""; applyLogFilter();
   mframes.textContent = "0"; mleg.textContent = "–";
   mdet.textContent = "0/0"; mtargets.textContent = "0";
   renderTargets();
@@ -1617,6 +1750,184 @@ function drawSimAnoms(){
   }
 }
 
+// ---------- sensor-tasking glyphs + their cancel popover ----------
+// Watchpoints draw as a dashed arm-radius ring around a bullseye pin,
+// override detours as the bullseye alone; both counter the map transform
+// through toPx so they hold position in rotated/follow modes. Clicking a
+// glyph opens the popover (built in openTaskPop, repositioned every frame
+// here so it rides pans/rotation); Cancel routes like the list ✕.
+function drawTaskings(){
+  if (TASKINGS.length){
+    // local expiry sweep on event time (works in replay too): a watchpoint
+    // whose arm window has passed is gone even if its result got lost
+    const dead = TASKINGS.filter(t =>
+      t.expires_s != null && lastEvtT > t.t0 + t.expires_s + 2);
+    dead.forEach(t => dropTasking(t.req));
+  }
+  const rr = iconPx(0.7, 5, 11);
+  for (const tk of TASKINGS){
+    const p = toPx(tk.lat, tk.lon);
+    if (p[0] < -40 || p[0] > cv.width+40 || p[1] < -40 || p[1] > cv.height+40)
+      continue;
+    const col = SENSOR_COLOR[tk.sensor] || "#f4f4f4";
+    ctx.save();
+    ctx.globalAlpha = tk.state === "sent" ? 0.5 : 1;
+    if (tk.mode === "opportunistic"){
+      // watchpoint: dashed ring at the arm radius ("fires within N m")
+      const rp = mToPxr(tk.radius_m);
+      if (rp >= rr && rp <= 4000){
+        ctx.strokeStyle = col; ctx.lineWidth = lw(1.2); ctx.setLineDash([5,4]);
+        ctx.beginPath(); ctx.arc(p[0], p[1], rp, 0, 7); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+    // bullseye pin (shared by both modes — the clickable glyph)
+    ctx.strokeStyle = col; ctx.lineWidth = lw(1.5);
+    ctx.beginPath(); ctx.arc(p[0], p[1], rr, 0, 7); ctx.stroke();
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(p[0], p[1], rr * 0.35, 0, 7); ctx.fill();
+    if (tk.req === taskSel){
+      ctx.strokeStyle = "#f4f4f4"; ctx.lineWidth = 1.5; ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.arc(p[0], p[1], rr + 5, 0, 7); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.fillStyle = col; ctx.font = "11px 'IBM Plex Mono', monospace";
+    const wp = (tk.label || "").match(/wp-\d+/);
+    ctx.fillText(`${wp ? wp[0] : tk.mode} ${tk.sensor}`, p[0] + rr + 4, p[1] + 4);
+    ctx.restore();
+  }
+  // the open popover tracks its glyph through pan/zoom/rotate/follow
+  if (taskSel){
+    const tk = TASKINGS.find(t => t.req === taskSel);
+    if (!tk) closeTaskPop(); else positionTaskPop(tk);
+  }
+}
+function taskWhat(tk){
+  const wp = (tk.label || "").match(/wp-\d+/);
+  return wp ? `watchpoint ${wp[0]}`
+    : tk.mode === "opportunistic" ? "watchpoint (arming…)"
+    : "override capture";
+}
+function taskAgeText(tk){
+  if (tk.expires_s != null && tk.state === "active")
+    return `expires in ${Math.max(0, tk.t0 + tk.expires_s - lastEvtT).toFixed(0)} s`;
+  return `${tk.state === "sent" ? "sent" : "active"} ` +
+    `${Math.max(0, lastEvtT - tk.t0).toFixed(0)} s ago`;
+}
+function openTaskPop(tk){
+  taskSel = tk.req;
+  taskpop.innerHTML = `
+    <div class="row"><b>${taskWhat(tk)}</b></div>
+    <div class="row">${tk.sensor} · ${tk.vehicle}</div>
+    <div class="row" data-age>${taskAgeText(tk)}</div>
+    <div class="row">${tk.lat.toFixed(6)}, ${tk.lon.toFixed(6)}</div>
+    ${tk.label
+      ? `<button class="cds-btn cds-btn--danger" data-vid="${tk.vehicle}"
+           data-label="${tk.label}"
+           title="Cancel ${tk.label} on ${tk.vehicle} (scoped abort — no RTL)">
+           Cancel tasking</button>`
+      : `<div class="row">awaiting ack — cancel from the Commands log
+           once armed</div>`}`;
+  positionTaskPop(tk);
+}
+function closeTaskPop(){
+  taskSel = null;
+  ucandSel = null;   // the popover element is shared with unconfirmed cards
+  taskpop.style.display = "none";
+  taskpop.innerHTML = "";
+}
+function positionTaskPop(tk){
+  const p = toPx(tk.lat, tk.lon);
+  taskpop.style.display = "block";
+  taskpop.style.left =
+    `${Math.min(Math.max(8, p[0] + 16), cv.width - 210)}px`;
+  taskpop.style.top =
+    `${Math.min(Math.max(8, p[1] - 12), cv.height - 130)}px`;
+  const age = taskpop.querySelector("[data-age]");
+  if (age) age.textContent = taskAgeText(tk);
+}
+// one delegated handler survives the innerHTML rebuilds (cmdlog pattern);
+// the cancel routes EXACTLY like the mini-log ✕
+taskpop.addEventListener("click", e => {
+  const b = e.target.closest("button[data-label]");
+  if (b){
+    send({cmd:"task_abort", vehicle:b.dataset.vid, label:b.dataset.label});
+    closeTaskPop();
+    return;
+  }
+  // unconfirmed-candidate popover actions (same shared element)
+  const u = e.target.closest("button[data-uc]");
+  if (u){
+    (u.dataset.uc === "promote" ? promoteUnconfirmed
+                                : dismissUnconfirmed)(+u.dataset.uidx);
+    closeTaskPop();
+  }
+});
+// outside clicks anywhere in the page dismiss the popover (canvas clicks
+// are resolved by the map's own hit-test below)
+document.addEventListener("click", e => {
+  if ((taskSel || ucandSel != null) && e.target !== cv &&
+      !taskpop.contains(e.target))
+    closeTaskPop();
+});
+
+// ---------- unconfirmed candidates (end-of-raster disposition) ----------
+// Hollow amber dashed markers, visually distinct from the FILLED amber
+// queued-target dot; clicking one opens the shared tasking-popover with the
+// two dispositions. "Investigate anyway" promotes through the normal job
+// queue/dispatch path (reopening a completed mission); "Dismiss" is
+// terminal. Both route through the mission machine — the UI only reflects
+// the target.promoted / target.dismissed events that come back.
+function promoteUnconfirmed(i){ send({cmd:"candidate_promote", index:i}); }
+function dismissUnconfirmed(i){ send({cmd:"candidate_dismiss", index:i}); }
+function openUncPop(u){
+  closeTaskPop();
+  ucandSel = u.index;
+  taskpop.innerHTML = `
+    <div class="row"><b>unconfirmed candidate u#${u.index}</b></div>
+    <div class="row">${u.object_id} · ${(u.confidence*100).toFixed(0)}% ·
+      ${u.hits}/${u.need} hits</div>
+    <div class="row">${u.lat.toFixed(6)}, ${u.lon.toFixed(6)}</div>
+    <button class="cds-btn cds-btn--primary" data-uc="promote"
+      data-uidx="${u.index}" style="padding-right:16px"
+      title="Queue the normal investigation jobs for this candidate
+(reopens the mission if it had completed)">Investigate anyway</button>
+    <button class="cds-btn cds-btn--secondary" data-uc="dismiss"
+      data-uidx="${u.index}" style="margin-left:6px"
+      title="Discard this candidate (terminal)">Dismiss</button>`;
+  positionTaskPop(u);
+}
+function drawUnconfirmed(){
+  const live = UNCONF.filter(u => u.status === "unconfirmed");
+  if (ucandSel != null && !live.some(u => u.index === ucandSel))
+    closeTaskPop();          // promoted/dismissed under an open popover
+  const ur = iconPx(0.7, 3, 11);
+  for (const u of live){
+    const p = toPx(u.lat, u.lon);
+    if (p[0] < -40 || p[0] > cv.width+40 || p[1] < -40 || p[1] > cv.height+40)
+      continue;
+    ctx.save();
+    ctx.strokeStyle = "#f1c21b"; ctx.lineWidth = lw(1.8);
+    ctx.setLineDash([3,2]);
+    ctx.beginPath(); ctx.arc(p[0], p[1], ur, 0, 7); ctx.stroke();
+    ctx.setLineDash([]);
+    if (u.index === ucandSel){
+      ctx.strokeStyle = "#f4f4f4"; ctx.lineWidth = 1.5; ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.arc(p[0], p[1], ur + 5, 0, 7); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.fillStyle = "#f1c21b"; ctx.font = "12px 'IBM Plex Sans', sans-serif";
+    ctx.fillText(`u#${u.index} ${u.object_id} ${u.hits}/${u.need}`,
+                 p[0]+ur+8, p[1]-8);
+    ctx.restore();
+  }
+  // the open popover tracks its marker through pan/zoom/rotate/follow
+  if (ucandSel != null){
+    const u = live.find(x => x.index === ucandSel);
+    if (u) positionTaskPop(u);
+  }
+}
+
 function draw(){
   const now = performance.now();
   const dt = Math.min((now - (draw.last || now)) / 1000, 0.25);
@@ -1755,6 +2066,8 @@ function draw(){
   // overlay layers between smoothing and markers: markers stay on top
   drawSimAnoms();
   drawSensors();
+  drawTaskings();
+  drawUnconfirmed();
   drawNet();
   // vehicle markers scale with zoom between legible clamps (~1.5 m body)
   const vs = iconPx(1.5, 6, 24);
@@ -1872,6 +2185,39 @@ cv.addEventListener("click", e => {
       else selectAnom(hitA.id);
       return;
     }
+  }
+  if (!picking && TASKINGS.length){
+    // sensor-tasking glyphs are clickable: open the inspect/cancel popover
+    // (same toPx hit-test pattern as the shift-click markers above)
+    let bestT = 225, hitT = null;   // 15 px pick radius, squared
+    for (const tk of TASKINGS){
+      const p = toPx(tk.lat, tk.lon);
+      const d = (p[0]-e.offsetX)**2 + (p[1]-e.offsetY)**2;
+      if (d < bestT){ bestT = d; hitT = tk; }
+    }
+    if (hitT){
+      if (taskSel === hitT.req) closeTaskPop();  // toggle off on re-click
+      else openTaskPop(hitT);
+      return;
+    }
+    if (taskSel){ closeTaskPop(); return; }  // outside click dismisses
+  }
+  if (!picking){
+    // unconfirmed-candidate markers: click opens the promote/dismiss
+    // popover (same toPx hit-test pattern as the tasking glyphs above)
+    let bestU = 225, hitU = null;   // 15 px pick radius, squared
+    for (const u of UNCONF){
+      if (u.status !== "unconfirmed") continue;
+      const p = toPx(u.lat, u.lon);
+      const d = (p[0]-e.offsetX)**2 + (p[1]-e.offsetY)**2;
+      if (d < bestU){ bestU = d; hitU = u; }
+    }
+    if (hitU){
+      if (ucandSel === hitU.index) closeTaskPop();  // toggle off on re-click
+      else openUncPop(hitU);
+      return;
+    }
+    if (ucandSel != null){ closeTaskPop(); return; }  // outside click dismisses
   }
   if (!picking){
     // clicking a sensor-data point opens its playback/details modal
@@ -2112,8 +2458,10 @@ holdAll.onclick = () => send({cmd:"all", command:"hold"});
 // ---------- vehicle tiles + video panels ----------
 function onHello(m){
   VEHICLES = m.vehicles;
+  VEHICLES.forEach(noteLogVehicle);
   if (m.mission){
     targets = m.mission.targets || [];
+    UNCONF = m.mission.unconfirmed || [];
     setState(m.mission.state || "idle");
     renderTargets();
   }
@@ -2504,6 +2852,106 @@ function cmdLifecycle(m){
   }
 }
 
+// ---------- event log filtering (display-only over the retained buffer) ----
+// Category chips (auto-derived from event-kind prefixes via THE one mapping
+// table inside evtCategory), a vehicle dropdown (any vehicle seen), and a
+// free-text substring box. Multiple chips = union; vehicle and text
+// intersect with the chip set (evtFilterPass is the pure predicate — the
+// scratchpad harness extracts and unit-tests both functions). Filtering
+// never mutates the buffer: nodes are only hidden, so click-to-locate and
+// the detect frame-order insertion logic keep working untouched. While any
+// filter is active retention grows to 1000 lines (so a narrow filter isn't
+// starved by the 250 cap) and at most 250 matches render. Active filters
+// persist (localStorage) and survive replay enter/exit.
+function evtCategory(kind){
+  // THE kind-prefix → chip-category table (chips, counters, and the
+  // predicate all derive from this one place)
+  const T = { mission:"mission", detect:"detect", target:"target",
+              command:"command", coord:"coord", sensor:"sensor",
+              record:"record", system:"system",
+              // secondary prefixes folded into the nearest chip
+              video:"sensor", vehicle:"command", sim:"system" };
+  return T[String(kind || "").split(".")[0]] || "system";
+}
+const LOG_CATS = ["mission","detect","target","command","coord",
+                  "sensor","record","system"];
+// Pure predicate over one log entry {cat, vehicle, text} and the filter
+// state {cats:[], vehicle:"", text:""}: chips = union, vehicle + text
+// intersect; empty filter fields pass everything.
+function evtFilterPass(entry, f){
+  if (f.cats && f.cats.length && !f.cats.includes(entry.cat)) return false;
+  if (f.vehicle && entry.vehicle !== f.vehicle) return false;
+  if (f.text &&
+      !String(entry.text || "").toLowerCase().includes(f.text.toLowerCase()))
+    return false;
+  return true;
+}
+const LOGF_KEY = "muas3.logfilter";
+const LOGF = { cats: [], vehicle: "", text: "" };
+(function loadLogF(){
+  try {
+    const s = JSON.parse(localStorage.getItem(LOGF_KEY) || "{}");
+    if (Array.isArray(s.cats))
+      LOGF.cats = s.cats.filter(c => LOG_CATS.includes(c));
+    if (typeof s.vehicle === "string") LOGF.vehicle = s.vehicle;
+    if (typeof s.text === "string") LOGF.text = s.text;
+  } catch (e) {}
+})();
+function saveLogF(){
+  try { localStorage.setItem(LOGF_KEY, JSON.stringify(LOGF)); } catch (e) {}
+}
+const logFilterActive = () =>
+  !!(LOGF.cats.length || LOGF.vehicle || LOGF.text);
+const LOG_VISIBLE = 250;                 // rendered lines, filtered or not
+const logRetention = () => logFilterActive() ? 1000 : 250;
+const LOGVIDS = new Set();               // every vehicle seen in events
+function noteLogVehicle(vid){
+  if (!vid || LOGVIDS.has(vid)) return;
+  LOGVIDS.add(vid); syncLogVids();
+}
+function syncLogVids(){
+  logvid.innerHTML = ['<option value="">all vehicles</option>']
+    .concat([...LOGVIDS].sort().map(v => `<option value="${v}">${v}</option>`))
+    .join("");
+  logvid.value = LOGVIDS.has(LOGF.vehicle) ? LOGF.vehicle : "";
+}
+function applyLogFilter(){
+  while (log.children.length > logRetention()) log.lastChild.remove();
+  const counts = {};
+  let visible = 0;
+  for (const el of log.children){
+    const cat = el.dataset.cat || "system";
+    counts[cat] = (counts[cat] || 0) + 1;
+    const pass = evtFilterPass(
+      { cat, vehicle: el.dataset.vid || "", text: el.textContent }, LOGF);
+    el.style.display = pass && visible < LOG_VISIBLE ? "" : "none";
+    if (pass) visible++;
+  }
+  logchips.innerHTML = LOG_CATS.map(c => `
+    <button class="logchip${LOGF.cats.includes(c) ? " on" : ""}" data-cat="${c}"
+      title="show only ${c} events (multiple chips = union; vehicle/text intersect)"
+      >${c}<span class="ct">${counts[c] || 0}</span></button>`).join("");
+  logclear.style.visibility = logFilterActive() ? "visible" : "hidden";
+}
+// delegated: survives the chip innerHTML rebuilds (cmdlog pattern)
+logchips.addEventListener("click", e => {
+  const b = e.target.closest(".logchip");
+  if (!b) return;
+  const c = b.dataset.cat;
+  LOGF.cats = LOGF.cats.includes(c)
+    ? LOGF.cats.filter(x => x !== c) : LOGF.cats.concat(c);
+  saveLogF(); applyLogFilter();
+});
+logvid.onchange = () => {
+  LOGF.vehicle = logvid.value; saveLogF(); applyLogFilter(); };
+logtext.value = LOGF.text;
+logtext.oninput = () => {
+  LOGF.text = logtext.value; saveLogF(); applyLogFilter(); };
+logclear.onclick = () => {
+  LOGF.cats = []; LOGF.vehicle = ""; LOGF.text = "";
+  logtext.value = ""; saveLogF(); syncLogVids(); applyLogFilter();
+};
+
 // ---------- events / mission state ----------
 const STATE_TAG = { idle:"cds-tag--gray", searching:"cds-tag--blue",
   investigating:"cds-tag--yellow",
@@ -2529,15 +2977,45 @@ function cancelJob(index, sensor){
   else if (j.status === "investigating" && j.vehicle)
     send({cmd:"task_abort", vehicle:j.vehicle, label:"investigate"});
 }
+// Unconfirmed cards (end-of-raster candidates that fell short of
+// confirm_count): amber, "1/2 hits", two dispositions — Investigate anyway
+// (normal queue/dispatch; reopens a completed mission) or Dismiss
+// (terminal). Promoted/dismissed entries leave the panel; a promotion's
+// target card arrives via its own mission.target_found.
+function unconfCardsHTML(){
+  return UNCONF.filter(u => u.status === "unconfirmed").map(u => `
+    <div class="unconf" style="display:flex;justify-content:space-between;
+                align-items:center;margin-bottom:8px">
+      <span><b>u#${u.index} ${u.object_id}</b> · ${(u.confidence*100).toFixed(1)}%
+        <div class="mono">${u.lat.toFixed(6)}, ${u.lon.toFixed(6)}</div>
+        <div>
+          <button class="cds-btn cds-btn--tertiary ubtn"
+            onclick="promoteUnconfirmed(${u.index})"
+            title="Queue the normal investigation jobs for this candidate (reopens the mission if it had completed)">Investigate anyway</button>
+          <button class="cds-btn cds-btn--ghost ubtn"
+            onclick="dismissUnconfirmed(${u.index})"
+            title="Discard this candidate (terminal)">Dismiss</button>
+        </div>
+      </span>
+      <span class="cds-tag cds-tag--yellow"
+        title="seen on ${u.hits} of the ${u.need} frames confirmation needs — the search ended before a second pass could see it">${u.hits}/${u.need} hits</span>
+    </div>`).join("");
+}
 function renderTargets(){
   mtargets.textContent = targets.length;
-  if (!targets.length){
+  const unc = unconfCardsHTML();
+  if (!targets.length && !unc){
     detCard.textContent = mstate.textContent === "searching"
       ? "searching…" : "none yet";
     thumb.style.display = "none";
     return;
   }
-  detCard.innerHTML = targets.map(t => `
+  if (!targets.length){
+    detCard.innerHTML = unc;
+    thumb.style.display = "none";
+    return;
+  }
+  detCard.innerHTML = unc + targets.map(t => `
     <div style="display:flex;justify-content:space-between;align-items:center;
                 margin-bottom:8px">
       <span><b>#${t.index} ${t.object_id}</b> · ${(t.confidence*100).toFixed(1)}%
@@ -2586,19 +3064,30 @@ function onEvent(m){
            m.kind.includes("rejected") || m.ok === false)
     line.classList.add("err");
   cmdLifecycle(m);
+  taskingLifecycle(m);
   // detect responses complete out of capture order (each frame's round
-  // trip varies); slot each detect line above the first detect line with
-  // a LOWER frame number so the log reads in frame order
-  let anchor = null;
+  // trip varies): slot a late line below the LEADING run of higher-seq
+  // detect lines so the log still reads in frame order — but never below
+  // non-detect lines that arrived earlier. (Anchoring above "the first
+  // lower-seq line" buried every new detect line under the first
+  // candidate/dispatch block, so the visible top of the log froze there
+  // and the live detect stream read as stalled after dispatch #1 — while
+  // the recording showed frames still flowing.)
+  let anchor = log.firstChild;
   if (isDetect){
     line.dataset.seq = m.seq;
-    for (const child of log.children){
-      const s = child.dataset.seq;
-      if (s !== undefined && Number(s) < m.seq){ anchor = child; break; }
-    }
+    while (anchor && anchor.dataset.seq !== undefined &&
+           Number(anchor.dataset.seq) > m.seq)
+      anchor = anchor.nextSibling;
   }
-  if (anchor) log.insertBefore(line, anchor); else log.prepend(line);
-  while (log.children.length > 250) log.lastChild.remove();
+  if (anchor) log.insertBefore(line, anchor); else log.append(line);
+  // filter metadata rides the node (category from THE mapping table,
+  // vehicle for the dropdown); retention/visibility is applyLogFilter's
+  // job — it trims to 250 (1000 while any filter is active) and hides
+  // non-matching lines without ever reordering or dropping matches early
+  line.dataset.cat = evtCategory(m.kind);
+  if (m.vehicle){ line.dataset.vid = m.vehicle; noteLogVehicle(m.vehicle); }
+  applyLogFilter();
 
   // pin georeferenced events to the map, and let the log line locate
   // them: click pans the view to where (and shows when) it happened
@@ -2614,9 +3103,32 @@ function onEvent(m){
     (tg.jobs || []).find(j => j.sensor === sensor);
   switch (m.kind){
     case "mission.started":
-      setState("searching"); targets = []; mapEvents = []; hoverEvt = null;
+      setState("searching"); targets = []; UNCONF = []; mapEvents = [];
+      hoverEvt = null;
       covTrack = [];             // live coverage shading restarts per mission
       renderTargets(); break;
+    case "target.unconfirmed":
+      // end-of-raster leftover candidate: surfaced for disposition only
+      if (!UNCONF.some(u => u.index === m.index))
+        UNCONF.push({ index:m.index, object_id:m.object_id, hits:m.hits,
+          need:m.need, confidence:m.confidence, lat:m.lat, lon:m.lon,
+          frame:m.frame, status:"unconfirmed" });
+      renderTargets(); break;
+    case "target.promoted": {
+      const u = UNCONF.find(x => x.index === m.index);
+      if (u) u.status = "promoted";
+      // a completed mission reopens for the promoted target's jobs; the
+      // machine already flipped done→investigating — mirror it here
+      if (mstate.textContent === "done") setState("investigating");
+      renderTargets();
+      toast(`candidate u#${m.index} promoted — investigating`, "ok");
+      break; }
+    case "target.dismissed": {
+      const u = UNCONF.find(x => x.index === m.index);
+      if (u) u.status = "dismissed";     // terminal
+      renderTargets();
+      toast(`candidate u#${m.index} dismissed`, "ok");
+      break; }
     case "record.started":
       setRecUI(true);
       toast(`recording ${m.name || "session"} started`, "ok"); break;
@@ -2749,11 +3261,18 @@ function renderLegend(){
       ${sw("border:1px solid #ff832b;border-radius:50%;margin-left:6px")}
       circle = audio clip</div>
     <div class="li">filled = operator-tasked · hollow = mission evidence · click to play</div>`);
+  parts.push(`<h4>Sensor taskings</h4>
+    <div class="li">${sw("border:1px solid #78a9ff;border-radius:50%")}
+      bullseye = active tasking (click to inspect / cancel) ·
+      ${sw("border:1px dashed #78a9ff;border-radius:50%;margin-left:6px")}
+      dashed ring = watchpoint arm radius</div>`);
   parts.push(`<h4>Targets</h4>
     <div class="li">${sw("background:#f1c21b;border-radius:50%")} queued
       ${sw("background:#4589ff;border-radius:50%;margin-left:6px")} investigating (pulses)
       ${sw("background:#42be65;border-radius:50%;margin-left:6px")} done
-      ${sw("background:#fa4d56;border-radius:50%;margin-left:6px")} failed</div>`);
+      ${sw("background:#fa4d56;border-radius:50%;margin-left:6px")} failed</div>
+    <div class="li">${sw("border:1px dashed #f1c21b;border-radius:50%")}
+      hollow = unconfirmed candidate (click to investigate anyway / dismiss)</div>`);
   if (plan || covTrack.length) parts.push(`<h4>Coverage</h4>
     <div class="li">${sw("background:#4589ff44")} planned sweep footprint (hfov @ planned AGL)</div>
     <div class="li">${sw("background:#42be6566")} live footprint swept so far this mission</div>`);
@@ -2899,6 +3418,7 @@ applyPanels();
 
 renderCmdLog();
 renderLegend();
+syncLogVids(); applyLogFilter();   // restore persisted event-log filters
 resize(); syncMapCtl(); connect(); draw();
 setTimeout(preview, 800);
 </script>

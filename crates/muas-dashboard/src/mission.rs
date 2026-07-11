@@ -201,6 +201,30 @@ fn terminal_target_status(jobs: &[Job]) -> String {
     }
 }
 
+/// A candidate left under-confirmed when the raster ended (hits <
+/// confirm_count — the geometric trap: a camera footprint narrower than
+/// the leg spacing can only ever see a real object on ONE pass, so
+/// confirm-count 2 is unsatisfiable for it). Surfaced to the operator at
+/// search end; never auto-dispatched, never blocking completion. The
+/// operator either promotes it ("Investigate anyway" → the normal
+/// queue/dispatch path) or dismisses it (terminal).
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Unconfirmed {
+    pub index: usize,
+    pub object_id: String,
+    pub confidence: f64,
+    pub lat: f64,
+    pub lon: f64,
+    pub frame: String,
+    pub best_offset: f64,
+    /// Distinct frames that saw it (all < `need`, or it would be a target).
+    pub hits: usize,
+    /// The confirm_count it fell short of.
+    pub need: usize,
+    /// `unconfirmed | promoted | dismissed`.
+    pub status: String,
+}
+
 /// A confirmed target and its per-sensor job queue.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Target {
@@ -259,6 +283,10 @@ pub struct Mission {
     pub search_done: bool,
     pub targets: Vec<Target>,
     candidates: Vec<Candidate>,
+    /// End-of-raster leftovers (hits < confirm_count), operator-disposed.
+    /// Indexed in its OWN namespace (`u#N` in the UI) — a promotion mints a
+    /// fresh target index through the normal path.
+    pub unconfirmed: Vec<Unconfirmed>,
     /// Per-vehicle enable gate: disabled = no auto-dispatch, no takeoff;
     /// RTL/Land/Hold always allowed (enforced by the command layer).
     pub enabled: HashMap<String, bool>,
@@ -301,6 +329,7 @@ impl Mission {
             search_done: false,
             targets: Vec::new(),
             candidates: Vec::new(),
+            unconfirmed: Vec::new(),
             enabled,
             capabilities: HashMap::new(),
             vehicle_busy: HashMap::new(),
@@ -385,6 +414,8 @@ impl Mission {
             "state": self.state,
             "mission_id": self.mission_id,
             "targets": self.targets_json(),
+            "unconfirmed": serde_json::to_value(&self.unconfirmed)
+                .unwrap_or_else(|_| json!([])),
         })
     }
 
@@ -405,6 +436,7 @@ impl Mission {
         self.search_done = false;
         self.targets.clear();
         self.candidates.clear();
+        self.unconfirmed.clear();
         self.seen_frames.clear();
         self.detects_pending = 0;
         self.detects_done = 0;
@@ -681,6 +713,43 @@ impl Mission {
 
     fn finish_search(&mut self) -> Vec<Action> {
         self.search_done = true;
+        let mut actions = Vec::new();
+        // End-of-raster disposition: leftover candidates (hits <
+        // confirm_count) become operator-facing `unconfirmed` — surfaced,
+        // NOT auto-dispatched, NOT blocking completion. Mid-raster
+        // candidate behavior is untouched; only a LIVE mission surfaces
+        // them (an aborted one drops its candidates silently).
+        if self.state == "searching" || self.state == "investigating" {
+            let need = self.cfg.confirm_count.max(1) as usize;
+            for cand in std::mem::take(&mut self.candidates) {
+                let u = Unconfirmed {
+                    index: self.unconfirmed.len(),
+                    object_id: cand.object_id,
+                    confidence: cand.confidence,
+                    lat: cand.lat,
+                    lon: cand.lon,
+                    frame: cand.frame,
+                    best_offset: cand.best_offset,
+                    hits: cand.frames.len(),
+                    need,
+                    status: "unconfirmed".into(),
+                };
+                actions.push(Action::Emit(self.event(
+                    "target.unconfirmed",
+                    json!({
+                        "index": u.index,
+                        "hits": u.hits,
+                        "need": u.need,
+                        "object_id": u.object_id,
+                        "confidence": round4(u.confidence),
+                        "lat": u.lat,
+                        "lon": u.lon,
+                        "frame": u.frame,
+                    }),
+                )));
+                self.unconfirmed.push(u);
+            }
+        }
         if self.state == "searching"
             && self
                 .targets
@@ -690,7 +759,101 @@ impl Mission {
             self.state = "investigating".into();
         }
         // Drain (or immediately complete) the target queue.
-        self.pump_dispatch()
+        actions.extend(self.pump_dispatch());
+        actions
+    }
+
+    // ── unconfirmed disposition (operator inputs) ───────────────────────────
+
+    /// Operator "Investigate anyway" on an end-of-raster unconfirmed
+    /// candidate: promote it through the NORMAL target path — one queued
+    /// job per requested sensor, dispatched by the same pump. A completed
+    /// mission reopens (`done` → `investigating`) so the completion
+    /// predicate re-runs against the re-armed jobs and closes the mission
+    /// again when they land. Idempotent: only an `unconfirmed` entry in a
+    /// non-aborted mission promotes.
+    pub fn promote_unconfirmed(&mut self, index: usize) -> Vec<Action> {
+        if !matches!(self.state.as_str(), "searching" | "investigating" | "done") {
+            return Vec::new();
+        }
+        let Some(u) = self
+            .unconfirmed
+            .iter_mut()
+            .find(|u| u.index == index && u.status == "unconfirmed")
+        else {
+            return Vec::new();
+        };
+        u.status = "promoted".into();
+        let u = u.clone();
+        if self.state == "done" {
+            self.state = "investigating".into();
+        }
+        let sensors = self.mission_sensors();
+        let target = Target {
+            index: self.targets.len(),
+            object_id: u.object_id.clone(),
+            confidence: u.confidence,
+            lat: u.lat,
+            lon: u.lon,
+            frame: u.frame.clone(),
+            best_offset: u.best_offset,
+            status: "queued".into(),
+            artifacts: Vec::new(),
+            jobs: sensors
+                .iter()
+                .map(|s| Job {
+                    sensor: s.clone(),
+                    vehicle: String::new(),
+                    status: "queued".into(),
+                    artifacts: Vec::new(),
+                })
+                .collect(),
+        };
+        let mut actions = vec![
+            Action::Emit(self.event(
+                "target.promoted",
+                json!({
+                    "index": u.index,
+                    "target_index": target.index,
+                    "lat": u.lat,
+                    "lon": u.lon,
+                }),
+            )),
+            // The same wire shape as a confirm-count promotion, plus the
+            // provenance key (`hits` is the honest count, below `need`).
+            Action::Emit(self.event(
+                "mission.target_found",
+                json!({
+                    "index": target.index,
+                    "object_id": target.object_id,
+                    "confidence": round4(target.confidence),
+                    "lat": target.lat,
+                    "lon": target.lon,
+                    "frame": target.frame,
+                    "hits": u.hits,
+                    "sensors": sensors,
+                    "promoted_from": u.index,
+                }),
+            )),
+        ];
+        self.targets.push(target);
+        actions.extend(self.pump_dispatch());
+        actions
+    }
+
+    /// Operator "Dismiss" on an unconfirmed candidate: terminal — it can
+    /// no longer be promoted, and nothing else ever touches it.
+    pub fn dismiss_unconfirmed(&mut self, index: usize) -> Vec<Action> {
+        let Some(u) = self
+            .unconfirmed
+            .iter_mut()
+            .find(|u| u.index == index && u.status == "unconfirmed")
+        else {
+            return Vec::new();
+        };
+        u.status = "dismissed".into();
+        let payload = json!({ "index": u.index, "lat": u.lat, "lon": u.lon });
+        vec![Action::Emit(self.event("target.dismissed", payload))]
     }
 
     // ── detection fan-in ────────────────────────────────────────────────────

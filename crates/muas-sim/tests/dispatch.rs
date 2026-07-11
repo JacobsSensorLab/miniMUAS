@@ -47,12 +47,21 @@ struct BenchAgent {
 
 impl BenchAgent {
     fn new(vid: &'static str) -> Self {
+        Self::with_queue(vid, true)
+    }
+
+    /// `queue_enabled = false` pins the LEGACY busy-refusal path (the
+    /// `--no-queue` agent configuration) — the accept-and-queue engine
+    /// otherwise turns a busy refusal into `Ack.code="queued"`.
+    fn with_queue(vid: &'static str, queue_enabled: bool) -> Self {
         let (journal, _task) = muas_agent::journal::spawn(vid, None, None, None);
         let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel();
         let sim = SimFlightBackend::new(ORIGIN.0, ORIGIN.1);
         let backend: SharedBackend =
             Arc::new(Mutex::new(Box::new(sim) as Box<dyn TickableBackend>));
-        let shared = Arc::new(AgentShared::bench(vid, backend.clone(), journal, cmd_tx));
+        let mut shared = AgentShared::bench(vid, backend.clone(), journal, cmd_tx);
+        shared.queue_enabled = queue_enabled;
+        let shared = Arc::new(shared);
         // The sim motion ticker the agent itself would spawn.
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs_f64(SIM_TICK_S));
@@ -299,10 +308,14 @@ async fn single_iuas_takes_job_two_when_job_one_completes() {
 /// busy-refusal must requeue the job — not terminally fail it — remember
 /// the refusing vehicle as busy, and route the job to another idle capable
 /// vehicle in the same pump.
+///
+/// Busy refusals only exist on the `--no-queue` configuration now (the
+/// queue engine accept-and-queues instead), so this pins the dashboard's
+/// requeue machinery against agents running with the queue disabled.
 #[tokio::test(start_paused = true)]
 async fn busy_refusal_requeues_instead_of_failing() {
-    let a = BenchAgent::new("iuas-01");
-    let b = BenchAgent::new("iuas-02");
+    let a = BenchAgent::with_queue("iuas-01", false);
+    let b = BenchAgent::with_queue("iuas-02", false);
     let agents = [&a, &b];
     let mut mission = mission_machine(&["iuas-01", "iuas-02"]);
     let mut wire = Wire::default();

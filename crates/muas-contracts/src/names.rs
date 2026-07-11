@@ -27,10 +27,16 @@ pub fn vehicle_service(vehicle_id: &str, service: &str) -> String {
 }
 
 /// Latest-wins data stream under a vehicle, e.g. `telemetry/live`,
-/// `telemetry/state`, `search/status`, `coord/status`, `video/live`.
+/// `telemetry/state`, `search/status`, `coord/status`, `video/live`,
+/// [`TASK_QUEUE_STREAM`].
 pub fn vehicle_stream(vehicle_id: &str, stream: &str) -> String {
     format!("{APP_PREFIX}/{vehicle_id}/{stream}")
 }
+
+/// Stream segment of the per-vehicle task queue (a JSON
+/// [`crate::tasks::TaskQueueStatus`], latest-wins, 1 Hz on change):
+/// `vehicle_stream(vid, TASK_QUEUE_STREAM)` → `/muas/v3/<vid>/tasks/queue`.
+pub const TASK_QUEUE_STREAM: &str = "tasks/queue";
 
 /// Mission-scoped object name, e.g.
 /// `/muas/v3/mission/<mid>/<vid>/camera/<cam>/frame/<gps_ns>/<seq>`.
@@ -84,5 +90,9 @@ mod tests {
             "/muas/v3/wuas-01/mission/m1/camera/cam0/frame/123/7"
         );
         assert_eq!(sim_stream("anomalies"), "/muas/v3/sim/anomalies");
+        assert_eq!(
+            vehicle_stream("iuas-01", TASK_QUEUE_STREAM),
+            "/muas/v3/iuas-01/tasks/queue"
+        );
     }
 }

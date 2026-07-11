@@ -3,13 +3,16 @@
 //! multi-sensor dispatch, and the completion predicate.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use muas_contracts::services::Ack;
 use muas_dashboard::mission::{
-    Action, DetectOutcome, Detection, JobResult, Mission, MissionConfig,
+    Action, DetectOutcome, Detection, InvestigateOrder, JobResult, Mission, MissionConfig,
+    RasterOrder,
 };
-use muas_dashboard::providers::{CmdResult, ScriptedCommander, ScriptedDetector};
+use muas_dashboard::providers::{
+    BoxFuture, CmdResult, Commander, ScriptedCommander, ScriptedDetector,
+};
 use muas_dashboard::{DashConfig, Dashboard};
 use serde_json::{json, Value};
 
@@ -142,6 +145,74 @@ fn distant_hits_form_separate_candidates_and_targets() {
         vec![(1, "camera".into(), "iuas-02".into())],
         "second target goes to the second idle IUAS"
     );
+}
+
+/// The 2026-07-10 field report read "the detect stream stops right after
+/// the first dispatch". Detection must run continuously and INDEPENDENTLY
+/// of dispatch/investigation lifecycles: with confirm-count 2 and job 1
+/// held in flight for the whole test (accept ack only — under the
+/// completion rework the job stays `investigating` until its vehicle goes
+/// idle), every later frame still fans out `detect.sent` + a detector
+/// request, and a second target confirms on two distinct frames and
+/// dispatches to the other idle IUAS while job 1 is still flying.
+#[test]
+fn detection_outlives_dispatch_and_confirms_a_second_target() {
+    let mut m = machine(&["iuas-01", "iuas-02"], 2);
+    caps(&mut m, "iuas-01", &["camera"]);
+    caps(&mut m, "iuas-02", &["camera"]);
+    start(&mut m, &["camera"]);
+
+    let sent_count =
+        |a: &[Action]| kinds(a).iter().filter(|k| k.as_str() == "detect.sent").count();
+
+    // Target 1 confirms on two distinct frames → dispatch #1.
+    hit(&mut m, "/f/1", LAT, LON, 0.9, 2.0);
+    let a = hit(&mut m, "/f/2", LAT + M_LAT, LON, 0.9, 2.5);
+    assert_eq!(dispatches(&a), vec![(0, "camera".into(), "iuas-01".into())]);
+    m.on_job_accepted(0, "camera", "carrot-orbit accepted");
+    m.set_vehicle_busy("iuas-01", true); // job 1 stays in flight from here on
+
+    // The raster keeps producing frames: every one must still emit
+    // detect.sent and reach the detector (no slot/backpressure keyed on
+    // the in-flight job), and outcomes must keep draining the counters.
+    let mut sent_after_dispatch = 0;
+    for i in 3..=8 {
+        let frame = format!("/f/{i}");
+        let a = m.on_new_frame(&frame);
+        assert_eq!(sent_count(&a), 1, "frame {i} must fan out while job 1 flies");
+        assert!(
+            a.iter().any(|x| matches!(x, Action::Detect { .. })),
+            "frame {i} must reach the detector"
+        );
+        sent_after_dispatch += sent_count(&a);
+        m.on_detect_outcome(&frame, DetectOutcome::Miss(String::new()));
+        assert_eq!(m.detects_pending, 0, "outcome {i} releases its pending slot");
+    }
+    assert_eq!(m.detects_done, 8);
+
+    // Target 2 (20 m away) confirms on two distinct frames → dispatch #2
+    // to the idle iuas-02 WHILE job 1 is still investigating.
+    let lat2 = LAT + 20.0 * M_LAT;
+    let a = hit(&mut m, "/f/9", lat2, LON, 0.9, 2.0);
+    sent_after_dispatch += sent_count(&a);
+    assert!(kinds(&a).contains(&"detect.candidate".into()));
+    assert!(!kinds(&a).contains(&"mission.target_found".into()));
+    let a = hit(&mut m, "/f/10", lat2 + M_LAT, LON, 0.9, 2.5);
+    sent_after_dispatch += sent_count(&a);
+    assert!(kinds(&a).contains(&"mission.target_found".into()));
+    assert_eq!(dispatches(&a), vec![(1, "camera".into(), "iuas-02".into())]);
+
+    assert_eq!(m.targets.len(), 2, "both targets promoted (2 hits each)");
+    assert_eq!(
+        m.targets[0].jobs[0].status, "investigating",
+        "job 1 still in flight when target 2 dispatches"
+    );
+    assert_eq!(m.targets[1].jobs[0].status, "investigating");
+    assert_eq!(
+        sent_after_dispatch, 8,
+        "detect.sent kept increasing after dispatch #1"
+    );
+    assert_eq!(m.detects_done + m.detects_pending, 10, "every frame accounted for");
 }
 
 // ───────────────────────────── best-localized ───────────────────────────────
@@ -461,6 +532,209 @@ fn empty_mission_completes_on_search_end() {
     assert!(m.on_search_response(true, "done", 12, "").is_empty());
 }
 
+// ───────────────────── unconfirmed candidates (end-of-raster) ───────────────
+
+/// The geometry-starved scenario: confirm-count 2 with a camera footprint
+/// narrower than the leg spacing — a real target is only ever seen on ONE
+/// pass, so it ends the raster stuck as a 1-hit candidate. At search end it
+/// must surface as `target.unconfirmed` (not auto-dispatched) while the
+/// mission still completes.
+#[test]
+fn one_hit_candidate_surfaces_unconfirmed_and_mission_completes() {
+    let mut m = machine(&["iuas-01"], 2);
+    start(&mut m, &["camera"]);
+    hit(&mut m, "/f/1", LAT, LON, 0.7, 2.0); // 1/2 hits: candidate only
+    assert!(m.targets.is_empty());
+
+    let actions = m.on_search_response(true, "done", 5, "");
+    let k = kinds(&actions);
+    assert!(k.contains(&"target.unconfirmed".into()));
+    assert!(
+        k.contains(&"mission.completed".into()),
+        "unconfirmed candidates must not block completion"
+    );
+    assert!(dispatches(&actions).is_empty(), "never auto-dispatched");
+    assert_eq!(m.state, "done");
+    assert!(m.targets.is_empty());
+
+    // Event payload carries the disposition facts (and lat/lon for the map).
+    let evt = actions
+        .iter()
+        .find_map(|a| match a {
+            Action::Emit(v) if v.get("kind") == Some(&json!("target.unconfirmed")) => Some(v),
+            _ => None,
+        })
+        .expect("target.unconfirmed emitted");
+    assert_eq!(evt["index"], json!(0));
+    assert_eq!(evt["hits"], json!(1));
+    assert_eq!(evt["need"], json!(2));
+    assert_eq!(evt["lat"], json!(LAT));
+    assert_eq!(evt["lon"], json!(LON));
+    assert!(evt.get("confidence").is_some());
+
+    // Surfaced in the hello payload so a page refresh keeps the cards.
+    let hello = m.hello_mission();
+    assert_eq!(hello["unconfirmed"][0]["status"], json!("unconfirmed"));
+    assert_eq!(hello["unconfirmed"][0]["hits"], json!(1));
+
+    // Idempotent finish: a repeated terminal status re-emits nothing.
+    assert!(m.on_search_response(true, "done", 5, "").is_empty());
+    assert_eq!(m.unconfirmed.len(), 1);
+}
+
+/// "Investigate anyway": the promotion rides the NORMAL queue/dispatch
+/// path, the completed mission reopens, and the completion predicate
+/// re-runs against the re-armed job and closes the mission again.
+#[test]
+fn promote_unconfirmed_dispatches_and_recompletes_the_mission() {
+    let mut m = machine(&["iuas-01"], 2);
+    start(&mut m, &["camera"]);
+    hit(&mut m, "/f/1", LAT, LON, 0.7, 2.0);
+    m.on_search_response(true, "done", 5, "");
+    assert_eq!(m.state, "done");
+
+    let actions = m.promote_unconfirmed(0);
+    let k = kinds(&actions);
+    assert!(k.contains(&"target.promoted".into()));
+    assert!(k.contains(&"mission.target_found".into()));
+    assert_eq!(
+        dispatches(&actions),
+        vec![(0, "camera".into(), "iuas-01".into())],
+        "promotion flows through the normal dispatch pump"
+    );
+    assert_eq!(m.state, "investigating", "completed mission reopens");
+    assert_eq!(m.targets.len(), 1);
+    assert_eq!(m.targets[0].status, "investigating");
+    // Provenance rides the target_found event; the honest hit count too.
+    let found = actions
+        .iter()
+        .find_map(|a| match a {
+            Action::Emit(v) if v.get("kind") == Some(&json!("mission.target_found")) => Some(v),
+            _ => None,
+        })
+        .expect("target found");
+    assert_eq!(found["promoted_from"], json!(0));
+    assert_eq!(found["hits"], json!(1));
+
+    // Promotion is one-shot.
+    assert!(m.promote_unconfirmed(0).is_empty(), "second promote is a no-op");
+    assert!(m.dismiss_unconfirmed(0).is_empty(), "promoted is past dismissal");
+
+    // The re-armed job lands → the predicate completes the mission AGAIN.
+    let actions = m.on_job_result(JobResult {
+        target_index: 0,
+        sensor: "camera".into(),
+        ok: true,
+        artifacts: vec![],
+        note: String::new(),
+        artifact_items: vec![],
+    });
+    let k = kinds(&actions);
+    assert!(k.contains(&"target.completed".into()));
+    assert!(k.contains(&"mission.completed".into()));
+    assert_eq!(m.state, "done");
+}
+
+/// Dismiss is terminal: the candidate leaves the disposition pool for good
+/// and the (already completed) mission is untouched.
+#[test]
+fn dismiss_unconfirmed_stays_terminal() {
+    let mut m = machine(&["iuas-01"], 2);
+    start(&mut m, &["camera"]);
+    hit(&mut m, "/f/1", LAT, LON, 0.7, 2.0);
+    m.on_search_response(true, "done", 5, "");
+
+    let actions = m.dismiss_unconfirmed(0);
+    assert_eq!(kinds(&actions), vec!["target.dismissed"]);
+    assert_eq!(m.state, "done", "dismissal never reopens the mission");
+    assert!(m.targets.is_empty());
+    assert_eq!(m.hello_mission()["unconfirmed"][0]["status"], json!("dismissed"));
+
+    // Terminal: neither a second dismiss nor a late promote does anything.
+    assert!(m.dismiss_unconfirmed(0).is_empty());
+    assert!(m.promote_unconfirmed(0).is_empty(), "dismissed can never launch");
+    assert!(m.targets.is_empty());
+}
+
+/// Promotion while another investigation is still flying (state
+/// `investigating`, not `done`): the unconfirmed candidate queues into the
+/// same pool and the mission completes only once EVERYTHING lands.
+#[test]
+fn promote_while_other_jobs_still_fly_joins_the_queue() {
+    let mut m = machine(&["iuas-01"], 2);
+    caps(&mut m, "iuas-01", &["camera"]);
+    start(&mut m, &["camera"]);
+    // Target 0 confirms (2 frames) and flies; a lone extra hit 20 m away
+    // stays a 1-hit candidate.
+    hit(&mut m, "/f/1", LAT, LON, 0.9, 2.0);
+    hit(&mut m, "/f/2", LAT + M_LAT, LON, 0.9, 2.5);
+    m.on_job_accepted(0, "camera", "accepted");
+    m.set_vehicle_busy("iuas-01", true);
+    hit(&mut m, "/f/3", LAT + 20.0 * M_LAT, LON, 0.8, 1.0);
+
+    let actions = m.on_search_response(true, "done", 9, "");
+    assert!(kinds(&actions).contains(&"target.unconfirmed".into()));
+    assert_eq!(m.state, "investigating");
+
+    // Promote mid-flight: the only capable vehicle is busy, so the new job
+    // queues (no dispatch yet) — and the mission must NOT complete.
+    let actions = m.promote_unconfirmed(0);
+    assert!(kinds(&actions).contains(&"mission.target_found".into()));
+    assert!(dispatches(&actions).is_empty(), "busy vehicle: job queues");
+    assert_eq!(m.targets[1].jobs[0].status, "queued");
+
+    // Vehicle idles: job 0 completes, the promoted job dispatches next —
+    // the completion predicate treats the re-armed job like any other.
+    let actions = m.set_vehicle_busy("iuas-01", false);
+    let k = kinds(&actions);
+    assert!(k.contains(&"target.job_completed".into()));
+    assert_eq!(
+        dispatches(&actions),
+        vec![(1, "camera".into(), "iuas-01".into())]
+    );
+    assert!(!k.contains(&"mission.completed".into()), "promoted job in flight");
+
+    m.set_vehicle_busy("iuas-01", true);
+    let actions = m.set_vehicle_busy("iuas-01", false);
+    assert!(kinds(&actions).contains(&"mission.completed".into()));
+    assert_eq!(m.state, "done");
+}
+
+/// Confirmed targets and aborted missions never mint unconfirmed entries.
+#[test]
+fn confirmed_targets_and_aborts_never_surface_unconfirmed() {
+    // confirm-count 1: the hit promotes immediately — nothing left over.
+    let mut m = machine(&["iuas-01"], 1);
+    start(&mut m, &["camera"]);
+    hit(&mut m, "/f/1", LAT, LON, 0.9, 1.0);
+    let actions = m.on_search_response(true, "done", 3, "");
+    assert!(!kinds(&actions).contains(&"target.unconfirmed".into()));
+    assert!(m.unconfirmed.is_empty());
+
+    // Aborted mission: leftover candidates drop silently at search end.
+    let mut m = machine(&["iuas-01"], 2);
+    start(&mut m, &["camera"]);
+    hit(&mut m, "/f/1", LAT, LON, 0.9, 1.0);
+    m.note_all_command();
+    let actions = m.on_search_response(true, "done", 3, "");
+    assert!(!kinds(&actions).contains(&"target.unconfirmed".into()));
+    assert!(m.unconfirmed.is_empty());
+    assert!(m.promote_unconfirmed(0).is_empty());
+}
+
+/// A new mission clears the previous raster's disposition pool.
+#[test]
+fn start_mission_resets_unconfirmed() {
+    let mut m = machine(&["iuas-01"], 2);
+    start(&mut m, &["camera"]);
+    hit(&mut m, "/f/1", LAT, LON, 0.7, 2.0);
+    m.on_search_response(true, "done", 2, "");
+    assert_eq!(m.unconfirmed.len(), 1);
+    start(&mut m, &["camera"]);
+    assert!(m.unconfirmed.is_empty());
+    assert_eq!(m.hello_mission()["unconfirmed"], json!([]));
+}
+
 // ───────────────────────────── aborts & rejects ─────────────────────────────
 
 #[test]
@@ -569,6 +843,161 @@ async fn scripted_detection_drives_dispatch_through_the_executor() {
     let calls = commander.calls.lock().unwrap().clone();
     assert!(calls.contains(&("wuas-01".to_string(), "raster-search".to_string())));
     assert!(calls.contains(&("iuas-01".to_string(), "investigate".to_string())));
+}
+
+/// Worst-case transport: the investigate call (long-timeout client) never
+/// answers. Dispatch is fire-and-forget in the action executor, so the
+/// frame→detect loop must keep running at full rate while that future
+/// hangs — and a second target must still confirm (2 distinct frames) and
+/// dispatch to the other idle IUAS. This pins the "detection stalls after
+/// the first dispatch" failure mode at the async layer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn frames_keep_flowing_while_the_investigate_call_hangs() {
+    /// Acks everything EXCEPT investigate, which never resolves.
+    struct HangingInvestigate {
+        calls: Mutex<Vec<(String, String)>>,
+    }
+    impl HangingInvestigate {
+        fn log(&self, vehicle: String, op: &str) -> BoxFuture<CmdResult> {
+            self.calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((vehicle, op.to_string()));
+            Box::pin(async { CmdResult::Ack(Ack::ok_detail("accepted; execution stubbed")) })
+        }
+        fn investigated(&self, vehicle: &str) -> bool {
+            self.calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .any(|(v, op)| v == vehicle && op == "investigate")
+        }
+    }
+    impl Commander for HangingInvestigate {
+        fn flight(&self, vehicle: String, command: String, _agl_m: Option<f64>)
+            -> BoxFuture<CmdResult> {
+            let op = format!("flight/{command}");
+            self.log(vehicle, &op)
+        }
+        fn raster_search(&self, vehicle: String, _order: RasterOrder) -> BoxFuture<CmdResult> {
+            self.log(vehicle, "raster-search")
+        }
+        fn investigate(&self, vehicle: String, _order: InvestigateOrder) -> BoxFuture<CmdResult> {
+            self.calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((vehicle, "investigate".into()));
+            Box::pin(std::future::pending())
+        }
+        fn task_abort(&self, vehicle: String, _label: String) -> BoxFuture<CmdResult> {
+            self.log(vehicle, "task_abort")
+        }
+        fn sensor_capture(
+            &self,
+            vehicle: String,
+            _request: muas_contracts::services::SensorRequest,
+        ) -> BoxFuture<CmdResult> {
+            self.log(vehicle, "sensor/capture")
+        }
+        fn video_control(
+            &self,
+            vehicle: String,
+            _request: muas_contracts::services::VideoRequest,
+        ) -> BoxFuture<CmdResult> {
+            self.log(vehicle, "video/control")
+        }
+        fn system_shutdown(&self, vehicle: String, _confirm: String) -> BoxFuture<CmdResult> {
+            self.log(vehicle, "system/shutdown")
+        }
+    }
+
+    let frame = |i: u32| format!("/muas/v3/mission/m/wuas-01/camera/cam0/frame/{}/{i}", 100 + i);
+    let detector = Arc::new(ScriptedDetector::default());
+    let lat2 = LAT + 20.0 * M_LAT;
+    for (i, lat) in [(1, LAT), (2, LAT + M_LAT), (9, lat2), (10, lat2 + M_LAT)] {
+        detector.script(
+            frame(i),
+            DetectOutcome::Hit(Detection {
+                object_id: "tennis racket".into(),
+                confidence: 0.9,
+                lat_deg: lat,
+                lon_deg: LON,
+                offset_m: 2.0,
+            }),
+        );
+    }
+    let commander = Arc::new(HangingInvestigate { calls: Mutex::new(Vec::new()) });
+    let config = DashConfig {
+        record_dir: None,
+        confirm_count: 2,
+        iuas_ids: vec!["iuas-01".into(), "iuas-02".into()],
+        ..DashConfig::default()
+    };
+    let dash = Arc::new(Dashboard::new(config, detector, commander.clone()));
+    dash.handle_command(&json!({ "cmd": "start_mission", "params": params(&["camera"]) }));
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let settle = |dash: &Arc<Dashboard>, want_done: u64, why: &'static str| {
+        let dash = dash.clone();
+        async move {
+            loop {
+                if dash.detect_counters().1 >= want_done {
+                    break;
+                }
+                assert!(tokio::time::Instant::now() < deadline, "{why}");
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }
+    };
+
+    // Target 1 confirms on frames 1+2 → dispatch #1; the investigate future
+    // hangs forever from this point (the job stays `investigating`).
+    for i in 1..=2 {
+        let actions = dash.with_mission(|m| m.on_new_frame(&frame(i)));
+        dash.apply_actions(actions);
+    }
+    settle(&dash, 2, "target-1 detections never resolved").await;
+    loop {
+        if commander.investigated("iuas-01") {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "job 1 never dispatched");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    // Frames keep flowing while the dispatch future hangs: detects_done
+    // keeps increasing — the loop is not awaiting the investigate call.
+    for i in 3..=8 {
+        let actions = dash.with_mission(|m| m.on_new_frame(&frame(i)));
+        dash.apply_actions(actions);
+    }
+    settle(&dash, 8, "detect stream stalled behind the hanging dispatch").await;
+    assert_eq!(
+        dash.with_mission(|m| m.targets[0].jobs[0].status.clone()),
+        "investigating",
+        "job 1 still in flight (its ack never arrived)"
+    );
+
+    // Target 2 confirms on frames 9+10 → dispatch #2 to the idle iuas-02
+    // while job 1 is still hanging.
+    for i in 9..=10 {
+        let actions = dash.with_mission(|m| m.on_new_frame(&frame(i)));
+        dash.apply_actions(actions);
+    }
+    settle(&dash, 10, "target-2 detections never resolved").await;
+    loop {
+        if commander.investigated("iuas-02") {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "target 2 never dispatched");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(dash.with_mission(|m| m.targets.len()), 2, "both targets promoted");
+    assert_eq!(
+        dash.detect_counters(),
+        (0, 10),
+        "every frame's detection completed independently of dispatch"
+    );
 }
 
 /// Recording sessions are mission-scoped: idle records nothing, mission

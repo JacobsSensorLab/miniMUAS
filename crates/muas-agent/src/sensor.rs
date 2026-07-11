@@ -676,19 +676,25 @@ const TASKING_TOL_M: f64 = 2.5;
 /// Nominal detour cruise speed used for deadline/ETA sizing, m/s.
 pub(crate) const OVERRIDE_SPEED_M_S: f64 = 3.0;
 
-/// Execute mode `override` (v2 fly-capture-resume): fly to the picked
-/// point at the current AGL, capture there, then clear the detour flag so
-/// the suspended mission re-issues its pre-empted target (`run_raster`'s
-/// detour pause), or release the vehicle when it was idle
-/// (`resume_task == "sensor-override"`).
+/// The override flight+capture core (v2 fly-capture-resume, minus the
+/// vehicle-release epilogue): fly to the picked point at the current AGL,
+/// capture there, journal `sensor.override.started`/`.finished`.
 ///
-/// The detour flag is already SET by the ack handler (so a second override
-/// is busy-refused race-free); this task owns clearing it.
-pub(crate) async fn override_capture_task(
-    shared: Arc<crate::AgentShared>,
-    req: muas_contracts::services::SensorRequest,
-    resume_task: String,
-) {
+/// `owner_label` is the busy label that must keep owning the vehicle (the
+/// pre-empted task's label on the detour path, `"sensor-override"` when the
+/// override owns the vehicle itself — idle-vehicle wrapper or queue
+/// driver). `report_progress` feeds the queue stream (driver path only —
+/// on a detour the ACTIVE queue entry is the pre-empted task, whose own
+/// progress must not be clobbered).
+///
+/// Returns `Completed` (captured), `TimedOut` (flight or capture failed —
+/// atomic, nothing to split) or `Aborted` (pre-empted by another command).
+pub(crate) async fn override_capture_core(
+    shared: &Arc<crate::AgentShared>,
+    req: &muas_contracts::services::SensorRequest,
+    owner_label: &str,
+    report_progress: bool,
+) -> crate::mission::FlightOutcome {
     let (here, agl) = {
         let backend = lock(&shared.backend);
         let t = crate::BackendExt::as_dyn_ref(&*backend).telemetry();
@@ -707,7 +713,7 @@ pub(crate) async fn override_capture_task(
             "lon_deg": req.lon_deg,
             "agl_m": agl,
             "distance_m": dist,
-            "resume_task": resume_task,
+            "resume_task": owner_label,
         }),
     );
 
@@ -722,11 +728,11 @@ pub(crate) async fn override_capture_task(
         // The abort ladder (rtl/land/hold) or a re-labelled vehicle kills
         // the detour; whatever mode the interrupting command set stands.
         if shared.abort.load(std::sync::atomic::Ordering::Relaxed)
-            || *lock(&shared.busy) != resume_task
+            || *lock(&shared.busy) != owner_label
         {
             break Some("pre-empted by another command");
         }
-        let arrived = {
+        let (arrived, remaining_m) = {
             let mut backend = lock(&shared.backend);
             if tokio::time::Instant::now() >= next_send {
                 backend
@@ -734,10 +740,30 @@ pub(crate) async fn override_capture_task(
                     .goto(req.lat_deg, req.lon_deg, agl, None);
                 next_send = tokio::time::Instant::now() + TASKING_RESEND;
             }
-            backend
+            let arrived = backend
                 .as_dyn_ref()
-                .at_target(req.lat_deg, req.lon_deg, agl, TASKING_TOL_M)
+                .at_target(req.lat_deg, req.lon_deg, agl, TASKING_TOL_M);
+            let remaining_m = backend.as_dyn_ref().position().map_or(dist, |(lat, lon, _)| {
+                muas_contracts::policy::dist_m((lat, lon), (req.lat_deg, req.lon_deg))
+            });
+            (arrived, remaining_m)
         };
+        if report_progress {
+            // Queue-stream progress: travel ETA to the capture point.
+            crate::queue::note_progress(
+                shared,
+                muas_contracts::tasks::TaskProgress {
+                    pct: if dist > 1e-6 {
+                        (100.0 * (1.0 - remaining_m / dist)).clamp(0.0, 100.0)
+                    } else {
+                        100.0
+                    },
+                    detail: format!("{:.0} m to capture point", remaining_m),
+                    eta_s: remaining_m / OVERRIDE_SPEED_M_S + 3.0,
+                },
+                None, // atomic: nothing to split
+            );
+        }
         if arrived {
             break None;
         }
@@ -746,11 +772,11 @@ pub(crate) async fn override_capture_task(
         }
     };
 
-    let ok = match flight_failure {
-        None => execute_capture(&shared, &req, "override").await,
+    let (ok, aborted) = match flight_failure {
+        None => (execute_capture(shared, req, "override").await, false),
         Some(reason) => {
             publish_sensor_result(
-                &shared,
+                shared,
                 serde_json::json!({
                     "request_id": format!("cap-{}", (crate::telemetry::gps_time_ns() / 1_000_000) % 100_000_000),
                     "sensor": req.sensor,
@@ -760,9 +786,42 @@ pub(crate) async fn override_capture_task(
                     "artifacts": [],
                 }),
             );
-            false
+            (false, reason != "travel deadline exceeded")
         }
     };
+    shared.journal.event(
+        "sensor.override.finished",
+        serde_json::json!({
+            "ok": ok,
+            "resumed_task": if owner_label == "sensor-override" { "" } else { owner_label },
+        }),
+    );
+    if aborted {
+        crate::mission::FlightOutcome::Aborted
+    } else if ok {
+        crate::mission::FlightOutcome::Completed
+    } else {
+        crate::mission::FlightOutcome::TimedOut
+    }
+}
+
+/// Execute mode `override` on the LEGACY (non-queue) ownership paths: the
+/// detour over a running raster, and the idle-vehicle override
+/// (`resume_task == "sensor-override"`). Clears the detour flag so the
+/// suspended mission re-issues its pre-empted target (`run_raster`'s detour
+/// pause), releases the vehicle when the override owned it, and hands a
+/// scoped operator cancel to the idle policy.
+///
+/// The detour flag is already SET by the ack handler (so a second override
+/// is refused race-free); this task owns clearing it. Queue-driven
+/// overrides run [`override_capture_core`] under the queue driver instead
+/// (no detour flag — the queue serializes them).
+pub(crate) async fn override_capture_task(
+    shared: Arc<crate::AgentShared>,
+    req: muas_contracts::services::SensorRequest,
+    resume_task: String,
+) {
+    let _outcome = override_capture_core(&shared, &req, &resume_task, false).await;
 
     // Resume: clear the detour (paused mission re-issues its target within
     // one re-send period) and release the vehicle if the override owned it.
@@ -773,25 +832,22 @@ pub(crate) async fn override_capture_task(
             busy.clear();
         }
     }
-    shared.journal.event(
-        "sensor.override.finished",
-        serde_json::json!({
-            "ok": ok,
-            "resumed_task": if resume_task == "sensor-override" { "" } else { resume_task.as_str() },
-        }),
-    );
     // Scoped operator cancel of an idle-vehicle override (task_abort
     // "sensor-override"): the detour is dead and nothing else owns the
     // aircraft — lower the abort and let the idle policy take over. When
     // the detour rode a raster (`resume_task == "raster-search"`), the
     // raster runner owns this handoff instead.
-    if resume_task == "sensor-override"
-        && shared
+    if resume_task == "sensor-override" {
+        if shared
             .operator_abort
             .swap(false, std::sync::atomic::Ordering::Relaxed)
-    {
-        shared.abort.store(false, std::sync::atomic::Ordering::Relaxed);
-        crate::mission::apply_idle_policy(&shared, "sensor-override");
+        {
+            shared.abort.store(false, std::sync::atomic::Ordering::Relaxed);
+            crate::mission::apply_idle_policy(&shared, "sensor-override");
+        }
+        // Tasks accepted while the override owned the vehicle queued
+        // behind it — start them now.
+        crate::queue::kick(&shared);
     }
 }
 

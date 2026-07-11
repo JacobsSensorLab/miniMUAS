@@ -20,9 +20,11 @@ use std::sync::Arc;
 
 use muas_contracts::policy;
 use muas_contracts::services::{
-    sensor_mode, Ack, InvestigateRequest, RasterRequest, SensorRequest, TakeoffRequest,
-    VehicleService, VideoRequest,
+    sensor_mode, Ack, InvestigateRequest, QueueReorderRequest, RasterRequest, SensorRequest,
+    TakeoffRequest, VehicleService, VideoRequest,
 };
+use muas_contracts::tasks::task_origin;
+use crate::queue::{self, Submit, TaskParams};
 use crate::{lock, mission, AgentCommand, AgentShared, BackendExt};
 
 /// The agent's vehicle-service provider.
@@ -72,14 +74,45 @@ impl VehicleServiceImpl {
 
     /// Abort ladder entry: raise the abort flag (running mission loops
     /// terminate within one control cycle), clear the busy label, cancel
-    /// smart RTL. The ladder is a blanket stop, never a scoped operator
-    /// cancel — lower `operator_abort` so the interrupted runner does NOT
-    /// hand the vehicle to the idle policy (the ladder command owns it).
+    /// smart RTL, and flush every PENDING queue entry (the ladder is a
+    /// blanket stop — the interrupting command owns the vehicle). Never a
+    /// scoped operator cancel — lower `operator_abort` so the interrupted
+    /// runner does NOT hand the vehicle to the idle policy.
     fn abort_running_task(&self) {
         self.shared.operator_abort.store(false, Ordering::Relaxed);
         self.shared.abort.store(true, Ordering::Relaxed);
         lock(&self.shared.busy).clear();
+        queue::flush_pending(&self.shared, "ladder");
         let _ = self.shared.commands.send(AgentCommand::AbortRtl);
+    }
+
+    /// Map a [`Submit`] outcome to the service ack. `started_detail` is the
+    /// immediate-start acceptance note (the pre-queue ack text, unchanged);
+    /// `legacy_start` runs the pre-queue occupy+spawn path when the queue
+    /// engine is disabled (`Submit::Disabled`).
+    fn submit_ack(
+        &self,
+        outcome: Submit,
+        started_detail: String,
+        legacy_start: impl FnOnce(),
+    ) -> Ack {
+        match outcome {
+            Submit::Started { .. } => Ack::ok_detail(started_detail),
+            Submit::Queued { task_id, ahead, eta_to_start_s } => Ack::queued(format!(
+                "task {task_id} queued at position {ahead}; starts in ~{eta_to_start_s:.0} s"
+            )),
+            Submit::Full { depth } => Ack::refuse(
+                "queue-full",
+                format!("task queue depth limit reached ({depth} pending)"),
+            ),
+            Submit::RtlOwned => Ack::reject(&policy::PolicyRejection::Busy {
+                task: "rtl".to_string(),
+            }),
+            Submit::Disabled => {
+                legacy_start();
+                Ack::ok_detail(started_detail)
+            }
+        }
     }
 
     /// Occupy the vehicle for a freshly accepted task: set the busy label
@@ -89,6 +122,61 @@ impl VehicleServiceImpl {
         *lock(&self.shared.busy) = label.to_string();
         self.shared.abort.store(false, Ordering::Relaxed);
         self.shared.operator_abort.store(false, Ordering::Relaxed);
+    }
+
+    /// Scoped cancel of the ACTIVE task: the label must match the current
+    /// busy label exactly — a mismatch means the task the operator is
+    /// looking at already ended (or was re-labelled), and blind aborts of
+    /// "whatever runs now" are refused. With queued tasks pending, the
+    /// queue continues with the next entry; only an empty queue hands the
+    /// vehicle to the idle policy.
+    fn abort_active_task(&self, label: &str) -> Ack {
+        let matched = {
+            let mut busy = lock(&self.shared.busy);
+            if label.is_empty() || *busy != label {
+                Err(busy.clone())
+            } else {
+                // Order matters (all under the busy lock): the runner's
+                // interrupt check reads `abort || busy != label`, so
+                // both abort flags are up before the label clears —
+                // whoever observes the release also sees the operator
+                // provenance and hands over to the idle policy / queue.
+                self.shared.operator_abort.store(true, Ordering::Relaxed);
+                self.shared.abort.store(true, Ordering::Relaxed);
+                busy.clear();
+                Ok(())
+            }
+        };
+        match matched {
+            Err(current) if current.is_empty() => {
+                Ack::refuse("no-such-task", format!("no active task '{label}' (vehicle idle)"))
+            }
+            Err(current) => Ack::refuse(
+                "no-such-task",
+                format!("active task is '{current}', not '{label}'"),
+            ),
+            Ok(()) => {
+                if label == "rtl" {
+                    // The only busy label whose loop lives on the coord
+                    // thread: tell it to stand down its smart RTL.
+                    let _ = self.shared.commands.send(AgentCommand::AbortRtl);
+                }
+                self.shared.journal.event(
+                    "task.aborted",
+                    serde_json::json!({ "label": label, "by": "operator" }),
+                );
+                let pending = lock(&self.shared.tasks).pending_len();
+                if pending > 0 {
+                    Ack::ok_detail(format!(
+                        "task '{label}' aborted; next queued task takes over ({pending} pending)"
+                    ))
+                } else {
+                    Ack::ok_detail(format!(
+                        "task '{label}' aborted; vehicle idle (idle policy takes over, no RTL)"
+                    ))
+                }
+            }
+        }
     }
 
     /// What an override detour resumes afterwards, for the ack detail
@@ -115,11 +203,13 @@ impl VehicleService for VehicleServiceImpl {
     async fn flight_rtl(&self) -> Ack {
         let _span = tracing::info_span!("service-invocation", op = "flight_rtl").entered();
         // RTL is the abort ladder — never busy-gated; the running task
-        // terminates within one cycle (abort flag raised, label cleared).
+        // terminates within one cycle (abort flag raised, label cleared)
+        // and every pending queue entry flushes (blanket stop).
         // A blanket ladder stop, not a scoped cancel (see abort_running_task).
         self.shared.operator_abort.store(false, Ordering::Relaxed);
         self.shared.abort.store(true, Ordering::Relaxed);
         lock(&self.shared.busy).clear();
+        queue::flush_pending(&self.shared, "ladder");
         let ack = if self.shared.smart_rtl {
             *lock(&self.shared.busy) = "rtl".to_string();
             let _ = self.shared.commands.send(AgentCommand::SmartRtl);
@@ -182,9 +272,15 @@ impl VehicleService for VehicleServiceImpl {
     async fn raster_search(&self, req: RasterRequest) -> Ack {
         let _span = tracing::info_span!("service-invocation", op = "raster_search").entered();
         let home = self.flight_snapshot().home;
-        let gate = policy::busy_guard(&lock(&self.shared.busy))
-            .and_then(|()| policy::agl_guard(req.agl_m, self.shared.agl_bounds))
-            .and_then(|()| policy::range_guard(home, &req.corners, self.shared.max_range_m));
+        // With the queue engine on, busy no longer refuses (accept-and-
+        // queue); the field-safety rails still gate every request.
+        let gate = if self.shared.queue_enabled {
+            Ok(())
+        } else {
+            policy::busy_guard(&lock(&self.shared.busy))
+        }
+        .and_then(|()| policy::agl_guard(req.agl_m, self.shared.agl_bounds))
+        .and_then(|()| policy::range_guard(home, &req.corners, self.shared.max_range_m));
         let ack = match gate {
             Err(rejection) => Ack::reject(&rejection),
             // Geometry is validated at ack, exactly the v2 "empty raster"
@@ -192,14 +288,24 @@ impl VehicleService for VehicleServiceImpl {
             Ok(()) => match mission::plan_raster(&req) {
                 Err(err) => Ack::refuse("bad-raster", err),
                 Ok(plan) => {
-                    self.occupy("raster-search");
                     let detail = format!(
                         "raster accepted: {} legs, {} captures",
                         plan.legs.len(),
                         plan.capture_count()
                     );
-                    tokio::spawn(mission::run_raster(self.shared.clone(), req.clone(), plan));
-                    Ack::ok_detail(detail)
+                    let outcome = queue::submit(
+                        &self.shared,
+                        TaskParams::Raster {
+                            req: req.clone(),
+                            start_leg: 0,
+                            skip_captures: 0,
+                        },
+                        task_origin::OPERATOR,
+                    );
+                    self.submit_ack(outcome, detail, || {
+                        self.occupy("raster-search");
+                        tokio::spawn(mission::run_raster(self.shared.clone(), req.clone(), plan));
+                    })
                 }
             },
         };
@@ -214,11 +320,16 @@ impl VehicleService for VehicleServiceImpl {
     async fn investigate(&self, req: InvestigateRequest) -> Ack {
         let _span = tracing::info_span!("service-invocation", op = "investigate").entered();
         let home = self.flight_snapshot().home;
-        let gate = policy::busy_guard(&lock(&self.shared.busy))
-            .and_then(|()| policy::agl_guard(req.agl_m, self.shared.agl_bounds))
-            .and_then(|()| {
-                policy::range_guard(home, &[(req.lat_deg, req.lon_deg)], self.shared.max_range_m)
-            });
+        // Busy queues instead of refusing when the queue engine is on.
+        let gate = if self.shared.queue_enabled {
+            Ok(())
+        } else {
+            policy::busy_guard(&lock(&self.shared.busy))
+        }
+        .and_then(|()| policy::agl_guard(req.agl_m, self.shared.agl_bounds))
+        .and_then(|()| {
+            policy::range_guard(home, &[(req.lat_deg, req.lon_deg)], self.shared.max_range_m)
+        });
         let ack = match gate {
             Err(rejection) => Ack::reject(&rejection),
             // v2 geometry gate: a non-positive radius or turn count is
@@ -234,13 +345,28 @@ impl VehicleService for VehicleServiceImpl {
                     &req,
                     self.shared.extras.iter().any(|e| e == "audio"),
                 );
-                self.occupy("investigate");
-                tokio::spawn(mission::run_investigate(self.shared.clone(), req.clone()));
-                if pattern == muas_contracts::services::investigate_pattern::FLYOVER {
-                    Ack::ok_detail("acoustic flyover accepted")
+                let detail =
+                    if pattern == muas_contracts::services::investigate_pattern::FLYOVER {
+                        "acoustic flyover accepted".to_string()
+                    } else {
+                        "carrot-orbit accepted".to_string()
+                    };
+                // Origin: the mission machine always stamps a mission id on
+                // dispatched jobs; bare requests are operator-issued.
+                let origin = if req.mission_id.is_empty() {
+                    task_origin::OPERATOR
                 } else {
-                    Ack::ok_detail("carrot-orbit accepted")
-                }
+                    task_origin::DISPATCH
+                };
+                let outcome = queue::submit(
+                    &self.shared,
+                    TaskParams::Investigate { req: req.clone() },
+                    origin,
+                );
+                self.submit_ack(outcome, detail, || {
+                    self.occupy("investigate");
+                    tokio::spawn(mission::run_investigate(self.shared.clone(), req.clone()));
+                })
             }
         };
         self.journal_ack(
@@ -257,21 +383,8 @@ impl VehicleService for VehicleServiceImpl {
         let busy = lock(&self.shared.busy).clone();
         let gate = (|| {
             if req.mode == sensor_mode::OVERRIDE {
-                // v2: override (fly-capture-resume) is rejected
-                // mid-investigation; it may pre-empt a raster (which
-                // suspends and resumes) or an idle vehicle. Anything else
-                // owning the vehicle — rtl, a climb, another override —
-                // refuses too: a detour must never fight those.
-                if busy == "investigate"
-                    || busy == "rtl"
-                    || busy == "takeoff"
-                    || busy == "sensor-override"
-                    || self.shared.detour.load(Ordering::Relaxed)
-                {
-                    let task = if busy.is_empty() { "sensor-override".to_string() } else { busy.clone() };
-                    return Err(policy::PolicyRejection::Busy { task });
-                }
-                // The detour flies to the point: the range rail applies.
+                // The detour flies to the point: the range rail applies
+                // (queued or not — the rails gate every acceptance).
                 policy::range_guard(
                     snapshot.home,
                     &[(req.lat_deg, req.lon_deg)],
@@ -295,7 +408,44 @@ impl VehicleService for VehicleServiceImpl {
         })();
         let ack = match gate {
             Err(rejection) => Ack::reject(&rejection),
-            // No sensor feed fitted: the pre-v3.1 stub behavior.
+            // Mode `override` (v2 fly-capture-resume): fly to the point,
+            // capture there, then resume the pre-empted task by re-issuing
+            // its target — the ack says exactly what will happen. v2 could
+            // only pre-empt a raster (detour) or an idle vehicle; anything
+            // else owning the vehicle refused busy. With the queue engine
+            // on, those refusals become accept-and-queue (the override runs
+            // as a queue task once the occupying task finishes); rtl keeps
+            // the refusal (never queue work behind a return-to-launch).
+            Ok(()) if req.mode == sensor_mode::OVERRIDE
+                && (busy == "investigate"
+                    || busy == "rtl"
+                    || busy == "takeoff"
+                    || busy == "sensor-override"
+                    || self.shared.detour.load(Ordering::Relaxed)) =>
+            {
+                if self.shared.queue_enabled && !busy.is_empty() && busy != "rtl" {
+                    let outcome = queue::submit(
+                        &self.shared,
+                        TaskParams::SensorOverride { req: req.clone() },
+                        task_origin::OPERATOR,
+                    );
+                    self.submit_ack(
+                        outcome,
+                        format!("flying to point, capturing {}", req.sensor),
+                        || {}, // unreachable: queue_enabled checked above
+                    )
+                } else {
+                    let task = if busy.is_empty() {
+                        "sensor-override".to_string()
+                    } else {
+                        busy.clone()
+                    };
+                    Ack::reject(&policy::PolicyRejection::Busy { task })
+                }
+            }
+            // No sensor feed fitted: the pre-v3.1 stub behavior (busy /
+            // queue semantics above still apply first, exactly like the
+            // v2 gate ordering).
             Ok(()) if self.shared.sensor_feed.is_none() => {
                 Ack::ok_detail("accepted; capture execution stubbed (no sensor feed)")
             }
@@ -305,9 +455,6 @@ impl VehicleService for VehicleServiceImpl {
                 tokio::spawn(crate::sensor::capture_now_task(self.shared.clone(), req.clone()));
                 Ack::ok_detail(format!("capturing {} here now", req.sensor))
             }
-            // Mode `override` (v2 fly-capture-resume): fly to the point,
-            // capture there, then resume the pre-empted task by re-issuing
-            // its target — the ack says exactly what will happen.
             Ok(()) if req.mode == sensor_mode::OVERRIDE => {
                 let airborne = snapshot.armed
                     && snapshot.position.is_some_and(|(_, _, agl)| agl >= 1.0);
@@ -437,52 +584,44 @@ impl VehicleService for VehicleServiceImpl {
                 }
                 None => Ack::refuse("no-such-task", format!("no armed watchpoint '{id}'")),
             }
-        } else {
-            // Scoped cancel of the ACTIVE task: the label must match the
-            // current busy label exactly — a mismatch means the task the
-            // operator is looking at already ended (or was re-labelled),
-            // and blind aborts of "whatever runs now" are refused.
-            let matched = {
-                let mut busy = lock(&self.shared.busy);
-                if label.is_empty() || *busy != label {
-                    Err(busy.clone())
-                } else {
-                    // Order matters (all under the busy lock): the runner's
-                    // interrupt check reads `abort || busy != label`, so
-                    // both abort flags are up before the label clears —
-                    // whoever observes the release also sees the operator
-                    // provenance and hands over to the idle policy.
-                    self.shared.operator_abort.store(true, Ordering::Relaxed);
-                    self.shared.abort.store(true, Ordering::Relaxed);
-                    busy.clear();
-                    Ok(())
+        } else if label.starts_with("tsk-") {
+            // Queue-entry abort by id: a PENDING entry is removed without
+            // touching the flight; the ACTIVE entry's id is equivalent to
+            // a label abort of its kind.
+            match queue::abort_by_id(&self.shared, &label) {
+                queue::ById::Pending => {
+                    Ack::ok_detail(format!("pending task {label} removed from the queue"))
                 }
-            };
-            match matched {
-                Err(current) if current.is_empty() => {
-                    Ack::refuse("no-such-task", format!("no active task '{label}' (vehicle idle)"))
-                }
-                Err(current) => Ack::refuse(
-                    "no-such-task",
-                    format!("active task is '{current}', not '{label}'"),
-                ),
-                Ok(()) => {
-                    if label == "rtl" {
-                        // The only busy label whose loop lives on the coord
-                        // thread: tell it to stand down its smart RTL.
-                        let _ = self.shared.commands.send(AgentCommand::AbortRtl);
-                    }
-                    self.shared.journal.event(
-                        "task.aborted",
-                        serde_json::json!({ "label": label, "by": "operator" }),
-                    );
-                    Ack::ok_detail(format!(
-                        "task '{label}' aborted; vehicle idle (idle policy takes over, no RTL)"
-                    ))
+                queue::ById::Active(kind) => self.abort_active_task(kind),
+                queue::ById::None => {
+                    Ack::refuse("no-such-task", format!("no queue task '{label}'"))
                 }
             }
+        } else {
+            self.abort_active_task(&label)
         };
         self.journal_ack("task_abort", serde_json::json!({ "label": label }), &ack);
+        ack
+    }
+
+    async fn queue_reorder(&self, req: QueueReorderRequest) -> Ack {
+        let _span = tracing::info_span!("service-invocation", op = "queue_reorder").entered();
+        let ack = if !self.shared.queue_enabled {
+            Ack::refuse("queue-disabled", "task queue engine is disabled (--no-queue)")
+        } else {
+            match queue::reorder(&self.shared, &req.ordered_task_ids) {
+                Ok(true) => Ack::ok_detail(
+                    "queue reordered; active task splits — its remainder resumes at the new position",
+                ),
+                Ok(false) => Ack::ok_detail("queue reordered"),
+                Err(err) => Ack::refuse("bad-reorder", err),
+            }
+        };
+        self.journal_ack(
+            "queue_reorder",
+            serde_json::json!({ "ordered_task_ids": req.ordered_task_ids }),
+            &ack,
+        );
         ack
     }
 

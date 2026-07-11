@@ -1811,6 +1811,7 @@ name = "manifest-describe"
 version = "0.1.0"
 dependencies = [
  "manifest",
+ "manifest-derive",
 ]
 
 [[package]]

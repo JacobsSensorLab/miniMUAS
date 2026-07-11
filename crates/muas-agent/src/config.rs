@@ -119,6 +119,15 @@ pub struct AgentConfig {
     // -- post-task idle policy (`--idle-policy`) --
     pub idle_policy: IdlePolicy,
 
+    // -- task queue (`--no-queue`, `--queue-depth`) --
+    /// Accept-and-queue semantics (default ON): raster/investigate/override
+    /// requests hitting a busy vehicle queue (`Ack.code="queued"`) instead
+    /// of refusing busy. Off restores the v2 busy refusals.
+    pub queue_enabled: bool,
+    /// Pending-depth limit (`queue-full` beyond it). POLICY HOOK (ROUND-3
+    /// §2): becomes strategy-record-driven; a plain constant until then.
+    pub queue_depth: usize,
+
     // -- journals --
     pub log_dir: Option<PathBuf>,
     /// Mirror journal events into an ndf-apps Block chain.
@@ -165,6 +174,8 @@ impl Default for AgentConfig {
             rtl_base_agl_m: 8.0,
             rtl_sep_m: 3.0,
             idle_policy: IdlePolicy::Hold,
+            queue_enabled: true,
+            queue_depth: crate::queue::DEFAULT_QUEUE_DEPTH,
             log_dir: None,
             journal_chain: false,
             sensor_feed: crate::sensor::SensorFeedConfig::None,
@@ -237,6 +248,11 @@ COORDINATION:
     --rtl-sep-m <M>            slot separation (default 3)
     --idle-policy <P>          post-task idle behavior (journaled decision):
                                hold (default) | rtl-after:<s> | slot-hold
+
+TASK QUEUE:
+    --queue-depth <N>          pending task depth limit (default 4); beyond it
+                               requests refuse with code queue-full
+    --no-queue                 disable accept-and-queue (v2 busy refusals)
 
 SENSORS:
     --sensor-feed <S>          none (default) | synthetic — synthetic renders
@@ -379,6 +395,15 @@ pub fn parse_args(args: &[String]) -> Result<ParseOutcome, String> {
             "--rtl-base-agl-m" => config.rtl_base_agl_m = parse_f64(&next(arg, &mut it)?, arg)?,
             "--rtl-sep-m" => config.rtl_sep_m = parse_f64(&next(arg, &mut it)?, arg)?,
             "--idle-policy" => config.idle_policy = IdlePolicy::parse(&next(arg, &mut it)?)?,
+            "--queue-depth" => {
+                let value = next(arg, &mut it)?;
+                config.queue_depth = value
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| format!("--queue-depth: bad depth '{value}'"))?;
+            }
+            "--no-queue" => config.queue_enabled = false,
             "--sensor-feed" => {
                 config.sensor_feed = match next(arg, &mut it)?.as_str() {
                     "none" => crate::sensor::SensorFeedConfig::None,
@@ -537,6 +562,28 @@ mod tests {
         assert_eq!(config.idle_policy, IdlePolicy::RtlAfter(30.0));
         // Default stays the pre-round-3 behavior.
         assert_eq!(AgentConfig::default().idle_policy, IdlePolicy::Hold);
+    }
+
+    #[test]
+    fn queue_flags_parse_and_default_on() {
+        let defaults = AgentConfig::default();
+        assert!(defaults.queue_enabled, "queue engine defaults ON");
+        assert_eq!(defaults.queue_depth, crate::queue::DEFAULT_QUEUE_DEPTH);
+
+        let ParseOutcome::Run(config) = parse_args(&args(&[
+            "--vehicle-id",
+            "iuas-01",
+            "--queue-depth",
+            "2",
+            "--no-queue",
+        ]))
+        .unwrap() else {
+            panic!("expected Run");
+        };
+        assert!(!config.queue_enabled);
+        assert_eq!(config.queue_depth, 2);
+        assert!(parse_args(&args(&["--vehicle-id", "a", "--queue-depth", "0"])).is_err());
+        assert!(parse_args(&args(&["--vehicle-id", "a", "--queue-depth", "soon"])).is_err());
     }
 
     #[test]
