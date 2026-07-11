@@ -121,6 +121,17 @@ impl Dashboard {
             MissionConfig::new(config.wuas_id.clone(), config.iuas_ids.clone());
         mission_cfg.confirm_count = config.confirm_count;
         mission_cfg.search_margin_s = config.search_margin_s;
+        // Fold the active strategy (dispatch ranking + requester backoff)
+        // when a source is configured; absent = behavior-neutral defaults.
+        if let Some(source) = &config.strategy {
+            match muas_contracts::strategy::load_active(Some(source)) {
+                Ok(active) => {
+                    mission_cfg = mission_cfg.with_strategies(active.dispatch(), active.requester());
+                    tracing::info!("dashboard dispatch strategy loaded");
+                }
+                Err(e) => tracing::warn!(%e, "strategy load failed; using defaults"),
+            }
+        }
         let vehicles = config.vehicles();
         Self {
             hub: hub::Hub::new(config.record_dir.clone(), &config.run_name),

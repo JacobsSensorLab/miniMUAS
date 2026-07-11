@@ -54,6 +54,10 @@ pub struct DashConfig {
     /// path: raw 26-byte [`uas_rc::RcFrame`]s onto the agent's real RC
     /// receiver socket — no dashboard-internal shortcut.
     pub rc_targets: BTreeMap<String, SocketAddr>,
+    /// Active dispatch/requester strategy source (ROUND-3 §2). `None` =
+    /// crate defaults = today's idle-first/config-order behavior; the
+    /// dispatcher and requeue backoff read the folded records otherwise.
+    pub strategy: Option<muas_contracts::strategy::StrategySource>,
 }
 
 impl Default for DashConfig {
@@ -76,6 +80,7 @@ impl Default for DashConfig {
             links: Vec::new(),
             gcs: None,
             rc_targets: BTreeMap::new(),
+            strategy: None,
         }
     }
 }

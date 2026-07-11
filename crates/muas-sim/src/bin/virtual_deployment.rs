@@ -112,6 +112,11 @@ struct Args {
     /// position is visualization truth only; when geometry-based
     /// propagation lands, this same value feeds it.
     gcs: Option<(f64, f64)>,
+    /// Service strategy (`--strategy reference` for the shipped accept/
+    /// queue/deny scenario, or `--strategy <dir>` of *.json envelopes).
+    /// Sets both the agents' provider strategy and the dashboard's
+    /// dispatch/requester strategy. Absent = behavior-neutral defaults.
+    strategy: Option<muas_contracts::strategy::StrategySource>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -122,6 +127,7 @@ fn parse_args() -> Result<Args, String> {
         control_port: 8081,
         run_dir: PathBuf::from("./deployment-run"),
         gcs: None,
+        strategy: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -161,6 +167,10 @@ fn parse_args() -> Result<Args, String> {
                     lon.trim().parse().map_err(|e| format!("--gcs: bad lon: {e}"))?,
                 ));
             }
+            "--strategy" => {
+                let value = it.next().ok_or("--strategy: missing value (reference | <dir>)")?;
+                args.strategy = Some(muas_contracts::strategy::StrategySource::parse(&value));
+            }
             "--help" | "-h" => {
                 println!(
                     "virtual_deployment — 3×SITL + 3×muas-agent + ndn-sim fabric + dashboard\n\n\
@@ -168,7 +178,10 @@ fn parse_args() -> Result<Args, String> {
                             [--http-port 8080] [--control-port 8081] [--run-dir ./deployment-run]\n\
                             [--gcs lat,lon]  GCS antenna position (default 30 m south of home);\n\
                                              exported on /netstats + the WS net message and the\n\
-                                             dashboard hello so the network layer anchors to it\n\n\
+                                             dashboard hello so the network layer anchors to it\n\
+                            [--strategy reference|<dir>]  service strategy for agents +\n\
+                                             dispatcher (reference = the accept/queue/deny\n\
+                                             scenario); absent = behavior-neutral defaults\n\n\
                      Default: interactive (dashboard at :8080, sim control at :8081,\n\
                      Ctrl-C tears down). The control endpoint places/clears anomalies\n\
                      (POST/DELETE /anomalies) and serves 1 Hz net stats (GET /netstats).\n\
@@ -1181,8 +1194,10 @@ async fn run(args: Args) -> Result<i32, String> {
     let fleet = {
         let run_id = run_id.clone();
         let run_dir = run_dir.clone();
+        let strategy = args.strategy.clone();
         FleetSim::start_with_console(&specs, link.clone(), 7, move |i, config| {
-            agent_config_for(i, &run_id, &run_dir, config)
+            agent_config_for(i, &run_id, &run_dir, config);
+            config.strategy = strategy.clone();
         })
         .await?
     };
@@ -1199,6 +1214,7 @@ async fn run(args: Args) -> Result<i32, String> {
                 ..AgentConfig::default()
             };
             agent_config_for(i, &run_id, &run_dir, &mut config);
+            config.strategy = args.strategy.clone();
             config
         })
         .collect();
@@ -1248,6 +1264,7 @@ async fn run(args: Args) -> Result<i32, String> {
             route: Some(muas_contracts::names::APP_PREFIX.to_string()),
         }],
         gcs: Some(gcs),
+        strategy: args.strategy.clone(),
         ..muas_dashboard::DashConfig::default()
     };
     // SimpleDetector: real detection over fabric-fetched frames; the NDN
