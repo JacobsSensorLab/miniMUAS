@@ -179,9 +179,28 @@ def publish_segmented(
     return producer
 
 
-def fetch_segmented(base_name: str, *, timeout_ms: int = 5000) -> bytes:
-    """Fetch one segmented object by name, reassembled into bytes."""
+def fetch_segmented(
+    base_name: str, *, timeout_ms: int = 5000, metric_name: str | None = None
+) -> bytes:
+    """Fetch one segmented object by name, reassembled into bytes.
+
+    Pass `metric_name` to record a `metric.latency` (stage=fetch) event for
+    this fetch. It is opt-in on purpose: the high-rate telemetry/video pollers
+    fetch several times a second and MUST NOT be timed (an fsync-per-line
+    journal entry per poll would swamp the log the drone agent deliberately
+    keeps low-rate). Only the meaningful data-plane fetches (mission frame,
+    artifacts, capability profile) pass a name.
+    """
 
     from ndnsf import fetch_segmented_object
 
-    return fetch_segmented_object(base_name, timeout_ms=timeout_ms)
+    if metric_name is None:
+        return fetch_segmented_object(base_name, timeout_ms=timeout_ms)
+
+    import metrics
+
+    return metrics.time_fetch(
+        lambda: fetch_segmented_object(base_name, timeout_ms=timeout_ms),
+        name=metric_name,
+        target=base_name,
+    )

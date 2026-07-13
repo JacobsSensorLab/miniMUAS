@@ -12,6 +12,7 @@ from contracts import (
     gcs_detection_service,
     gps_time_ns,
     mission_evidence_name,
+    nearest_visual_anomaly,
 )
 from dataplane import fetch_segmented, frame_body, parse_frame
 from detector import (
@@ -23,9 +24,13 @@ from detector import (
 from ndnsf_runtime import (
     add_common_arguments,
     add_ndnsf_path,
+    flush_json_log,
     optional_local_nfd,
     print_json,
     provider_kwargs,
+    start_journal_publisher,
+    start_nfd_counter_scrape,
+    start_role_journal,
 )
 
 
@@ -59,6 +64,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lat-offset-deg", type=float, default=0.00008)
     parser.add_argument("--lon-offset-deg", type=float, default=0.00006)
     parser.add_argument("--frame-fetch-timeout-ms", type=int, default=5000)
+    parser.add_argument(
+        "--log-dir",
+        default="/var/lib/minimuas/log",
+        help="Directory for the fsync-per-line metrics/event journal "
+        "(empty string disables).",
+    )
     return parser
 
 
@@ -72,7 +83,13 @@ def main() -> int:
         )
         return 0
 
+    start_role_journal("gcs-provider", args.log_dir)
+    start_nfd_counter_scrape(args.nfd_metrics_interval, enabled=args.nfd_metrics)
+
     add_ndnsf_path(args.ndnsf_root)
+    # Serve this provider's journal over NDN so the dashboard's mission-bundle
+    # sweep can pull it without SSH (node id "gcs").
+    start_journal_publisher("gcs", args.session)
     from ndnsf import AckDecision, ServiceProvider, ServiceResponse
 
     detector = detector_from_spec(args.detector)
@@ -109,6 +126,7 @@ def main() -> int:
             frame_payload = fetch_segmented(
                 request.frame.data_name,
                 timeout_ms=args.frame_fetch_timeout_ms,
+                metric_name="frame_fetch",
             )
             header = parse_frame(frame_payload)
         except Exception as exc:
@@ -258,13 +276,81 @@ def main() -> int:
             )
             return response.to_bytes()
 
+        # Localize off the TRUE capture pose the agent tagged into the frame
+        # metadata (same source the real detector prefers at the top of this
+        # handler), not the request's pose: the dashboard sends a placeholder
+        # (0,0) frame pose and relies on this metadata. Without this the stub
+        # estimate lands at (lat_offset, lon_offset) ~= null island, which is
+        # thousands of km from the fleet and trips the IUAS investigate
+        # max-range guard, so every dashboard-dispatched investigation fails
+        # (and the IUAS never take off).
+        stub_meta = header.get("metadata", {}) or {}
+        stub_lat = float(
+            stub_meta.get("lat_deg", request.frame.pose.position.lat_deg)
+        )
+        stub_lon = float(
+            stub_meta.get("lon_deg", request.frame.pose.position.lon_deg)
+        )
+        stub_agl = float(
+            stub_meta.get("agl_m", request.frame.pose.position.alt_m or 0.0)
+        )
+
+        # Operator-placed sim targets (mirrors v3's synthetic detector reading
+        # the sim ground truth): when the request carries placed anomalies, the
+        # stub reports a hit ONLY for a visual target under this frame's nadir
+        # footprint, localised AT that target. Empty/absent anomalies keep the
+        # legacy always-hit behaviour so scripted sim missions are unchanged.
+        if request.anomalies:
+            hit = nearest_visual_anomaly(
+                stub_lat, stub_lon, stub_agl, args.hfov_deg, request.anomalies
+            )
+            if hit is None:
+                print_json(
+                    "gcs.detection.miss",
+                    frame=request.frame.data_name,
+                    detector="stub",
+                    reason="no-placed-target-in-footprint",
+                    capture_lat=stub_lat, capture_lon=stub_lon, capture_agl=stub_agl,
+                )
+                return ServiceResponse(
+                    status=False, error="no-detection (no placed target in footprint)"
+                )
+            anomaly, offset_m = hit
+            signature = str(anomaly.get("signature", "") or "")
+            object_id = (signature or "target").replace(" ", "-")
+            response = DetectionResponse(
+                mission_id=request.mission_id,
+                object_id=object_id,
+                confidence=0.93,
+                estimate=GeoPoint(
+                    lat_deg=float(anomaly["lat_deg"]),
+                    lon_deg=float(anomaly["lon_deg"]),
+                    alt_m=0.0,
+                ),
+                evidence_ref=mission_evidence_name(
+                    request.mission_id, object_id, timestamp_ns
+                ),
+                offset_m=round(offset_m, 2),
+            )
+            print_json(
+                "gcs.detection.completed",
+                frame=request.frame.data_name,
+                detector="stub-sim",
+                anomaly_id=str(anomaly.get("id", "")),
+                offset_m=round(offset_m, 2),
+                estimate={"lat": response.estimate.lat_deg, "lon": response.estimate.lon_deg},
+                evidence=response.evidence_ref,
+                confidence=response.confidence,
+            )
+            return response.to_bytes()
+
         response = DetectionResponse(
             mission_id=request.mission_id,
             object_id="target-001",
             confidence=0.91,
             estimate=GeoPoint(
-                lat_deg=request.frame.pose.position.lat_deg + args.lat_offset_deg,
-                lon_deg=request.frame.pose.position.lon_deg + args.lon_offset_deg,
+                lat_deg=stub_lat + args.lat_offset_deg,
+                lon_deg=stub_lon + args.lon_offset_deg,
                 alt_m=0.0,
             ),
             evidence_ref=mission_evidence_name(
@@ -285,7 +371,10 @@ def main() -> int:
 
     with optional_local_nfd(args.start_local_nfd):
         print_json("gcs.provider.starting", service=args.service)
-        return provider.run(args.service)
+        try:
+            return provider.run(args.service)
+        finally:
+            flush_json_log()
 
 
 if __name__ == "__main__":

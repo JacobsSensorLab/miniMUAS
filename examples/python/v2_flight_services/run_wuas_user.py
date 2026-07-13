@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import time
 
 from contracts import (
@@ -34,11 +35,16 @@ from dataplane import (
 from ndnsf_runtime import (
     add_common_arguments,
     add_ndnsf_path,
+    flush_json_log,
     optional_local_nfd,
     print_json,
     require_success,
+    start_journal_publisher,
+    start_nfd_counter_scrape,
+    start_role_journal,
     user_kwargs,
 )
+import metrics
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -64,19 +70,31 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--list-services", action="store_true")
+    parser.add_argument(
+        "--log-dir",
+        default="/var/lib/minimuas/log",
+        help="Directory for the fsync-per-line metrics/event journal "
+        "(empty string disables).",
+    )
     return parser
 
 
 def request_with_metric(user, service: str, payload: bytes, **kwargs) -> bytes:
-    sent = time.monotonic_ns()
+    # Same-node monotonic RTT for the legacy metric.service_rtt event (kept for
+    # back-compat with anything already reading it) ...
+    mono0 = time.monotonic_ns()
+    sent_ns = metrics.stamp()
     response = user.request_service(service, payload, **kwargs)
-    received = time.monotonic_ns()
+    rtt_ms = round((time.monotonic_ns() - mono0) / 1_000_000.0, 3)
     print_json(
         "metric.service_rtt",
         service=service,
-        rtt_ms=round((received - sent) / 1_000_000.0, 3),
+        rtt_ms=rtt_ms,
         status=bool(response.status),
     )
+    # ... and the unified metric.latency schema (with the provider four-point
+    # breakdown when the wrapper attaches response.timing).
+    metrics.record_service_result(service, sent_ns, response, service=service)
     return require_success(response, service)
 
 
@@ -93,7 +111,13 @@ def main() -> int:
         )
         return 0
 
+    start_role_journal(f"{args.wuas_id}-user", args.log_dir)
+    atexit.register(flush_json_log)
+    start_nfd_counter_scrape(args.nfd_metrics_interval, enabled=args.nfd_metrics)
+
     add_ndnsf_path(args.ndnsf_root)
+    # Serve this user role's journal over NDN for the dashboard bundle sweep.
+    start_journal_publisher(f"{args.wuas_id}-user", args.session)
     from ndnsf import ServiceUser
 
     with optional_local_nfd(args.start_local_nfd):
@@ -179,6 +203,7 @@ def main() -> int:
                 fetch_segmented(
                     vehicle_telemetry_state_name(args.iuas_id),
                     timeout_ms=args.capability_fetch_timeout_ms,
+                    metric_name="capability_fetch",
                 )
             )
             expected_mode = expected_orbit_mode(profile)
@@ -241,6 +266,7 @@ def main() -> int:
                 payload = fetch_segmented(
                     artifact.data_name,
                     timeout_ms=args.artifact_fetch_timeout_ms,
+                    metric_name="artifact_fetch",
                 )
                 header = parse_frame(payload)
                 print_json(

@@ -41,6 +41,8 @@ import json
 import math
 import os
 import re
+import shutil
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -69,6 +71,7 @@ from contracts import (
     vehicle_sensor_event_name,
     vehicle_sensor_service,
     vehicle_system_service,
+    vehicle_journal_name,
     vehicle_telemetry_live_name,
     vehicle_telemetry_state_name,
     vehicle_video_live_name,
@@ -81,7 +84,15 @@ from dataplane import (
     parse_frame,
 )
 from raster import build_raster, estimate_duration_s
-from ndnsf_runtime import add_common_arguments, add_ndnsf_path, print_json
+from ndnsf_runtime import (
+    add_common_arguments,
+    add_ndnsf_path,
+    flush_json_log,
+    print_json,
+    start_nfd_counter_scrape,
+    start_role_journal,
+)
+import metrics
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -142,6 +153,12 @@ def build_parser() -> argparse.ArgumentParser:
             "Empty string disables proxying (pure offline)."
         ),
     )
+    parser.add_argument(
+        "--log-dir",
+        default="/var/lib/minimuas/log",
+        help="Directory for the fsync-per-line metrics/event journal "
+        "(empty string disables).",
+    )
     return parser
 
 
@@ -169,6 +186,16 @@ class Dashboard:
         # vid -> set of investigation sensors the vehicle advertises
         # ("camera", "audio"); populated from CapabilityProfile extras
         self.capabilities: dict[str, set] = {}
+        # vid -> advertised sensor_meta dict (camera FoV / audio reach) for
+        # the dashboard's coverage layer; populated from CapabilityProfile.
+        self.sensor_meta: dict[str, dict] = {}
+        # operator-placed sim ground-truth anomalies (targets the synthetic
+        # detector finds): {id, kind, lat_deg, lon_deg, size_m|loudness_db,
+        # signature, created_ns}. The dashboard IS the v2 sim operator, so it
+        # owns this world model; it rides each detect request to the GCS.
+        self.anomalies: list[dict] = []
+        self.anomalies_lock = threading.Lock()
+        self._anomaly_seq = 0
         # everything captured this session, mission or operator-tasked:
         # {vehicle, sensor, kind, name, lat, lon, t, source, label}
         # — feeds the map's sensor-data layer and the playback modal
@@ -184,6 +211,10 @@ class Dashboard:
         self.record_file = None
         self.record_path: Path | None = None
         self._record_synced = 0.0
+        # imported mission bundle (sim-mode replay): when set, /artifact
+        # resolves stored media from here before touching the fabric.
+        self.bundle = None
+        self.bundle_dir: Path | None = None
         self.loop: asyncio.AbstractEventLoop | None = None
         self.executor = ThreadPoolExecutor(max_workers=8)
         self.clients: set = set()
@@ -202,6 +233,12 @@ class Dashboard:
             "targets": [],      # {index, object_id, confidence, lat, lon,
                                 #  frame, status: queued|investigating|done|
                                 #  failed, artifacts: [], jobs: [...]}
+            # End-of-raster candidates that fell short of confirm_count.
+            # Surfaced to the operator (never auto-dispatched, never blocking
+            # completion) with promote ("investigate anyway") / dismiss.
+            "unconfirmed": [],  # {index, object_id, confidence, lat, lon,
+                                #  frame, best_offset, hits, need,
+                                #  status: unconfirmed|promoted|dismissed}
         }
         self.targets_lock = threading.Lock()
         self.candidates: list[dict] = []  # pre-confirmation hits
@@ -221,6 +258,16 @@ class Dashboard:
         # are set from GPS/FC/HTTPS-Date and are never aligned to better
         # than seconds-to-minutes). vid -> {last_ns, changed_mono}
         self.sample_state: dict[str, dict] = {}
+        # first monotonic time we tried to poll each vehicle, so a fleet that
+        # is still coming up doesn't flash "no link" before its first fix
+        self.first_poll: dict[str, float] = {}
+
+    # link is only declared lost after SUSTAINED silence, never on a single
+    # dropped poll: telemetry publishes at 4 Hz and we poll at ~3 Hz, so one
+    # missed fetch is normal jitter, not an offline vehicle. 2.5 s is ~8
+    # consecutive misses — unambiguous silence — which keeps a healthy fleet
+    # from blinking online/offline at the poll rate.
+    STALE_AFTER_S = 2.5
 
     # ---- mission recorder ----------------------------------------------------
 
@@ -351,14 +398,22 @@ class Dashboard:
                         s for s in ("camera", "audio")
                         if s in (profile.extras or [])
                     } or {"camera"}
-                    if sensors != self.capabilities.get(vid):
+                    meta = profile.sensor_meta or {}
+                    changed = sensors != self.capabilities.get(vid)
+                    meta_changed = meta != self.sensor_meta.get(vid)
+                    if changed or meta_changed:
                         self.capabilities[vid] = sensors
+                        self.sensor_meta[vid] = meta
+                        # sensor_meta rides the same capabilities broadcast so
+                        # the coverage layer updates in lockstep with the tag
                         self._send_loop({
                             "type": "capabilities",
                             "vehicle": vid,
                             "sensors": sorted(sensors),
+                            "sensor_meta": meta,
                         })
-                        self._pump_dispatch()  # a new capability may unblock a job
+                        if changed:
+                            self._pump_dispatch()  # a new capability may unblock a job
                 except Exception:
                     pass
             time.sleep(10.0)
@@ -406,13 +461,23 @@ class Dashboard:
                 "skew_s": round(skew_s, 1),
             })
         except Exception:
-            # stale-marker danger: tell the UI explicitly how old we are
+            # A single dropped 0.3 s poll must NOT flip the vehicle offline.
+            # Only surface staleness after SUSTAINED silence (STALE_AFTER_S);
+            # until then the UI keeps easing the last-known marker, so a
+            # healthy fleet holds a steady link instead of flapping at the
+            # poll rate on one contended/timed-out fetch.
+            now = time.monotonic()
+            first = self.first_poll.setdefault(vid, now)
             last = self.telemetry_age.get(vid)
-            silent_s = None if last is None else time.monotonic() - last
+            # how long we've been dark: since the last good fix if we've ever
+            # had one, else since we first started polling this vehicle
+            silent_s = (now - last) if last is not None else (now - first)
+            if silent_s < self.STALE_AFTER_S:
+                return  # transient gap — leave the marker live
             self._send_loop({
                 "type": "telemetry_stale",
                 "vehicle": vid,
-                "silent_s": None if silent_s is None else round(silent_s, 1),
+                "silent_s": None if last is None else round(now - last, 1),
             })
 
     def _poll_search(self, vid: str) -> None:
@@ -436,6 +501,40 @@ class Dashboard:
                     self._detect_frame(frame)
         except Exception:
             pass
+
+    # ---- timed async service requests --------------------------------------
+
+    def _timed_async(
+        self, service: str, label: str, payload: bytes,
+        on_response, on_timeout, *, timeout_ms: int, **ctx,
+    ) -> None:
+        """Submit a request_service_async, recording per-call latency.
+
+        Stamps CLOCK_REALTIME before submit and emits a `metric.latency`
+        (stage=service) from the framework callback: on_response records the
+        round trip plus the provider four-point breakdown when the wrapper
+        attaches response.timing; on_timeout records total + status=False.
+        The caller's own callbacks run afterwards, unchanged.
+        """
+        sent = metrics.stamp()
+
+        def wrapped_response(response) -> None:
+            metrics.record_service_result(
+                label, sent, response, service=service, **ctx
+            )
+            on_response(response)
+
+        def wrapped_timeout(request_id) -> None:
+            metrics.record_service_timeout(label, sent, service=service, **ctx)
+            on_timeout(request_id)
+
+        self.user.request_service_async(
+            service,
+            payload,
+            on_response=wrapped_response,
+            on_timeout=wrapped_timeout,
+            timeout_ms=timeout_ms,
+        )
 
     # ---- detection fan-out ---------------------------------------------------
 
@@ -462,6 +561,9 @@ class Dashboard:
                 content_type=FRAME_CONTENT_TYPE,
             ),
             object_query=params.get("object_query", "tennis racket"),
+            # ship the current sim ground truth so the synthetic detector
+            # finds operator-placed targets (empty => legacy detector path)
+            anomalies=self._anomaly_snapshot(),
         )
         seq = self._frame_seq(frame_name)
         self.detects_pending += 1
@@ -499,11 +601,12 @@ class Dashboard:
             self.detects_done += 1
             self.event("detect.timeout", frame=frame_name, seq=seq)
 
-        self.user.request_service_async(
+        self._timed_async(
             gcs_detection_service(),
+            "detect",
             request.to_bytes(),
-            on_response=on_response,
-            on_timeout=on_timeout,
+            on_response,
+            on_timeout,
             timeout_ms=self.args.detect_timeout_ms,
         )
 
@@ -614,6 +717,117 @@ class Dashboard:
         sensors = [s for s in wanted if s in ("camera", "audio")]
         return sensors or ["camera"]
 
+    # ---- end-of-raster unconfirmed disposition (operator inputs) -----------
+
+    def _finish_search_disposition_locked(self) -> None:
+        """Caller holds targets_lock. Convert leftover candidates (each seen
+        on fewer than confirm_count frames — the geometric trap where a
+        footprint narrower than the leg spacing can only ever see an object
+        on one pass) into operator-facing `unconfirmed` entries. Surfaced,
+        NOT auto-dispatched, NOT blocking completion. An aborted mission
+        drops its candidates silently (matches v3 mission.rs finish_search)."""
+        if self.mission["state"] not in ("searching", "investigating"):
+            self.candidates.clear()
+            return
+        need = max(1, int(self.args.confirm_count))
+        for cand in self.candidates:
+            u = {
+                "index": len(self.mission["unconfirmed"]),
+                "object_id": cand["object_id"],
+                "confidence": cand["confidence"],
+                "lat": cand["lat"],
+                "lon": cand["lon"],
+                "frame": cand["frame"],
+                "best_offset": cand.get("best_offset", 0.0),
+                "hits": len(cand["frames"]),
+                "need": need,
+                "status": "unconfirmed",
+            }
+            self.mission["unconfirmed"].append(u)
+            self.event(
+                "target.unconfirmed",
+                index=u["index"], hits=u["hits"], need=u["need"],
+                object_id=u["object_id"],
+                confidence=round(u["confidence"], 4),
+                lat=u["lat"], lon=u["lon"], frame=u["frame"],
+            )
+        self.candidates.clear()
+
+    def promote_unconfirmed(self, index: int) -> None:
+        """Operator "Investigate anyway": promote an unconfirmed candidate
+        through the NORMAL target/job path (one queued job per requested
+        sensor). A completed mission reopens (done -> investigating) so the
+        completion predicate re-runs. Idempotent — only an `unconfirmed`
+        entry in a non-aborted mission promotes (mirrors v3
+        mission.rs promote_unconfirmed)."""
+        target = None
+        u_index = -1
+        u_hits = 0
+        sensors: list[str] = []
+        with self.targets_lock:
+            if self.mission["state"] not in (
+                "searching", "investigating", "done"
+            ):
+                return
+            u = next(
+                (x for x in self.mission["unconfirmed"]
+                 if x["index"] == index and x["status"] == "unconfirmed"),
+                None,
+            )
+            if u is None:
+                return
+            u["status"] = "promoted"
+            u_index, u_hits = u["index"], u["hits"]
+            if self.mission["state"] == "done":
+                self.mission["state"] = "investigating"
+            sensors = self._mission_sensors()
+            target = {
+                "index": len(self.mission["targets"]),
+                "object_id": u["object_id"],
+                "confidence": u["confidence"],
+                "lat": u["lat"], "lon": u["lon"],
+                "frame": u["frame"],
+                "best_offset": u.get("best_offset", 0.0),
+                "status": "queued",
+                "artifacts": [],
+                "jobs": [
+                    {"sensor": s, "vehicle": "", "status": "queued",
+                     "artifacts": []}
+                    for s in sensors
+                ],
+            }
+            self.mission["targets"].append(target)
+        self.event(
+            "target.promoted",
+            index=u_index, target_index=target["index"],
+            lat=target["lat"], lon=target["lon"],
+        )
+        # same wire shape as a confirm-count promotion, plus provenance
+        self.event(
+            "mission.target_found",
+            index=target["index"], object_id=target["object_id"],
+            confidence=round(target["confidence"], 4),
+            lat=target["lat"], lon=target["lon"], frame=target["frame"],
+            hits=u_hits, sensors=sensors, promoted_from=u_index,
+        )
+        self._pump_dispatch()
+
+    def dismiss_unconfirmed(self, index: int) -> None:
+        """Operator "Dismiss": terminal — the candidate can no longer be
+        promoted and nothing else ever touches it."""
+        payload = None
+        with self.targets_lock:
+            u = next(
+                (x for x in self.mission["unconfirmed"]
+                 if x["index"] == index and x["status"] == "unconfirmed"),
+                None,
+            )
+            if u is None:
+                return
+            u["status"] = "dismissed"
+            payload = {"index": u["index"], "lat": u["lat"], "lon": u["lon"]}
+        self.event("target.dismissed", **payload)
+
     # ---- sensor data registry (map layer + playback modal) ------------------
 
     def add_sensor_data(self, item: dict) -> None:
@@ -697,12 +911,14 @@ class Dashboard:
             self.event("sensor.timeout", vehicle=vid, request=request_id)
 
         timeout_ms = 300_000 if request.mode == "override" else 60_000
-        self.user.request_service_async(
+        self._timed_async(
             vehicle_sensor_service(vid),
+            "sensor",
             request.to_bytes(),
-            on_response=on_response,
-            on_timeout=on_timeout,
+            on_response,
+            on_timeout,
             timeout_ms=timeout_ms,
+            vehicle=vid,
         )
 
     def _pump_dispatch(self) -> None:
@@ -900,12 +1116,14 @@ class Dashboard:
         def on_timeout(_request_id: str) -> None:
             finish("failed", [], note="timeout")
 
-        self.user.request_service_async(
+        self._timed_async(
             vehicle_flight_service(vid, "investigate"),
+            "investigate",
             request.to_bytes(),
-            on_response=on_response,
-            on_timeout=on_timeout,
+            on_response,
+            on_timeout,
             timeout_ms=self.args.investigate_timeout_ms,
+            vehicle=vid,
         )
 
     # ---- operator commands (from the WS) ----------------------------------------
@@ -922,6 +1140,7 @@ class Dashboard:
                 params=params,
                 search_done=False,
                 targets=[],
+                unconfirmed=[],
             )
         self.seen_frames.clear()
         self.candidates.clear()
@@ -967,6 +1186,9 @@ class Dashboard:
                     for t in self.mission["targets"]
                 ):
                     self.mission["state"] = "investigating"
+                # leftover candidates (hits < confirm_count) become
+                # operator-facing unconfirmed markers/cards
+                self._finish_search_disposition_locked()
             # drain (or immediately complete) the target queue
             self._pump_dispatch()
 
@@ -979,14 +1201,19 @@ class Dashboard:
                     for t in self.mission["targets"]
                 ):
                     self.mission["state"] = "investigating"
+                # leftover candidates (hits < confirm_count) become
+                # operator-facing unconfirmed markers/cards
+                self._finish_search_disposition_locked()
             self._pump_dispatch()
 
-        self.user.request_service_async(
+        self._timed_async(
             vehicle_flight_service(self.args.wuas_id, "raster-search"),
+            "raster-search",
             request.to_bytes(),
-            on_response=on_response,
-            on_timeout=on_timeout,
+            on_response,
+            on_timeout,
             timeout_ms=timeout_ms,
+            vehicle=self.args.wuas_id,
         )
 
     def _flight_command(self, vid: str, command: str, params: dict | None = None) -> None:
@@ -1010,12 +1237,14 @@ class Dashboard:
         def on_timeout(_request_id: str) -> None:
             self.event("command.timeout", vehicle=vid, command=command)
 
-        self.user.request_service_async(
+        self._timed_async(
             vehicle_flight_service(vid, command),
+            f"flight:{command}",
             payload,
-            on_response=on_response,
-            on_timeout=on_timeout,
+            on_response,
+            on_timeout,
             timeout_ms=20000 if command == "takeoff" else 15000,
+            vehicle=vid,
         )
 
     def set_video(self, vid: str, params: dict) -> None:
@@ -1045,12 +1274,14 @@ class Dashboard:
         def on_timeout(_request_id: str) -> None:
             self.event("video.control_timeout", vehicle=vid)
 
-        self.user.request_service_async(
+        self._timed_async(
             vehicle_video_service(vid),
+            "video",
             request.to_bytes(),
-            on_response=on_response,
-            on_timeout=on_timeout,
+            on_response,
+            on_timeout,
             timeout_ms=15000,
+            vehicle=vid,
         )
 
     def _video_relay(self, vid: str, relay: dict) -> None:
@@ -1100,7 +1331,17 @@ class Dashboard:
         relay["thread_alive"] = False
 
     def fetch_artifact(self, name: str) -> tuple[bytes, str] | None:
-        """Artifact body + declared content type (image/jpeg, audio/wav...)."""
+        """Artifact body + declared content type (image/jpeg, audio/wav...).
+
+        Prefers a loaded mission bundle (sim-mode import) so replay serves the
+        recorded media with the fabric disconnected; falls through to the live
+        fabric when no bundle is loaded or it never carried this name.
+        """
+        bundle = self.bundle
+        if bundle is not None:
+            hit = bundle.artifact(name)
+            if hit is not None:
+                return hit
         try:
             payload = fetch_segmented(name, timeout_ms=15000)
             header = parse_frame(payload)
@@ -1109,6 +1350,141 @@ class Dashboard:
         except Exception as exc:
             self.event("artifact.fetch_failed", name=name, error=str(exc))
             return None
+
+    # ---- mission data bundle (NDN-native collection + sim-mode import) ------
+
+    def build_mission_bundle(self, session: str) -> tuple[str, bytes]:
+        """Run the fetch-sweep and return (filename, .tar.gz bytes).
+
+        Sweeps every fleet node's journal over NDN, fetches every artifact the
+        mission referenced (persisting media + pose/time/hfov metadata),
+        includes the dashboard's own recording, and packs a coherent archive.
+        A powered-down node is marked ``missing`` in the manifest, not fatal.
+        Runs in the executor (blocking NDN fetches).
+        """
+        from bundle import assemble_bundle, bundle_filename, tar_gz_bytes
+
+        self.record_sync()  # complete the live recording before capturing it
+        with self.sensor_data_lock:
+            artifacts = list(self.sensor_data)
+
+        def journal_fetcher(node: str):
+            for sess in (session, "latest"):
+                if not sess:
+                    continue
+                try:
+                    return fetch_segmented(
+                        vehicle_journal_name(node, sess), timeout_ms=8000
+                    )
+                except Exception:
+                    continue
+            return None
+
+        def artifact_fetcher(name: str):
+            try:
+                return fetch_segmented(name, timeout_ms=15000)
+            except Exception:
+                return None
+
+        staging = Path(tempfile.mkdtemp(prefix="muas-bundle-"))
+        try:
+            manifest = assemble_bundle(
+                staging,
+                session=session,
+                fleet=self.vehicles,
+                artifacts=artifacts,
+                journal_fetcher=journal_fetcher,
+                artifact_fetcher=artifact_fetcher,
+                dashboard_jsonl_path=self.record_path,
+                extra_journal_nodes=["gcs"],
+            )
+            data = tar_gz_bytes(staging)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+        self.event(
+            "mission.bundle.built",
+            session=session,
+            bytes=len(data),
+            journals_ok=manifest["counts"].get("journals_ok", 0),
+            artifacts_ok=manifest["counts"].get("artifacts_ok", 0),
+        )
+        return bundle_filename(session), data
+
+    def load_bundle(self, archive_bytes: bytes):
+        """Extract an uploaded archive into sim-mode: /artifact now resolves
+        from it. Returns the BundleView. Replaces any previously loaded one."""
+        from bundle import extract_bundle
+
+        old_dir = self.bundle_dir
+        dest = Path(tempfile.mkdtemp(prefix="muas-import-"))
+        view = extract_bundle(archive_bytes, dest)
+        self.bundle = view
+        self.bundle_dir = dest
+        if old_dir is not None:
+            shutil.rmtree(old_dir, ignore_errors=True)
+        self.event(
+            "mission.bundle.imported",
+            session=view.session,
+            artifacts=len(view.index),
+        )
+        return view
+
+    # ---- sim ground truth (operator-placed targets) -----------------------
+
+    def _anomaly_snapshot(self) -> list[dict]:
+        with self.anomalies_lock:
+            return [dict(a) for a in self.anomalies]
+
+    def _broadcast_anomalies(self) -> None:
+        self._send_loop({"type": "sim_anomalies", "anomalies": self._anomaly_snapshot()})
+
+    def place_anomaly(self, params: dict) -> None:
+        """Drop a ground-truth anomaly into the running sim (v3 parity: the
+        operator places targets the synthetic detector then finds). Broadcasts
+        the updated truth so every client re-renders the map + list."""
+        try:
+            lat = float(params["lat"])
+            lon = float(params["lon"])
+        except (KeyError, TypeError, ValueError):
+            return
+        kind = "audio" if str(params.get("kind", "visual")) == "audio" else "visual"
+        with self.anomalies_lock:
+            self._anomaly_seq += 1
+            anomaly = {
+                "id": f"anom-{self._anomaly_seq}",
+                "kind": kind,
+                "lat_deg": lat,
+                "lon_deg": lon,
+                "signature": str(params.get("signature", "")),
+                "created_ns": gps_time_ns(),
+            }
+            if kind == "audio":
+                anomaly["loudness_db"] = float(params.get("loudness_db", 80.0))
+            else:
+                anomaly["size_m"] = float(params.get("size_m", 4.0))
+            self.anomalies.append(anomaly)
+        self.event(
+            "sim.anomaly_placed", anomaly_id=anomaly["id"], anomaly_kind=kind,
+            lat=lat, lon=lon, signature=anomaly["signature"],
+        )
+        self._broadcast_anomalies()
+
+    def remove_anomaly(self, anomaly_id: str) -> None:
+        with self.anomalies_lock:
+            before = len(self.anomalies)
+            self.anomalies = [a for a in self.anomalies if a.get("id") != anomaly_id]
+            removed = len(self.anomalies) != before
+        if removed:
+            self.event("sim.anomaly_removed", anomaly_id=anomaly_id)
+            self._broadcast_anomalies()
+
+    def clear_anomalies(self) -> None:
+        with self.anomalies_lock:
+            count = len(self.anomalies)
+            self.anomalies = []
+        if count:
+            self.event("sim.anomalies_cleared", count=count)
+            self._broadcast_anomalies()
 
     def handle_command(self, message: dict) -> dict | None:
         kind = message.get("cmd")
@@ -1185,6 +1561,26 @@ class Dashboard:
                     )
                 else:
                     self.request_sensor_capture(vid, message.get("params", {}))
+        elif kind == "candidate_promote":
+            self.promote_unconfirmed(int(message.get("index", -1)))
+        elif kind == "candidate_dismiss":
+            self.dismiss_unconfirmed(int(message.get("index", -1)))
+        elif kind == "task_abort":
+            # scoped abort from the commands log: halt the vehicle (a safe,
+            # existing flight action) rather than RTL. v2 has no per-task
+            # cancellation, so "hold" is the closest honest stop.
+            vid = message.get("vehicle", "")
+            if vid in self.vehicles:
+                self._flight_command(vid, "hold")
+        elif kind == "sim":
+            op = message.get("op", "")
+            params = message.get("params", {}) or {}
+            if op == "place_anomaly":
+                self.place_anomaly(params)
+            elif op == "remove_anomaly":
+                self.remove_anomaly(str(params.get("id", "")))
+            elif op == "clear_anomalies":
+                self.clear_anomalies()
         elif kind == "system":
             vid = message.get("vehicle", "")
             if vid in self.vehicles and message.get("command") == "shutdown":
@@ -1227,16 +1623,23 @@ class Dashboard:
         def on_timeout(_request_id: str) -> None:
             self.event("system.shutdown_timeout", vehicle=vid)
 
-        self.user.request_service_async(
+        self._timed_async(
             vehicle_system_service(vid, "shutdown"),
+            "shutdown",
             json.dumps({"confirm": vid}).encode(),
-            on_response=on_response,
-            on_timeout=on_timeout,
+            on_response,
+            on_timeout,
             timeout_ms=15000,
+            vehicle=vid,
         )
 
 
-async def run_web(dash: Dashboard, args) -> None:
+def make_app(dash: Dashboard, args):
+    """Build the aiohttp application (routes + handlers).
+
+    Split out of run_web so a headless test harness can drive the endpoints
+    with an aiohttp TestClient (no TCP bind, no NDN stack).
+    """
     from aiohttp import WSMsgType, web
 
     html_path = Path(
@@ -1331,6 +1734,61 @@ async def run_web(dash: Dashboard, args) -> None:
             dash.record_sync()  # replaying the live recording: complete it
         return web.FileResponse(path)
 
+    async def mission_bundle(request):
+        """Download the ENTIRE mission over NDN as one .tar.gz (no SSH)."""
+        session = (
+            request.query.get("session")
+            or dash.mission.get("mission_id")
+            or "mission"
+        )
+        try:
+            fname, data = await asyncio.get_event_loop().run_in_executor(
+                dash.executor, dash.build_mission_bundle, session
+            )
+        except Exception as exc:
+            return web.Response(status=500, text=f"bundle failed: {exc}")
+        return web.Response(
+            body=data,
+            content_type="application/gzip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{fname}"',
+            },
+        )
+
+    async def mission_import(request):
+        """Load an uploaded mission archive into sim-mode replay. Returns the
+        dashboard recording (fed to the existing replay machinery) + summary;
+        /artifact now resolves from the bundle."""
+        try:
+            reader = await request.multipart()
+        except Exception:
+            return web.Response(status=400, text="expected multipart upload")
+        data = None
+        while True:
+            field = await reader.next()
+            if field is None:
+                break
+            if field.name == "bundle" or field.filename:
+                data = await field.read(decode=False)
+                break
+        if not data:
+            return web.Response(status=400, text="no bundle file in upload")
+        try:
+            view = await asyncio.get_event_loop().run_in_executor(
+                dash.executor, dash.load_bundle, data
+            )
+            jsonl = await asyncio.get_event_loop().run_in_executor(
+                dash.executor, view.dashboard_jsonl_text
+            )
+        except Exception as exc:
+            return web.Response(status=400, text=f"import failed: {exc}")
+        return web.json_response({
+            "session": view.session,
+            "manifest": view.manifest,
+            "artifacts": len(view.index),
+            "jsonl": jsonl,
+        })
+
     async def ws_handler(request):
         ws = web.WebSocketResponse(heartbeat=20)
         await ws.prepare(request)
@@ -1342,11 +1800,14 @@ async def run_web(dash: Dashboard, args) -> None:
             "capabilities": {
                 v: sorted(c) for v, c in dash.capabilities.items()
             },
+            "sensor_meta": dict(dash.sensor_meta),
+            "anomalies": dash._anomaly_snapshot(),
             "sensor_data": list(dash.sensor_data),
             "mission": {
                 "state": dash.mission["state"],
                 "mission_id": dash.mission["mission_id"],
                 "targets": dash.mission["targets"],
+                "unconfirmed": dash.mission.get("unconfirmed", []),
             },
         }))
         try:
@@ -1371,7 +1832,16 @@ async def run_web(dash: Dashboard, args) -> None:
     app.router.add_get("/tiles/{z}/{x}/{y}", tile)
     app.router.add_get("/replays", replays_index)
     app.router.add_get("/replays/{name}", replay_file)
+    app.router.add_get("/mission/bundle", mission_bundle)
+    app.router.add_post("/mission/import", mission_import)
     app.router.add_get("/ws", ws_handler)
+    return app
+
+
+async def run_web(dash: Dashboard, args) -> None:
+    from aiohttp import web
+
+    app = make_app(dash, args)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, args.http_host, args.http_port)
@@ -1386,6 +1856,9 @@ def main() -> int:
     if args.dry_run:
         print_json("dash.dry_run", user=args.user, port=args.http_port)
         return 0
+
+    start_role_journal("gcs-dashboard", args.log_dir)
+    start_nfd_counter_scrape(args.nfd_metrics_interval, enabled=args.nfd_metrics)
 
     add_ndnsf_path(args.ndnsf_root)
     from ndnsf import ServiceUser
@@ -1404,6 +1877,8 @@ def main() -> int:
         loop.run_until_complete(run_web(dash, args))
     except KeyboardInterrupt:
         pass
+    finally:
+        flush_json_log()
     return 0
 
 

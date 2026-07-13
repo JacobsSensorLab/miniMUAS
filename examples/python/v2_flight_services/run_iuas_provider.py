@@ -23,6 +23,7 @@ from contracts import (
     InvestigatePointRequest,
     Pose,
     SensorArtifact,
+    default_camera_meta,
     gps_time_ns,
     mission_sensor_name,
     vehicle_flight_service,
@@ -33,9 +34,13 @@ from dataplane import publish_segmented
 from ndnsf_runtime import (
     add_common_arguments,
     add_ndnsf_path,
+    flush_json_log,
     optional_local_nfd,
     print_json,
     provider_kwargs,
+    start_journal_publisher,
+    start_nfd_counter_scrape,
+    start_role_journal,
 )
 
 
@@ -97,6 +102,12 @@ def build_parser() -> argparse.ArgumentParser:
             "Capture-artifact frame source: synthetic, file:<path>, or "
             "opencv:<index|url> (see camera.py)"
         ),
+    )
+    parser.add_argument(
+        "--log-dir",
+        default="/var/lib/minimuas/log",
+        help="Directory for the fsync-per-line metrics/event journal "
+        "(empty string disables).",
     )
     return parser
 
@@ -187,6 +198,9 @@ def main() -> int:
         )
         return 0
 
+    start_role_journal(f"{args.vehicle_id}-provider", args.log_dir)
+    start_nfd_counter_scrape(args.nfd_metrics_interval, enabled=args.nfd_metrics)
+
     # Frame source for capture artifacts (synthetic by default).
     try:
         frame_source = frame_source_from_spec(args.camera)
@@ -231,6 +245,8 @@ def main() -> int:
         )
 
     add_ndnsf_path(args.ndnsf_root)
+    # Serve this provider's journal over NDN for the dashboard bundle sweep.
+    start_journal_publisher(f"{args.vehicle_id}-perception", args.session)
     from ndnsf import AckDecision, ServiceProvider
 
     provider = ServiceProvider(
@@ -275,6 +291,15 @@ def main() -> int:
             native_orbit=args.native_orbit,
         )
 
+    # The investigation IUAS points a forward camera at the target during its
+    # orbits; advertise it (with D/R/I bands) so the dashboard's coverage layer
+    # draws the FoV cone. Rendered only from these advertised facts.
+    invest_sensor_meta = {
+        "camera": default_camera_meta(
+            60.0, 320, 240, facing="forward", dri_m=[60.0, 30.0, 12.0]
+        )
+    }
+
     def build_capability_profile() -> CapabilityProfile:
         if investigate_mod is not None:
             native = active_flight_profile()
@@ -289,6 +314,7 @@ def main() -> int:
                 obstacle_map=native.obstacle_map,
                 signal_sensor=native.signal_sensor,
                 extras=sorted(native.extras),
+                sensor_meta=invest_sensor_meta,
             )
         # Fabricated fallback mirrors the simulated vehicle's profile.
         return CapabilityProfile(
@@ -298,6 +324,7 @@ def main() -> int:
             yaw_control=True,
             mode_control=True,
             extras=["orbit"] if args.native_orbit else [],
+            sensor_meta=invest_sensor_meta,
         )
 
     @provider.ack_handler(service)
@@ -441,7 +468,10 @@ def main() -> int:
                 error=str(exc),
             )
         print_json("iuas.provider.starting", service=service)
-        return provider.run(service)
+        try:
+            return provider.run(service)
+        finally:
+            flush_json_log()
 
 
 if __name__ == "__main__":

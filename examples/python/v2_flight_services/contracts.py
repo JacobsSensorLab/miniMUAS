@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import json
+import math
 import time
 from typing import Any
 
@@ -42,6 +43,18 @@ def vehicle_sensor_service(vehicle_id: str) -> str:
 def vehicle_system_service(vehicle_id: str, action: str) -> str:
     """Companion-computer system control (e.g. authorized shutdown)."""
     return f"/muas/v2/{vehicle_id}/system/{action}"
+
+
+def vehicle_journal_name(node_id: str, session: str) -> str:
+    """Named segmented object where a role serves its ``<role>.jsonl`` journal
+    (events + metrics + logs) for a mission session.
+
+    Lets the dashboard's mission-bundle sweep pull every node's journal over
+    the fabric (no per-node SSH) while the nodes are still up. ``node_id`` is a
+    flying vehicle id for drone-agent journals, or a role-node id like ``gcs``
+    for the ground providers. ``session`` scopes the object to one mission
+    (nodes may also publish under the well-known session ``latest``)."""
+    return f"/muas/v2/{node_id}/journal/{session}"
 
 
 def vehicle_coord_status_name(vehicle_id: str) -> str:
@@ -103,6 +116,106 @@ def mission_evidence_name(mission_id: str, object_id: str, timestamp_ns: int) ->
     return f"/muas/v2/mission/{mission_id}/evidence/{object_id}/{timestamp_ns}"
 
 
+# ---------------------------------------------------------------------------
+# Sim ground-truth anomalies (operator-placed targets the synthetic detector
+# finds) + advertised sensor metadata for the dashboard's coverage layer.
+#
+# Both are ADDITIVE, backward-compatible extensions:
+#   * anomalies ride the DetectionRequest (optional list[dict]); a GCS that
+#     predates the field ignores it, a placement-free mission sends none and
+#     the stub detector keeps its legacy always-hit behaviour.
+#   * sensor_meta rides the CapabilityProfile (optional dict); legacy readers
+#     use .get and skip it.
+# Mirrors v3 (muas-contracts::anomaly / muas-contracts::sensors): the sim/
+# operator owns the ground truth, the synthetic detector queries it, and the
+# dashboard renders coverage from ADVERTISED facts (never airframe-hardcoded).
+# ---------------------------------------------------------------------------
+
+# Signature colours a placed VISUAL anomaly can carry (renderer + a future
+# blob detector agree on these). Kept small and stable.
+ANOMALY_SIGNATURES = ("red", "orange", "blue", "magenta", "yellow")
+
+
+def _ground_dist_m(lat_a: float, lon_a: float, lat_b: float, lon_b: float) -> float:
+    """Local-flat ground distance in metres (bench scale — sub-km)."""
+    dn = (lat_b - lat_a) * 111111.0
+    de = (lon_b - lon_a) * 111111.0 * math.cos(math.radians((lat_a + lat_b) / 2.0))
+    return math.hypot(dn, de)
+
+
+def camera_footprint_radius_m(agl_m: float, hfov_deg: float) -> float:
+    """Half-width of a nadir camera's ground footprint at ``agl_m`` — the
+    radius within which a placed anomaly falls inside the frame."""
+    return max(agl_m, 0.0) * math.tan(math.radians(max(hfov_deg, 1e-3)) / 2.0)
+
+
+def nearest_visual_anomaly(
+    cap_lat: float,
+    cap_lon: float,
+    cap_agl: float,
+    hfov_deg: float,
+    anomalies: list[dict] | None,
+) -> tuple[dict, float] | None:
+    """The visual anomaly the nadir camera at this capture pose would find.
+
+    Returns ``(anomaly, ground_offset_m)`` for the nearest ``"visual"`` anomaly
+    whose ground position lies within the camera footprint (plus the blob's own
+    radius), or ``None`` for a clean miss. This is the v2 synthetic detector's
+    read of the sim ground truth: the placed target under the footprint is the
+    one that is "found", and it localises AT that target (offset = how far off
+    nadir it sat, the dashboard's localisation-quality metric).
+    """
+    radius = camera_footprint_radius_m(cap_agl, hfov_deg)
+    best: tuple[dict, float] | None = None
+    for anomaly in anomalies or []:
+        if str(anomaly.get("kind", "visual")) != "visual":
+            continue
+        try:
+            a_lat = float(anomaly["lat_deg"])
+            a_lon = float(anomaly["lon_deg"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        dist = _ground_dist_m(cap_lat, cap_lon, a_lat, a_lon)
+        reach = radius + float(anomaly.get("size_m", 0.0)) / 2.0
+        if dist <= reach and (best is None or dist < best[1]):
+            best = (anomaly, dist)
+    return best
+
+
+def default_camera_meta(
+    hfov_deg: float,
+    width_px: int,
+    height_px: int,
+    *,
+    facing: str = "down",
+    dri_m: list[float] | None = None,
+) -> dict:
+    """Camera facts the agent advertises for FoV/footprint rendering."""
+    meta: dict[str, Any] = {
+        "hfov_deg": float(hfov_deg),
+        "width_px": int(width_px),
+        "height_px": int(height_px),
+        "facing": facing,
+    }
+    if dri_m:
+        meta["dri_m"] = [float(x) for x in dri_m]
+    return meta
+
+
+def default_audio_meta(
+    omni_range_m: float,
+    *,
+    lobes: list[dict] | None = None,
+) -> dict:
+    """Microphone facts: an omnidirectional confidence radius, and optional
+    beamforming lobes ``[{bearing_deg, width_deg, range_m}, ...]`` when the
+    array reports them (empty => the renderer draws the omni circle)."""
+    meta: dict[str, Any] = {"omni_range_m": float(omni_range_m)}
+    if lobes:
+        meta["lobes"] = [dict(lobe) for lobe in lobes]
+    return meta
+
+
 @dataclass(frozen=True)
 class CapabilityProfile:
     """Flight capabilities one vehicle advertises to the mission layer.
@@ -123,6 +236,11 @@ class CapabilityProfile:
     obstacle_map: bool = False
     signal_sensor: bool = False
     extras: list[str] = field(default_factory=list)
+    # Additive sensor metadata for the dashboard's coverage layer: an
+    # open-ended dict with optional "camera" / "audio" sub-objects
+    # (see default_camera_meta / default_audio_meta). Legacy consumers that
+    # predate the key ignore it; the renderer draws only what is advertised.
+    sensor_meta: dict = field(default_factory=dict)
 
     def to_bytes(self) -> bytes:
         return encode_dataclass(self)
@@ -141,6 +259,7 @@ class CapabilityProfile:
             obstacle_map=bool(value.get("obstacle_map", False)),
             signal_sensor=bool(value.get("signal_sensor", False)),
             extras=[str(item) for item in value.get("extras", [])],
+            sensor_meta=dict(value.get("sensor_meta") or {}),
         )
 
 
@@ -244,6 +363,12 @@ class DetectionRequest:
     mission_id: str
     frame: FrameRef
     object_query: str = "test-object"
+    # Sim ground-truth anomalies (operator-placed targets) the synthetic
+    # detector should look for in this frame. Optional and additive: absent
+    # or empty keeps the stub detector's legacy always-hit behaviour; when
+    # present, the stub reports a hit ONLY for a placed target under the
+    # frame's footprint (localised at that target). Ignored by real detectors.
+    anomalies: list[dict] = field(default_factory=list)
 
     def to_bytes(self) -> bytes:
         return encode_dataclass(self)
@@ -255,6 +380,7 @@ class DetectionRequest:
             mission_id=str(value["mission_id"]),
             frame=FrameRef.from_dict(value["frame"]),
             object_query=str(value.get("object_query", "test-object")),
+            anomalies=[dict(a) for a in value.get("anomalies", []) if isinstance(a, dict)],
         )
 
 

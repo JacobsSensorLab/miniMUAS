@@ -40,6 +40,8 @@
   --cds-layer-selected-inverse: #f4f4f4;
   /* spacing scale */
   --sp-02: 4px; --sp-03: 8px; --sp-04: 12px; --sp-05: 16px; --sp-06: 24px;
+  /* side-panel widths (operator-resizable; JS overrides via body.style) */
+  --side-w: 336px; --right-w: 288px;
   /* type */
   --font-sans: 'IBM Plex Sans', system-ui, 'Helvetica Neue', Arial, sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
@@ -50,7 +52,7 @@ body {
   background: var(--cds-background); color: var(--cds-text-primary);
   font: 400 14px/1.29 var(--font-sans); letter-spacing: .16px;
   display: grid; grid-template-rows: 48px 1fr;
-  grid-template-columns: 336px 1fr 288px;
+  grid-template-columns: var(--side-w) 1fr var(--right-w);
   grid-template-areas: "header header header" "side map right";
   overflow: hidden;
 }
@@ -237,6 +239,149 @@ h3:first-child { margin-top: 0; }
 #detCard a { color: var(--cds-link-primary); text-decoration: none; }
 #detCard a:hover { text-decoration: underline; }
 #detCard .mono { font-family: var(--font-mono); font-size: 12px; }
+
+/* ---- map follow / orientation cluster (top right, pictogram-first) ------- */
+/* Ported from v3 (crates/muas-dashboard/assets/dashboard.html). Adds camera
+   modes (free/fixed/follow/fleet) and orientation (north-up/heading-up) to
+   the v2 canvas — which gains a rotation transform (view.rot) to match. */
+#mapctl {
+  position: absolute; top: var(--sp-03); right: var(--sp-03); z-index: 5;
+  display: flex; flex-direction: column; align-items: flex-end;
+  gap: var(--sp-02); font-size: 12px;
+}
+.mapctl-row {
+  display: flex; background: var(--cds-layer-01);
+  border: 1px solid var(--cds-border-subtle);
+}
+.mapctl-row button {
+  height: 26px; padding: 0 var(--sp-03); border: none; border-radius: 0;
+  background: transparent; color: var(--cds-text-secondary); cursor: pointer;
+  font: 400 12px/1 var(--font-sans); letter-spacing: .16px;
+  border-right: 1px solid var(--cds-border-subtle);
+  display: inline-flex; align-items: center; gap: 4px;
+  transition: background 70ms cubic-bezier(0,0,.38,.9);
+}
+.mapctl-row button:last-child { border-right: none; }
+.mapctl-row button:hover:not(:disabled) { background: var(--cds-layer-02); }
+.mapctl-row button.on {
+  background: var(--cds-layer-selected-inverse); color: var(--cds-text-inverse);
+}
+.mapctl-row button:disabled { opacity: .4; cursor: not-allowed; }
+.mapctl-row button:focus-visible { outline: 2px solid var(--cds-focus); outline-offset: -2px; }
+.mapctl-row button .pic { font-size: 14px; line-height: 1; }
+#fixedPanel {
+  display: none; background: var(--cds-layer-01);
+  border: 1px solid var(--cds-border-subtle); padding: var(--sp-03);
+  width: 208px;
+}
+#fixedPanel .grid-2 { margin-bottom: var(--sp-02); }
+#fixedPanel input {
+  width: 100%; height: 24px; padding: 0 var(--sp-03);
+  background: var(--cds-field-01); color: var(--cds-text-primary);
+  border: none; border-bottom: 1px solid var(--cds-border-strong);
+  border-radius: 0; font: 400 11px var(--font-mono);
+}
+.pausedpill {
+  position: absolute; top: var(--sp-03); left: 50%; transform: translateX(-50%);
+  z-index: 5; display: none; cursor: pointer;
+  background: var(--cds-layer-01); border: 1px solid var(--cds-interactive);
+  color: var(--cds-link-primary); padding: var(--sp-02) var(--sp-04);
+  font-size: 12px; letter-spacing: .32px;
+}
+.pausedpill:hover { background: var(--cds-layer-02); }
+/* per-vehicle map controls in the tile head */
+.tilemap { display: inline-flex; align-items: center; gap: var(--sp-03); }
+.tilemap .follow-btn {
+  width: 24px; height: 24px; padding: 0; border: 1px solid transparent;
+  background: transparent; color: var(--cds-text-secondary); cursor: pointer;
+  font-size: 15px; line-height: 1; border-radius: 0;
+}
+.tilemap .follow-btn:hover { background: var(--cds-layer-02); color: var(--cds-text-primary); }
+.tilemap .follow-btn.on {
+  color: var(--cds-text-inverse); background: var(--cds-layer-selected-inverse);
+}
+.tilemap .follow-btn:focus-visible { outline: 2px solid var(--cds-focus); outline-offset: -2px; }
+.tilemap label { display: inline-flex; gap: 4px; align-items: center;
+  font-size: 11px; color: var(--cds-text-secondary); cursor: pointer; }
+
+/* ---- map legend overlay (ported from v3, trimmed to v2's layers) --------- */
+#legend {
+  position: absolute; bottom: var(--sp-05); right: var(--sp-03); z-index: 5;
+  display: none; background: var(--cds-layer-01);
+  border: 1px solid var(--cds-border-subtle); padding: var(--sp-03) var(--sp-04);
+  max-width: 260px; font-size: 11px; color: var(--cds-text-secondary);
+}
+#legend h4 { font-size: 11px; font-weight: 600; margin: var(--sp-03) 0 var(--sp-02);
+  color: var(--cds-text-primary); }
+#legend h4:first-child { margin-top: 0; }
+#legend .li { display: flex; gap: 6px; align-items: center; margin-bottom: 2px;
+  line-height: 1.3; }
+#legend .sw { flex: none; width: 14px; height: 10px; display: inline-block; }
+
+/* ---- collapsible tool sections (h3 = section header w/ chevron) --------- */
+/* Ported from v3: makeCollapsible() turns each panel h3 into a toggle and
+   wraps its following siblings in a .secbody; state persists per header. */
+h3.sech { cursor: pointer; user-select: none; }
+h3.sech:hover { color: var(--cds-text-primary); }
+h3.sech .chev { display: inline-block; width: 14px; color: var(--cds-text-helper);
+  font-size: 10px; }
+
+/* ---- resizable / collapsible side panels (ported from v3) --------------- */
+.grip {
+  position: fixed; top: 48px; bottom: 0; width: 7px; z-index: 40;
+  cursor: col-resize; background: transparent;
+}
+.grip:hover, .grip.dragging { background: var(--cds-interactive); opacity: .5; }
+#sideGrip { left: calc(var(--side-w) - 3px); }
+#rightGrip { right: calc(var(--right-w) - 3px); }
+.edgetab {
+  position: fixed; top: 50%; transform: translateY(-50%); z-index: 41;
+  width: 16px; height: 64px; padding: 0; border: 1px solid var(--cds-border-subtle);
+  background: var(--cds-layer-01); color: var(--cds-text-secondary);
+  cursor: pointer; font-size: 11px; border-radius: 0;
+}
+.edgetab:hover { background: var(--cds-layer-02); color: var(--cds-text-primary); }
+#sideTab { left: var(--side-w); border-left: none; }
+#rightTab { right: var(--right-w); border-right: none; }
+
+/* ---- command lifecycle: toasts + mini-log (ported from v3) -------------- */
+#toasts {
+  position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+  z-index: 30; display: flex; flex-direction: column; gap: 4px;
+  align-items: center; pointer-events: none;
+}
+.toast {
+  background: var(--cds-layer-01); border-left: 3px solid var(--cds-support-info);
+  color: var(--cds-text-primary); padding: 6px 12px; font-size: 12px;
+  letter-spacing: .32px; box-shadow: 0 2px 6px rgba(0,0,0,.5);
+  opacity: 1; transition: opacity .3s;
+  max-width: 480px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.toast.ok { border-left-color: var(--cds-support-success); }
+.toast.err { border-left-color: var(--cds-support-error); }
+.toast.warn { border-left-color: var(--cds-support-warning); }
+.toast.out { opacity: 0; }
+#cmdlog { max-height: 180px; overflow-y: auto; }
+#cmdlog .n {
+  background: var(--cds-layer-01); border-left: 3px solid var(--cds-support-info);
+  padding: var(--sp-02) var(--sp-03); margin-bottom: 2px;
+  font: 400 11px/1.5 var(--font-mono);
+}
+#cmdlog .n .t { color: var(--cds-text-helper); margin-right: var(--sp-03); }
+#cmdlog .n.ok { border-left-color: var(--cds-support-success); }
+#cmdlog .n.err { border-left-color: var(--cds-support-error); }
+#cmdlog .n.warn { border-left-color: var(--cds-support-warning); }
+#cmdlog .st { font-weight: 600; }
+.xabort {
+  background: none; border: 1px solid var(--cds-border-subtle);
+  color: var(--cds-text-secondary); cursor: pointer; font-size: 10px;
+  line-height: 1; padding: 1px 4px; float: right;
+}
+.xabort:hover { color: var(--cds-support-error); border-color: var(--cds-support-error); }
+/* ---- unconfirmed-candidate action buttons ------------------------------- */
+.unconf .ubtn { height: 24px; padding: 0 var(--sp-03); font-size: 12px;
+  margin-top: var(--sp-02); margin-right: var(--sp-02); }
+
 ::-webkit-scrollbar { width: 8px; }
 ::-webkit-scrollbar-thumb { background: var(--cds-layer-02); }
 </style>
@@ -247,10 +392,19 @@ h3:first-child { margin-top: 0; }
   <span class="name"><b>miniMUAS</b>v2 Mission Console</span>
   <span class="cds-tag cds-tag--gray" id="mstate">idle</span>
   <span class="spacer"></span>
+  <button class="cds-btn cds-btn--ghost" id="downloadBtn"
+          title="Pull the ENTIRE mission (every node's journal + all captured video/audio + this dashboard's recording) to your computer over NDN as one archive.">Download mission data</button>
+  <button class="cds-btn cds-btn--ghost" id="importBtn"
+          title="Load a downloaded mission archive and replay the whole mission in sim mode (artifacts resolve from the bundle).">Import mission</button>
+  <input type="file" id="importFile" accept=".gz,.tgz,.tar" style="display:none">
   <button class="cds-btn cds-btn--ghost" id="replayBtn">Replay</button>
+  <button class="cds-btn cds-btn--ghost" id="sensorsBtn"
+          title="Sensor coverage from each vehicle's advertised sensor_meta: nadir cameras show the ground footprint quad, forward cameras a FoV cone with D/R/I bands, microphones their omni reach circle (+ beamforming lobes when advertised).">Sensors on</button>
   <button class="cds-btn cds-btn--ghost" id="dataBtn">Data on</button>
   <button class="cds-btn cds-btn--ghost" id="eventsBtn">Events on</button>
   <button class="cds-btn cds-btn--ghost" id="imageryBtn">Imagery on</button>
+  <button class="cds-btn cds-btn--ghost" id="legendBtn"
+          title="Toggle the map legend (explains the symbology of the layers currently on)">Legend</button>
   <span class="cds-tag cds-tag--red" id="conn">offline</span>
 </header>
 
@@ -361,6 +515,31 @@ opportunistic: fire whenever the vehicle happens to pass within range.">
     <button class="cds-btn cds-btn--tertiary" id="capPick">Pick point</button>
   </div>
 
+  <h3>Simulation</h3>
+  <div class="grid-2">
+    <div class="field"><label for="akind">Target type</label>
+      <select id="akind"
+        title="visual: a ground blob the WUAS camera finds during its raster (drives the detect→localize→dispatch flow). audio: a sound source for the mic airframe.">
+        <option value="visual">visual (camera)</option>
+        <option value="audio">audio (mic)</option>
+      </select></div>
+    <div class="field"><label for="asig">Signature</label>
+      <select id="asig">
+        <option value="red">red</option>
+        <option value="orange">orange</option>
+        <option value="blue">blue</option>
+        <option value="magenta">magenta</option>
+        <option value="yellow">yellow</option>
+      </select></div>
+  </div>
+  <div class="btnrow">
+    <button class="cds-btn cds-btn--tertiary" id="aplace"
+      title="Click the map to drop this target into the running sim ground truth; the synthetic detector then finds it when the WUAS rasters over it.">Place on map</button>
+    <button class="cds-btn cds-btn--danger-tertiary" id="aclear">Clear all</button>
+  </div>
+  <div class="field"><label>Active targets (ground truth)</label>
+    <div id="anomlist"></div></div>
+
   <h3>Detection</h3>
   <div class="cds-tile" id="detCard">none yet</div>
   <img id="thumb" alt="trigger frame">
@@ -378,14 +557,58 @@ opportunistic: fire whenever the vehicle happens to pass within range.">
     <span><span class="k">targets</span><b id="mtargets">0</b></span>
   </div>
   <div class="pickhint" id="pickhint">click the map…</div>
+  <div id="mapctl">
+    <div class="mapctl-row" id="followSeg" role="group" aria-label="map follow mode">
+      <button data-fm="free" class="on" title="Free — pan and zoom by hand">
+        <span class="pic">✥</span>Free</button>
+      <button data-fm="fixed" title="Fixed — lock the map to an anchor point">
+        <span class="pic">◎</span>Fixed</button>
+      <button data-fm="follow" id="followBtn"
+        title="Follow one vehicle — arm with ⌖ on a vehicle tile">
+        <span class="pic">⌖</span><span id="followLbl">Follow</span></button>
+      <button data-fm="fleet"
+        title="Follow fleet — keep the selected vehicles framed (none selected = all)">
+        <span class="pic">⛶</span>Fleet</button>
+    </div>
+    <div class="mapctl-row" id="orientSeg" role="group" aria-label="map orientation">
+      <button data-or="north" class="on" title="North-up">N↑</button>
+      <button data-or="heading" id="hdgBtn" disabled
+        title="Heading-up — rotate the map to the followed vehicle's heading">➤↑</button>
+    </div>
+    <div id="fixedPanel">
+      <div class="grid-2">
+        <input id="fxlat" type="number" step="0.000001" placeholder="lat"
+               title="anchor latitude">
+        <input id="fxlon" type="number" step="0.000001" placeholder="lon"
+               title="anchor longitude">
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="cds-btn cds-btn--ghost" id="fxSet"
+          style="height:24px;padding:0 8px;font-size:11px">Set anchor</button>
+        <button class="cds-btn cds-btn--ghost" id="fxHere"
+          style="height:24px;padding:0 8px;font-size:11px">Use map center</button>
+      </div>
+    </div>
+  </div>
+  <div class="pausedpill" id="pausedPill">following paused — resume</div>
+  <div id="legend"></div>
+  <div id="toasts"></div>
 </div>
 
 <div id="right">
   <h3>Vehicles</h3>
   <div id="cards"></div>
+  <h3>Commands</h3>
+  <div id="cmdlog"></div>
   <h3>Video</h3>
   <div id="videos"></div>
 </div>
+
+<!-- panel resize grips + collapse edge tabs (ported from v3) -->
+<div class="grip" id="sideGrip" title="drag to resize — the tab collapses"></div>
+<div class="grip" id="rightGrip" title="drag to resize — the tab collapses"></div>
+<button class="edgetab" id="sideTab" title="collapse/expand the left panel">◂</button>
+<button class="edgetab" id="rightTab" title="collapse/expand the right panel">▸</button>
 
 <!-- replay transport (hidden until a recording is loaded) -->
 <div id="replaybar" style="display:none;position:fixed;left:0;right:0;bottom:0;
@@ -457,6 +680,7 @@ function dispatch(m){
   else if (m.type === "raster_preview") onPreview(m);
   else if (m.type === "event") onEvent(m);
   else if (m.type === "capabilities") onCaps(m);
+  else if (m.type === "sim_anomalies") onSimAnoms(m);
   else if (m.type === "sensor_data") pushSensorData(m.item);
   else if (m.type === "video_stats") onVideoStats(m);
 }
@@ -493,22 +717,222 @@ function cmdTakeoff(vid){
 
 // ---------- map (canvas, local ENU around view center, g100 palette) ----------
 const cv = document.getElementById("map"), ctx = cv.getContext("2d");
-let view = { lat: 35.1208, lon: -89.9347, mppx: 0.18 };
+// view.rot is the map rotation in radians: the world bearing that points
+// screen-up. North-up is rot=0; heading-up eases rot toward the followed
+// vehicle's smoothed heading (ported from v3). Everything projects through
+// toPx/toLL so a single rotation term covers vectors, hit-tests and picks.
+let view = { lat: 35.1208, lon: -89.9347, mppx: 0.18, rot: 0 };
 let plan = null;
 let drones = {};
 let targets = [];   // mission targets: {index, object_id, confidence, lat,
                     //  lon, frame, status, artifacts}
+let UNCONF = [];    // end-of-raster unconfirmed candidates: {index,
+                    //  object_id, confidence, lat, lon, frame, hits, need,
+                    //  status: unconfirmed|promoted|dismissed}
 let picking = null;
 
 function resize(){ const r = cv.parentElement.getBoundingClientRect();
   cv.width = r.width; cv.height = r.height; }
 window.addEventListener("resize", resize);
-function toPx(lat, lon){
+// One world→screen transform: local ENU about the view center, scaled by
+// mppx, then rotated by view.rot in screen space. toPxBase is the unrotated
+// projection (used to draw the axis-aligned satellite tiles inside a ctx
+// rotated by -view.rot, which is the same map by identity). North-up keeps
+// rot=0, so toPx/toLL collapse to the original no-rotation path unchanged.
+function toPxBase(lat, lon){
   return [ cv.width/2 + (lon - view.lon) * mPerDegLon(view.lat) / view.mppx,
            cv.height/2 - (lat - view.lat) * M_PER_DEG_LAT / view.mppx ]; }
+function toPx(lat, lon){
+  const p = toPxBase(lat, lon);
+  if (!view.rot) return p;
+  const c = Math.cos(view.rot), s = Math.sin(view.rot);
+  const u = p[0] - cv.width/2, v = p[1] - cv.height/2;
+  return [ cv.width/2 + u*c + v*s, cv.height/2 - u*s + v*c ]; }
 function toLL(x, y){
+  if (view.rot){
+    const c = Math.cos(view.rot), s = Math.sin(view.rot);
+    const u = x - cv.width/2, v = y - cv.height/2;
+    x = cv.width/2 + u*c - v*s; y = cv.height/2 + u*s + v*c;
+  }
   return [ view.lat - (y - cv.height/2) * view.mppx / M_PER_DEG_LAT,
            view.lon + (x - cv.width/2) * view.mppx / mPerDegLon(view.lat) ]; }
+
+// ---------- follow / framing / orientation modes (ported from v3) ----------
+// free   — manual pan/zoom (plus pre-interaction auto-framing of the fleet)
+// fixed  — ease the center to a user-set anchor
+// follow — ease the center onto one vehicle; heading-up allowed here only
+// fleet  — continuous centroid centering + dynamic zoom keeping the selected
+//          vehicles framed with ~15 % edge padding
+const MAPCTL_KEY = "muas2.mapctl";
+const MAP = { mode:"free", followVid:null, selected:new Set(),
+              orient:"north", anchor:null, paused:false, auto:true,
+              tmppx:null };
+(function loadMapCtl(){
+  try {
+    const s = JSON.parse(localStorage.getItem(MAPCTL_KEY) || "{}");
+    if (["free","fixed","follow","fleet"].includes(s.mode)) MAP.mode = s.mode;
+    if (typeof s.followVid === "string") MAP.followVid = s.followVid;
+    if (Array.isArray(s.selected)) MAP.selected = new Set(s.selected);
+    if (s.orient === "heading") MAP.orient = "heading";
+    if (s.anchor && typeof s.anchor.lat === "number"
+                 && typeof s.anchor.lon === "number") MAP.anchor = s.anchor;
+  } catch (e) {}
+  if (MAP.mode === "follow" && !MAP.followVid) MAP.mode = "free";
+  if (MAP.orient === "heading" && MAP.mode !== "follow") MAP.orient = "north";
+  if (MAP.mode === "fixed" && MAP.anchor){
+    view.lat = MAP.anchor.lat; view.lon = MAP.anchor.lon; }
+  MAP.auto = MAP.mode === "free";
+})();
+function saveMapCtl(){
+  try { localStorage.setItem(MAPCTL_KEY, JSON.stringify({
+    mode: MAP.mode, followVid: MAP.followVid, selected: [...MAP.selected],
+    orient: MAP.orient, anchor: MAP.anchor })); } catch (e) {}
+}
+// a drone counts for framing once real telemetry arrived (tlat, not the
+// placeholder seeded at the view center) and isn't a pre-GPS 0,0 fix
+const hasFix = d => d && d.tlat !== undefined &&
+  !(Math.abs(d.tlat) < 0.5 && Math.abs(d.tlon) < 0.5);
+function fleetVids(){
+  const pool = MAP.mode === "fleet" && MAP.selected.size
+    ? [...MAP.selected] : Object.keys(drones);
+  return pool.filter(v => hasFix(drones[v]));
+}
+// centroid + the mppx that keeps every vid in frame with 15 % padding per
+// edge (70 % usable viewport), clamped to the wheel's zoom range
+function fleetFrame(vids){
+  let la = 0, lo = 0, laMin = 90, laMax = -90, loMin = 180, loMax = -180;
+  for (const v of vids){
+    const d = drones[v];
+    la += d.tlat; lo += d.tlon;
+    laMin = Math.min(laMin, d.tlat); laMax = Math.max(laMax, d.tlat);
+    loMin = Math.min(loMin, d.tlon); loMax = Math.max(loMax, d.tlon);
+  }
+  la /= vids.length; lo /= vids.length;
+  const em = 2 * Math.max(loMax - lo, lo - loMin) * mPerDegLon(la);
+  const nm = 2 * Math.max(laMax - la, la - laMin) * M_PER_DEG_LAT;
+  const need = Math.max(em / (cv.width * 0.7), nm / (cv.height * 0.7), 0.08);
+  return { lat: la, lon: lo, mppx: Math.min(4, Math.max(0.02, need)) };
+}
+function setMode(mode, opts){
+  MAP.auto = false; MAP.paused = false; MAP.mode = mode;
+  if (mode !== "follow" && MAP.orient === "heading") MAP.orient = "north";
+  if (mode === "fixed")
+    MAP.anchor = (opts && opts.anchor) || MAP.anchor
+      || { lat: view.lat, lon: view.lon };
+  if (mode === "follow"){
+    if (opts && opts.vid) MAP.followVid = opts.vid;
+    if (!MAP.followVid) MAP.followVid = VEHICLES[0];
+    const d = drones[MAP.followVid];
+    if (hasFix(d)){ view.lat = d.tlat; view.lon = d.tlon; }
+  }
+  if (mode === "fleet"){
+    MAP.tmppx = null;
+    const vids = fleetVids();
+    if (vids.length){
+      const f = fleetFrame(vids);
+      view.lat = f.lat; view.lon = f.lon; view.mppx = f.mppx;
+      MAP.tmppx = f.mppx;
+    }
+  }
+  saveMapCtl(); syncMapCtl();
+}
+function followVehicle(vid){ setMode("follow", {vid}); }
+function toggleFleetSel(vid, on){
+  if (on) MAP.selected.add(vid); else MAP.selected.delete(vid);
+  MAP.tmppx = null; saveMapCtl(); syncMapCtl();
+}
+function setOrient(o){
+  if (o === "heading" && MAP.mode !== "follow") return;
+  MAP.orient = o; saveMapCtl(); syncMapCtl();
+}
+// panning the map while following doesn't discard the armed mode — it
+// pauses it, and the pill offers the way back
+function pauseFollow(){
+  MAP.auto = false;
+  if (MAP.mode !== "free" && !MAP.paused){ MAP.paused = true; syncMapCtl(); }
+}
+function resumeFollow(){ MAP.paused = false; MAP.tmppx = null; syncMapCtl(); }
+function gotoLL(lat, lon){ pauseFollow(); view.lat = lat; view.lon = lon; }
+function syncMapCtl(){
+  followSeg.querySelectorAll("button").forEach(b =>
+    b.classList.toggle("on", b.dataset.fm === MAP.mode));
+  followLbl.textContent = MAP.followVid || "Follow";
+  orientSeg.querySelectorAll("button").forEach(b =>
+    b.classList.toggle("on", b.dataset.or === MAP.orient));
+  hdgBtn.disabled = MAP.mode !== "follow";
+  hdgBtn.title = MAP.mode === "follow"
+    ? "Heading-up — rotate the map to the followed vehicle's heading"
+    : "Heading-up needs a single followed vehicle — arm ⌖ on a tile first";
+  fixedPanel.style.display = MAP.mode === "fixed" ? "" : "none";
+  if (MAP.mode === "fixed" && MAP.anchor){
+    fxlat.value = MAP.anchor.lat.toFixed(6);
+    fxlon.value = MAP.anchor.lon.toFixed(6);
+  }
+  pausedPill.style.display =
+    MAP.paused && MAP.mode !== "free" ? "" : "none";
+  document.querySelectorAll(".follow-btn").forEach(b =>
+    b.classList.toggle("on",
+      MAP.mode === "follow" && b.dataset.vid === MAP.followVid));
+  document.querySelectorAll(".fsel").forEach(c =>
+    { c.checked = MAP.selected.has(c.dataset.vid); });
+}
+followSeg.querySelectorAll("button").forEach(b =>
+  b.onclick = () => setMode(b.dataset.fm));
+orientSeg.querySelectorAll("button").forEach(b =>
+  b.onclick = () => setOrient(b.dataset.or));
+fxSet.onclick = () => {
+  const lat = +fxlat.value, lon = +fxlon.value;
+  if (!isFinite(lat) || !isFinite(lon)) return;
+  MAP.anchor = { lat, lon }; MAP.paused = false; saveMapCtl(); syncMapCtl();
+};
+fxHere.onclick = () => {
+  MAP.anchor = { lat: view.lat, lon: view.lon };
+  MAP.paused = false; saveMapCtl(); syncMapCtl();
+};
+pausedPill.onclick = resumeFollow;
+// per-frame camera update, called from draw(): eases center (and, for
+// fleet, zoom with hysteresis; for heading-up, rotation) toward targets
+function applyFollow(dt){
+  const fd = drones[MAP.followVid];
+  // orientation: shortest-arc ease toward heading (follow) or north
+  const rotT = (!MAP.paused && MAP.mode === "follow" &&
+                MAP.orient === "heading" && fd && fd.heading !== undefined)
+    ? fd.heading * Math.PI / 180 : 0;
+  const dr = (((rotT - view.rot) % (2*Math.PI)) + 3*Math.PI) % (2*Math.PI)
+             - Math.PI;
+  view.rot += dr * (1 - Math.exp(-dt / 0.5));
+  if (rotT === 0 && Math.abs(view.rot) < 0.002) view.rot = 0;
+  if (MAP.paused) return;
+  let tgt = null;
+  if (MAP.mode === "follow" && hasFix(fd))
+    tgt = { lat: fd.tlat, lon: fd.tlon };
+  else if (MAP.mode === "fixed" && MAP.anchor) tgt = MAP.anchor;
+  else if (MAP.mode === "fleet" || (MAP.auto && MAP.mode === "free")){
+    const vids = fleetVids();
+    if (vids.length){
+      tgt = fleetFrame(vids);
+      // zoom hysteresis: widen almost immediately (keep everyone framed),
+      // tighten only once the fleet shrinks 25 % inside the deadband
+      if (MAP.tmppx === null || tgt.mppx > MAP.tmppx * 1.02 ||
+          tgt.mppx < MAP.tmppx * 0.75) MAP.tmppx = tgt.mppx;
+      const kz = 1 - Math.exp(-dt / 0.8);
+      view.mppx *= Math.exp(Math.log(MAP.tmppx / view.mppx) * kz);
+    }
+  }
+  if (!tgt) return;
+  // ease toward the target; snap when it's absurdly far (first fix after
+  // load — SITL can be a continent away from the placeholder center)
+  const dx = (tgt.lon - view.lon) * mPerDegLon(view.lat) / view.mppx;
+  const dy = (tgt.lat - view.lat) * M_PER_DEG_LAT / view.mppx;
+  if (Math.hypot(dx, dy) > 3 * Math.hypot(cv.width, cv.height)){
+    view.lat = tgt.lat; view.lon = tgt.lon;
+    if (tgt.mppx){ view.mppx = tgt.mppx; MAP.tmppx = tgt.mppx; }
+  } else {
+    const k = 1 - Math.exp(-dt / 0.35);
+    view.lat += (tgt.lat - view.lat) * k;
+    view.lon += (tgt.lon - view.lon) * k;
+  }
+}
 
 // ---------- satellite tile layer (Web Mercator, served by the GCS) ----------
 // Tiles come from /tiles/{z}/{x}/{y}: local cache on node 03, proxied from
@@ -523,6 +947,7 @@ let hoverEvt = null;          // event under the cursor (tooltip)
 const EVT_STYLE = kind =>
   kind === "detect.hit"        ? "#42be65" :
   kind === "detect.candidate"  ? "#f1c21b" :
+  kind === "target.unconfirmed" ? "#f1c21b" :
   kind === "mission.target_found" ? "#fa4d56" :
   kind.startsWith("target.")   ? "#4589ff" : "#a8a8a8";
 function pushMapEvent(m){
@@ -536,6 +961,190 @@ let showData = true;
 let sensorData = [];          // {vehicle,sensor,kind,name,lat,lon,t,source,label}
 let CAPS = {};                // vid -> ["camera","audio"]
 const SENSOR_COLOR = { camera:"#78a9ff", audio:"#ff832b" };
+
+// ---------- sensor coverage layer + sim ground-truth targets ----------
+// Coverage renders from each vehicle's ADVERTISED sensor_meta (capability
+// profile, additive key) — nothing airframe-specific lives here. Targets are
+// operator-placed ground truth: click "Place on map", the sim serves them to
+// the synthetic detector, which finds one when the WUAS rasters over it.
+let showSensors = true;
+let SMETA = {};               // vid -> sensor_meta {camera?, audio?}
+let simAnoms = [];            // ground-truth targets [{id,kind,lat_deg,lon_deg,...}]
+let selAnom = null;           // hovered/selected target id
+const ANOM_COL = { visual:"#fa4d56", audio:"#ff832b" };
+const mToPxr = m => m / view.mppx;
+// world bearing (deg cw from north) -> canvas arc angle (rad, +x axis,
+// clockwise because y is down). view.rot accounts for map rotation so
+// sensor cones/lobes stay world-anchored when the map is heading-up.
+const bearingToCanvas = deg => (deg - 90) * Math.PI / 180 - view.rot;
+// D/R/I ranges near→far with band labels (identify is the shortest).
+function driBands(cam){
+  const rr = (cam.dri_m || []).filter(x => x > 0).slice(0, 3).sort((a, b) => a - b);
+  const names = rr.length === 3 ? ["I","R","D"]
+    : rr.length === 2 ? ["R","D"] : rr.length === 1 ? ["D"] : [];
+  return rr.map((r, i) => [r, names[i]]);
+}
+function drawForwardCone(d, cam, col){
+  const p = toPx(d.lat, d.lon);
+  const half = Math.min(cam.hfov_deg, 350) * Math.PI / 360;
+  const c = bearingToCanvas(d.heading || 0);
+  let bands = driBands(cam);
+  if (!bands.length) bands = [[25, ""]];   // uncharacterized: plain sector
+  const maxR = bands[bands.length - 1][0];
+  const alphas = ["4d", "33", "1f"];       // strongest fill nearest (identify)
+  let inner = 0;
+  bands.forEach(([rng, label], i) => {
+    const r0 = mToPxr(inner), r1 = mToPxr(rng);
+    if (r1 < 2 || r1 > 6000){ inner = rng; return; }
+    ctx.fillStyle = col + (alphas[i] || "1f");
+    ctx.beginPath();
+    ctx.arc(p[0], p[1], r1, c - half, c + half);
+    if (r0 > 0) ctx.arc(p[0], p[1], r0, c + half, c - half, true);
+    else ctx.lineTo(p[0], p[1]);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = col + "88"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(p[0], p[1], r1, c - half, c + half); ctx.stroke();
+    if (label){
+      const rm = (r0 + r1) / 2;
+      ctx.fillStyle = "#f4f4f4"; ctx.font = "10px 'IBM Plex Mono', monospace";
+      ctx.fillText(label, p[0] + Math.cos(c)*rm - 3, p[1] + Math.sin(c)*rm + 3);
+    }
+    inner = rng;
+  });
+  const rp = mToPxr(maxR);                  // cone edge rays
+  if (rp >= 2 && rp <= 6000){
+    ctx.strokeStyle = col; ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(p[0] + Math.cos(c - half)*rp, p[1] + Math.sin(c - half)*rp);
+    ctx.lineTo(p[0], p[1]);
+    ctx.lineTo(p[0] + Math.cos(c + half)*rp, p[1] + Math.sin(c + half)*rp);
+    ctx.stroke();
+  }
+}
+function drawGroundQuad(d, cam, col){
+  // nadir footprint: heading-only rectangle (attitude isn't in the v2 sample)
+  const wpxN = cam.width_px || 320, hpxN = cam.height_px || 240;
+  const tanH = Math.tan(cam.hfov_deg * Math.PI / 360);
+  const yaw = (d.heading || 0) * Math.PI / 180;
+  const wm = 2 * d.agl * tanH, hm = wm * hpxN / wpxN;
+  const f = [Math.cos(yaw), Math.sin(yaw)], r = [-Math.sin(yaw), Math.cos(yaw)];
+  const corners = [[hm/2, wm/2], [hm/2, -wm/2], [-hm/2, -wm/2], [-hm/2, wm/2]]
+    .map(c => [f[0]*c[0] + r[0]*c[1], f[1]*c[0] + r[1]*c[1]]);
+  ctx.fillStyle = col + "1a";
+  ctx.strokeStyle = col; ctx.lineWidth = 1.2; ctx.setLineDash([4,3]);
+  ctx.beginPath();
+  corners.forEach((c, i) => {
+    const q = toPx(d.lat + c[0] / M_PER_DEG_LAT, d.lon + c[1] / mPerDegLon(d.lat));
+    i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]);
+  });
+  ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.setLineDash([]);
+}
+function drawSensors(){
+  if (!showSensors) return;
+  ctx.save();
+  for (const [vid, d] of Object.entries(drones)){
+    if (d.lat === undefined || d.stale) continue;
+    const meta = SMETA[vid];
+    if (!meta) continue;                    // nothing advertised: draw nothing
+    const col = COLORS[vid] || "#f4f4f4";
+    const cam = meta.camera;
+    if (cam && cam.hfov_deg > 0 && d.agl > 0.5){
+      if (cam.facing === "forward") drawForwardCone(d, cam, col);
+      else drawGroundQuad(d, cam, col);
+    }
+    const aud = meta.audio;
+    if (aud){
+      const p = toPx(d.lat, d.lon);
+      ctx.strokeStyle = "#ff832b"; ctx.lineWidth = 1.2;
+      if (aud.lobes && aud.lobes.length){
+        // beamforming lobes: filled wedges relative to the vehicle nose
+        ctx.fillStyle = "#ff832b22";
+        for (const lobe of aud.lobes){
+          const rp = mToPxr(lobe.range_m || 0);
+          if (!(rp > 2) || rp > 4000) continue;
+          const c = bearingToCanvas((d.heading || 0) + (lobe.bearing_deg || 0));
+          const half = (lobe.width_deg || 30) * Math.PI / 360;
+          ctx.beginPath(); ctx.moveTo(p[0], p[1]);
+          ctx.arc(p[0], p[1], rp, c - half, c + half);
+          ctx.closePath(); ctx.fill(); ctx.stroke();
+        }
+      } else if (aud.omni_range_m > 0){
+        // omnidirectional confidence circle (no lobes advertised)
+        const rp = mToPxr(aud.omni_range_m);
+        if (rp >= 6 && rp <= 4000){
+          ctx.setLineDash([6,4]);
+          ctx.beginPath(); ctx.arc(p[0], p[1], rp, 0, 7); ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      }
+    }
+  }
+  ctx.restore();
+}
+function drawAnoms(){
+  // ground-truth targets: crosshair rings (distinct from the detection
+  // diamonds), coloured by kind; the selected one is emphasized
+  for (const a of simAnoms){
+    const p = toPx(a.lat_deg, a.lon_deg);
+    if (p[0] < -20 || p[0] > cv.width+20 || p[1] < -20 || p[1] > cv.height+20)
+      continue;
+    const col = ANOM_COL[a.kind] || "#fa4d56";
+    const sel = a.id === selAnom;
+    ctx.strokeStyle = col; ctx.lineWidth = sel ? 2.5 : 1.5;
+    ctx.beginPath(); ctx.arc(p[0], p[1], 6, 0, 7); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(p[0]-9, p[1]); ctx.lineTo(p[0]+9, p[1]);
+    ctx.moveTo(p[0], p[1]-9); ctx.lineTo(p[0], p[1]+9); ctx.stroke();
+    ctx.fillStyle = col; ctx.font = "11px 'IBM Plex Mono', monospace";
+    ctx.fillText(`⌖ ${a.kind}${a.signature ? " "+a.signature : ""}`, p[0]+11, p[1]-6);
+  }
+}
+// ---------- unconfirmed candidates (end-of-raster disposition) ----------
+// Hollow amber dashed markers, visually distinct from the FILLED amber
+// queued-target dot. Disposition lives on the sidebar cards (Detection
+// section): "Investigate anyway" promotes through the normal job path
+// (reopening a completed mission); "Dismiss" is terminal. Both route
+// through the mission machine — the UI reflects target.promoted /
+// target.dismissed events that come back. (Ported from v3.)
+function promoteUnconfirmed(i){ send({cmd:"candidate_promote", index:i}); }
+function dismissUnconfirmed(i){ send({cmd:"candidate_dismiss", index:i}); }
+function drawUnconfirmed(){
+  for (const u of UNCONF){
+    if (u.status !== "unconfirmed") continue;
+    const p = toPx(u.lat, u.lon);
+    if (p[0] < -40 || p[0] > cv.width+40 || p[1] < -40 || p[1] > cv.height+40)
+      continue;
+    ctx.save();
+    ctx.strokeStyle = "#f1c21b"; ctx.lineWidth = 1.8; ctx.setLineDash([3,2]);
+    ctx.beginPath(); ctx.arc(p[0], p[1], 7, 0, 7); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#f1c21b"; ctx.font = "12px 'IBM Plex Sans', sans-serif";
+    ctx.fillText(`u#${u.index} ${u.object_id} ${u.hits}/${u.need}`,
+                 p[0]+14, p[1]-8);
+    ctx.restore();
+  }
+}
+function renderAnomList(){
+  const el = document.getElementById("anomlist");
+  if (!el) return;
+  el.innerHTML = simAnoms.length
+    ? simAnoms.map(a => `
+      <div style="display:flex;justify-content:space-between;align-items:center;
+                  padding:3px 0;font-size:12px" class="mono">
+        <span style="color:${ANOM_COL[a.kind] || '#fa4d56'}">⌖ ${a.kind}${
+          a.signature ? " · " + a.signature : ""} · ${a.lat_deg.toFixed(5)}, ${
+          a.lon_deg.toFixed(5)}</span>
+        <a href="#" title="remove this target" style="color:#fa4d56;padding-left:8px"
+           onclick="removeAnom('${a.id}');return false">✕</a>
+      </div>`).join("")
+    : "<span style='color:#6f6f6f;font-size:12px'>none placed</span>";
+}
+function removeAnom(id){ send({cmd:"sim", op:"remove_anomaly", params:{id}}); }
+function onSimAnoms(m){
+  simAnoms = m.anomalies || [];
+  if (selAnom && !simAnoms.some(a => a.id === selAnom)) selAnom = null;
+  renderAnomList();
+}
 function pushSensorData(item){
   if (!item || sensorData.some(d => d.name === item.name)) return;
   sensorData.push(item);
@@ -577,12 +1186,14 @@ const fmtClock = s => {
   return `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
 };
 function resetUIState(){
-  drones = {}; targets = []; mapEvents = []; sensorData = [];
+  drones = {}; targets = []; UNCONF = []; mapEvents = []; sensorData = [];
   hoverEvt = null; plan = null;
+  SMETA = {}; simAnoms = []; selAnom = null;
   log.innerHTML = "";
+  CMDS.list = []; CMDS.byId = {};
   mframes.textContent = "0"; mleg.textContent = "–";
   mdet.textContent = "0/0"; mtargets.textContent = "0";
-  renderTargets();
+  renderTargets(); renderAnomList(); renderCmdLog();
 }
 function openReplayPicker(){
   fetch("/replays").then(r => r.json()).then(j => {
@@ -602,36 +1213,66 @@ function openReplayPicker(){
   }).catch(() => openModalHTML("Mission replays",
     "<span style='color:#fa4d56'>could not list recordings</span>"));
 }
+// Feed a recorded broadcast stream (JSONL text) through the transport bar.
+// Shared by live-recording replay and imported-mission-bundle replay.
+function startReplay(name, text){
+  const msgs = [];
+  for (const line of (text || "").split("\n")){
+    if (!line.trim()) continue;
+    try { const o = JSON.parse(line);
+          if (o && o.ts && o.m) msgs.push(o); } catch (e) {}
+  }
+  if (!msgs.length) return false;
+  closeModal();
+  REPLAY.msgs = msgs;
+  REPLAY.t0 = msgs[0].ts;
+  REPLAY.dur = msgs[msgs.length-1].ts - msgs[0].ts;
+  REPLAY.i = 0; REPLAY.cur = 0;
+  REPLAY.active = true; REPLAY.playing = true;
+  resetUIState();
+  rname.textContent = name;
+  rslider.max = REPLAY.dur; rslider.value = 0;
+  rplay.textContent = "⏸";
+  replaybar.style.display = "";
+  const c = document.getElementById("conn");
+  c.textContent = "replay"; c.className = "cds-tag";
+  c.style.background = "#8a3ffc"; c.style.color = "#fff";
+  if (REPLAY.timer) clearInterval(REPLAY.timer);
+  REPLAY.timer = setInterval(replayTick, 100);
+  return true;
+}
 function loadReplay(name){
   fetch(`/replays/${name}`).then(r => r.text()).then(text => {
-    const msgs = [];
-    for (const line of text.split("\n")){
-      if (!line.trim()) continue;
-      try { const o = JSON.parse(line);
-            if (o && o.ts && o.m) msgs.push(o); } catch (e) {}
-    }
-    if (!msgs.length){
+    if (!startReplay(name, text))
       openModalHTML("Mission replays",
         "<span style='color:#fa4d56'>recording is empty</span>");
-      return;
-    }
-    closeModal();
-    REPLAY.msgs = msgs;
-    REPLAY.t0 = msgs[0].ts;
-    REPLAY.dur = msgs[msgs.length-1].ts - msgs[0].ts;
-    REPLAY.i = 0; REPLAY.cur = 0;
-    REPLAY.active = true; REPLAY.playing = true;
-    resetUIState();
-    rname.textContent = name;
-    rslider.max = REPLAY.dur; rslider.value = 0;
-    rplay.textContent = "⏸";
-    replaybar.style.display = "";
-    const c = document.getElementById("conn");
-    c.textContent = "replay"; c.className = "cds-tag";
-    c.style.background = "#8a3ffc"; c.style.color = "#fff";
-    if (REPLAY.timer) clearInterval(REPLAY.timer);
-    REPLAY.timer = setInterval(replayTick, 100);
   });
+}
+// ---------- mission data bundle: download over NDN / import into sim mode ----
+function downloadMission(){
+  // GET streams a .tar.gz attachment (server runs the NDN fetch-sweep); the
+  // browser saves it. No session -> server uses the current mission id.
+  window.location = "/mission/bundle";
+}
+function importMission(file){
+  const fd = new FormData();
+  fd.append("bundle", file, file.name);
+  openModalHTML("Import mission",
+    `<span style='color:#a8a8a8'>importing ${file.name} …</span>`);
+  fetch("/mission/import", { method:"POST", body:fd })
+    .then(r => r.ok ? r.json() : r.text().then(t => Promise.reject(t)))
+    .then(j => {
+      const started = startReplay(`imported · ${j.session}`, j.jsonl || "");
+      if (!started){
+        const m = j.manifest || {};
+        openModalHTML("Import mission",
+          "<span style='color:#f1c21b'>bundle loaded (" +
+          `${j.artifacts} artifacts) but carries no dashboard recording to ` +
+          "replay. Artifacts still resolve from the bundle.</span>");
+      }
+    })
+    .catch(err => openModalHTML("Import mission",
+      `<span style='color:#fa4d56'>import failed: ${err}</span>`));
 }
 function replayTick(){
   if (!REPLAY.playing) return;
@@ -647,14 +1288,17 @@ function replayTick(){
   }
 }
 function replaySeek(t){
-  // deterministic seek: rebuild state by fast-dispatching from the start
+  // deterministic seek: rebuild state by fast-dispatching from the start.
+  // REPLAY.seeking silences command toasts while replaying the whole history.
   REPLAY.cur = Math.max(0, Math.min(t, REPLAY.dur));
   resetUIState();
   REPLAY.i = 0;
+  REPLAY.seeking = true;
   while (REPLAY.i < REPLAY.msgs.length &&
          REPLAY.msgs[REPLAY.i].ts - REPLAY.t0 <= REPLAY.cur){
     dispatch(REPLAY.msgs[REPLAY.i].m); REPLAY.i++;
   }
+  REPLAY.seeking = false;
   rtime.textContent = `${fmtClock(REPLAY.cur)} / ${fmtClock(REPLAY.dur)}`;
 }
 const tileImgs = new Map();   // "z/x/y" -> Image (img.ok set on load)
@@ -691,24 +1335,41 @@ function drawTiles(){
   // (156543.03 m/px is the z=0 per-pixel ground resolution at the equator)
   const groundMpp = 156543.03392 * Math.cos(view.lat * Math.PI / 180);
   const z = Math.max(3, Math.min(19, Math.round(Math.log2(groundMpp / view.mppx))));
-  const [latN, lonW] = toLL(0, 0), [latS, lonE] = toLL(cv.width, cv.height);
+  // when the map is rotated the viewport's world footprint is the box
+  // around all four projected corners, not just NW/SE
+  const cs = [toLL(0, 0), toLL(cv.width, 0),
+              toLL(0, cv.height), toLL(cv.width, cv.height)];
+  const latN = Math.max(cs[0][0], cs[1][0], cs[2][0], cs[3][0]);
+  const latS = Math.min(cs[0][0], cs[1][0], cs[2][0], cs[3][0]);
+  const lonW = Math.min(cs[0][1], cs[1][1], cs[2][1], cs[3][1]);
+  const lonE = Math.max(cs[0][1], cs[1][1], cs[2][1], cs[3][1]);
   const x0 = Math.floor(lon2tx(lonW, z)), x1 = Math.floor(lon2tx(lonE, z));
   const y0 = Math.floor(lat2ty(latN, z)), y1 = Math.floor(lat2ty(latS, z));
-  if ((x1 - x0 + 1) * (y1 - y0 + 1) > 80) return false; // sanity bound
+  if ((x1 - x0 + 1) * (y1 - y0 + 1) > 160) return false; // sanity bound
   let drew = false;
+  ctx.save();
+  if (view.rot){
+    // tiles are axis-aligned bitmaps: draw them through the unrotated base
+    // projection inside a ctx rotated by -view.rot about the canvas center —
+    // identical to pushing every corner through toPx
+    ctx.translate(cv.width/2, cv.height/2);
+    ctx.rotate(-view.rot);
+    ctx.translate(-cv.width/2, -cv.height/2);
+  }
   for (let x = x0; x <= x1; x++){
     for (let y = y0; y <= y1; y++){
       const img = tileFor(z, x, y);
       if (!img.ok) continue;
       // project the tile's corner coordinates through the same transform
       // as every vector; sub-pixel mercator/ENU divergence at these extents
-      const pNW = toPx(ty2lat(y, z), tx2lon(x, z));
-      const pSE = toPx(ty2lat(y + 1, z), tx2lon(x + 1, z));
+      const pNW = toPxBase(ty2lat(y, z), tx2lon(x, z));
+      const pSE = toPxBase(ty2lat(y + 1, z), tx2lon(x + 1, z));
       ctx.drawImage(img, pNW[0], pNW[1],
                     pSE[0] - pNW[0] + 0.5, pSE[1] - pNW[1] + 0.5);
       drew = true;
     }
   }
+  ctx.restore();
   if (drew){
     // translucent veil keeps the Carbon vectors and labels readable
     ctx.fillStyle = "rgba(13,17,23,0.35)";
@@ -718,6 +1379,10 @@ function drawTiles(){
 }
 
 function draw(){
+  const now = performance.now();
+  const dt = Math.min((now - (draw.last || now)) / 1000, 0.25);
+  draw.last = now;
+  applyFollow(dt);          // ease center/zoom/rotation toward the active mode
   ctx.fillStyle = "#161616"; ctx.fillRect(0,0,cv.width,cv.height);
   const tiled = drawTiles();
   const grid = 10 / view.mppx;
@@ -826,10 +1491,7 @@ function draw(){
   // ease each marker toward its latest telemetry fix: samples arrive at
   // ~3-4 Hz, frames at 60 — exponential smoothing (τ≈0.25 s) turns the
   // stepwise fixes into continuous motion without lying about position
-  // by more than one sample interval
-  const now = performance.now();
-  const dt = Math.min((now - (draw.last || now)) / 1000, 0.25);
-  draw.last = now;
+  // by more than one sample interval (dt computed at the top of draw())
   const k = 1 - Math.exp(-dt / 0.25);
   for (const d of Object.values(drones)){
     if (d.tlat === undefined) continue;
@@ -841,6 +1503,11 @@ function draw(){
       else d.heading += (((d.thead - d.heading + 540) % 360) - 180) * k;
     }
   }
+  // sensor coverage (advertised sensor_meta) + sim ground-truth targets,
+  // under the vehicle markers, above the plan/track layers
+  drawSensors();
+  drawAnoms();
+  drawUnconfirmed();
   for (const [vid, d] of Object.entries(drones)){
     const col = COLORS[vid] || "#f4f4f4";
     if (d.lat === undefined) continue;
@@ -850,15 +1517,36 @@ function draw(){
         i ? ctx.lineTo(p[0],p[1]) : ctx.moveTo(p[0],p[1]); });
       ctx.stroke();
     }
-    const p = toPx(d.lat, d.lon), hd = (d.heading||0) * Math.PI/180;
+    // markers counter-rotate against the map so the triangle keeps showing
+    // true heading on a rotated (heading-up) world
+    const p = toPx(d.lat, d.lon), hd = (d.heading||0) * Math.PI/180 - view.rot;
     ctx.save(); ctx.translate(p[0],p[1]); ctx.rotate(hd);
     ctx.fillStyle = d.stale ? "#525252" : col;
     ctx.beginPath(); ctx.moveTo(0,-9); ctx.lineTo(6,7); ctx.lineTo(-6,7);
     ctx.closePath(); ctx.fill(); ctx.restore();
+    if (MAP.selected.has(vid)){
+      // fleet-framing membership ring (toggled by tile checkbox/shift-click)
+      ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.arc(p[0], p[1], 13, 0, 7); ctx.stroke();
+      ctx.setLineDash([]);
+    }
     ctx.fillStyle = d.stale ? "#525252" : col;
     ctx.font = "12px 'IBM Plex Mono', monospace";
     ctx.fillText(`${vid} ${d.agl?.toFixed(1)??"–"}m${d.stale?" (stale)":""}`,
                  p[0]+10, p[1]+4);
+  }
+  if (view.rot){
+    // compass: which way is north while the map is heading-up
+    const cxp = cv.width - 36, cyp = cv.height - 36;
+    const nx = -Math.sin(view.rot), ny = -Math.cos(view.rot);
+    ctx.fillStyle = "rgba(22,22,22,0.8)";
+    ctx.beginPath(); ctx.arc(cxp, cyp, 16, 0, 7); ctx.fill();
+    ctx.strokeStyle = "#6f6f6f"; ctx.lineWidth = 1; ctx.stroke();
+    ctx.strokeStyle = "#fa4d56"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(cxp, cyp);
+    ctx.lineTo(cxp + nx*11, cyp + ny*11); ctx.stroke();
+    ctx.fillStyle = "#f4f4f4"; ctx.font = "10px 'IBM Plex Mono', monospace";
+    ctx.fillText("N", cxp + nx*11 - 3, cyp + ny*11 - 4);
   }
   requestAnimationFrame(draw);
 }
@@ -869,6 +1557,14 @@ cv.addEventListener("mousemove", e => {
   if (!drag){
     // hit-test the event + data layers for the hover tooltip
     hoverEvt = null;
+    selAnom = null;
+    // emphasize the ground-truth target under the cursor (delete affordance)
+    let bestA = 144;
+    for (const a of simAnoms){
+      const p = toPx(a.lat_deg, a.lon_deg);
+      const dd = (p[0]-e.offsetX)**2 + (p[1]-e.offsetY)**2;
+      if (dd < bestA){ bestA = dd; selAnom = a.id; }
+    }
     let best = 121;  // 11 px pick radius, squared
     if (showEvents){
       for (const ev of mapEvents){
@@ -888,16 +1584,34 @@ cv.addEventListener("mousemove", e => {
     }
     return;
   }
-  view.lon -= (e.offsetX - drag.x) * view.mppx / mPerDegLon(view.lat);
-  view.lat += (e.offsetY - drag.y) * view.mppx / M_PER_DEG_LAT;
+  const dx = e.offsetX - drag.x, dy = e.offsetY - drag.y;
+  if (dx || dy) pauseFollow();   // a real pan suspends follow (pill resumes)
+  // screen delta → world delta through the inverse of the view rotation
+  const c = Math.cos(view.rot), s = Math.sin(view.rot);
+  view.lon -= (dx*c - dy*s) * view.mppx / mPerDegLon(view.lat);
+  view.lat += (dx*s + dy*c) * view.mppx / M_PER_DEG_LAT;
   drag = {x:e.offsetX, y:e.offsetY};
 });
 window.addEventListener("mouseup", () => drag = null);
 cv.addEventListener("wheel", e => {
   e.preventDefault();
+  MAP.auto = false;                        // manual zoom = map interaction
+  if (MAP.mode === "fleet") pauseFollow();  // fleet framing owns the zoom
   view.mppx = Math.min(4, Math.max(0.02, view.mppx * (e.deltaY>0 ? 1.15 : 0.87)));
 }, {passive:false});
 cv.addEventListener("click", e => {
+  if (e.shiftKey){
+    // shift-click a marker toggles its fleet-framing membership
+    let best = 400, hit = null;   // 20 px pick radius, squared
+    for (const [vid, d] of Object.entries(drones)){
+      if (!hasFix(d) || d.lat === undefined) continue;
+      const p = toPx(d.lat, d.lon);
+      const dist = (p[0]-e.offsetX)**2 + (p[1]-e.offsetY)**2;
+      if (dist < best){ best = dist; hit = vid; }
+    }
+    if (hit) toggleFleetSel(hit, !MAP.selected.has(hit));
+    return;
+  }
   if (!picking){
     // clicking a sensor-data point opens its playback/details modal
     if (!showData) return;
@@ -911,6 +1625,16 @@ cv.addEventListener("click", e => {
     return;
   }
   const [lat, lon] = toLL(e.offsetX, e.offsetY);
+  if (picking === "anomaly"){
+    // drop a ground-truth target into the running sim: click → WS sim op →
+    // dashboard AnomalyField; the updated truth returns via sim_anomalies.
+    const params = { kind: akind.value, lat, lon };
+    if (akind.value === "audio") params.loudness_db = 80;
+    else { params.size_m = 4; params.signature = asig.value; }
+    send({cmd:"sim", op:"place_anomaly", params});
+    picking = null; pickhint.style.display = "none";
+    return;
+  }
   if (picking === "capture"){
     // "now" is a here-capture; a picked point implies flying there
     const mode = tmode.value === "now" ? "override" : tmode.value;
@@ -935,15 +1659,29 @@ imageryBtn.onclick = () => {
   imagery = !imagery;
   imageryBtn.textContent = imagery ? "Imagery on" : "Imagery off";
 };
+sensorsBtn.onclick = () => {
+  showSensors = !showSensors;
+  sensorsBtn.textContent = showSensors ? "Sensors on" : "Sensors off";
+  renderLegend();
+};
+// signature is meaningful only for a visual (camera-found) target
+akind.onchange = () => { asig.disabled = akind.value === "audio"; };
+aplace.onclick = () => pick("anomaly", `a ${akind.value} target`);
+aclear.onclick = () => {
+  if (!simAnoms.length || confirm(`Remove all ${simAnoms.length} placed targets?`))
+    send({cmd:"sim", op:"clear_anomalies", params:{}});
+};
 eventsBtn.onclick = () => {
   showEvents = !showEvents;
   if (!showEvents) hoverEvt = null;
   eventsBtn.textContent = showEvents ? "Events on" : "Events off";
+  renderLegend();
 };
 dataBtn.onclick = () => {
   showData = !showData;
   if (!showData) hoverEvt = null;
   dataBtn.textContent = showData ? "Data on" : "Data off";
+  renderLegend();
 };
 modalClose.onclick = closeModal;
 modal.onclick = e => { if (e.target === modal) closeModal(); };
@@ -957,6 +1695,15 @@ capNow.onclick = () =>
     sensor:tsensor.value, mode:"now", duration_s:+tdur.value}});
 capPick.onclick = () => pick("capture",
   `${tsensor.value} capture point for ${tvid.value}`);
+
+// ---------- mission bundle download / import ----------
+downloadBtn.onclick = downloadMission;
+importBtn.onclick = () => importFile.click();
+importFile.onchange = () => {
+  const f = importFile.files && importFile.files[0];
+  if (f) importMission(f);
+  importFile.value = "";  // allow re-importing the same file
+};
 
 // ---------- replay transport ----------
 replayBtn.onclick = openReplayPicker;
@@ -1022,7 +1769,14 @@ function onPreview(m){
   plan = m.plan;
   estimate.textContent =
     `${m.plan.legs.length} legs · ${m.plan.captures.length} captures · ~${Math.round(m.estimate_s)} s`;
-  view.lat = m.plan.center.lat; view.lon = m.plan.center.lon;
+  // centering on the previewed area is a deliberate "look here": stop the
+  // free-mode auto-framing, but don't yank the view out of an armed follow
+  // mode (follow/fixed/fleet keep their own center).
+  MAP.auto = false;
+  if (MAP.mode === "free"){
+    view.lat = m.plan.center.lat; view.lon = m.plan.center.lon;
+  }
+  renderLegend();       // the plan layer is now available to the legend
 }
 
 // the only confirmation in the UI, per spec
@@ -1041,6 +1795,7 @@ function onHello(m){
   VEHICLES = m.vehicles;
   if (m.mission){
     targets = m.mission.targets || [];
+    UNCONF = m.mission.unconfirmed || [];
     setState(m.mission.state || "idle");
     renderTargets();
   }
@@ -1060,7 +1815,13 @@ function onHello(m){
         <span class="cds-tag cds-tag--gray" id="link-${vid}">no link</span>
         <span class="cds-tag cds-tag--gray" id="caps-${vid}" style="display:none"
               title="sensors this vehicle advertises"></span>
-        <span class="cds-tag cds-tag--gray" id="gate-${vid}" style="display:none">disabled</span></div>
+        <span class="cds-tag cds-tag--gray" id="gate-${vid}" style="display:none">disabled</span>
+        <span class="tilemap">
+          <button class="follow-btn" id="follow-${vid}" data-vid="${vid}"
+            title="Center the map on ${vid} and follow it">⌖</button>
+          <label title="Include ${vid} in fleet framing (Fleet mode; shift-click its marker does the same)">
+            <input type="checkbox" class="fsel" id="fsel-${vid}" data-vid="${vid}"> fleet</label>
+        </span></div>
       <div class="kv">
         <span class="k">mode</span><span class="k">AGL</span><span class="k">battery</span>
         <span class="v" id="mode-${vid}">–</span>
@@ -1107,6 +1868,12 @@ function onHello(m){
     };
     en.onclick = flipEnabled;
     en.onkeydown = e => { if (e.key===" "||e.key==="Enter"){ e.preventDefault(); flipEnabled(); } };
+    // map controls: crosshair arms single-follow, checkbox edits the
+    // fleet-framing selection (state survives tile re-renders/replay)
+    document.getElementById(`follow-${vid}`).onclick = () => followVehicle(vid);
+    const fs = document.getElementById(`fsel-${vid}`);
+    fs.checked = MAP.selected.has(vid);
+    fs.onchange = () => toggleFleetSel(vid, fs.checked);
 
     const vp = document.createElement("div");
     vp.className = "cds-tile vidpanel";
@@ -1131,9 +1898,14 @@ function onHello(m){
     tog.onclick = flip;
     tog.onkeydown = e => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); flip(); } };
   });
+  const metas = m.sensor_meta || {};
   if (m.capabilities)
     Object.entries(m.capabilities).forEach(([v, sensors]) =>
-      onCaps({vehicle:v, sensors}));
+      onCaps({vehicle:v, sensors, sensor_meta:metas[v]}));
+  simAnoms = m.anomalies || [];
+  selAnom = null;
+  renderAnomList();
+  syncMapCtl();          // restore follow/fleet button state onto fresh tiles
 }
 function onTelemetry(m){
   const s = m.sample, vid = m.vehicle;
@@ -1207,6 +1979,7 @@ function onVideoFrame(buf){
 const SENSOR_ICON = { camera:"📷", audio:"🎙" };
 function onCaps(m){
   CAPS[m.vehicle] = m.sensors || [];
+  if (m.sensor_meta !== undefined) SMETA[m.vehicle] = m.sensor_meta || {};
   const el = document.getElementById(`caps-${m.vehicle}`);
   if (!el) return;
   el.textContent = (m.sensors || []).map(s => SENSOR_ICON[s] || s).join(" ")
@@ -1235,15 +2008,40 @@ function setState(state){
 // ---------- targets panel ----------
 const TGT_TAG = { queued:"cds-tag--yellow", investigating:"cds-tag--blue",
                   done:"cds-tag--green", failed:"cds-tag--red" };
+// Unconfirmed cards (end-of-raster candidates below confirm_count): amber,
+// "1/2 hits", two dispositions — Investigate anyway (normal queue/dispatch;
+// reopens a completed mission) or Dismiss (terminal). Promoted/dismissed
+// entries leave the panel; a promotion's target card arrives via its own
+// mission.target_found. (Ported from v3.)
+function unconfCardsHTML(){
+  return UNCONF.filter(u => u.status === "unconfirmed").map(u => `
+    <div class="unconf" style="display:flex;justify-content:space-between;
+                align-items:center;margin-bottom:8px">
+      <span><b>u#${u.index} ${u.object_id}</b> · ${(u.confidence*100).toFixed(1)}%
+        <div class="mono">${u.lat.toFixed(6)}, ${u.lon.toFixed(6)}</div>
+        <div>
+          <button class="cds-btn cds-btn--tertiary ubtn"
+            onclick="promoteUnconfirmed(${u.index})"
+            title="Queue the normal investigation jobs for this candidate (reopens the mission if it had completed)">Investigate anyway</button>
+          <button class="cds-btn cds-btn--ghost ubtn"
+            onclick="dismissUnconfirmed(${u.index})"
+            title="Discard this candidate (terminal)">Dismiss</button>
+        </div>
+      </span>
+      <span class="cds-tag cds-tag--yellow"
+        title="seen on ${u.hits} of the ${u.need} frames confirmation needs — the search ended before another pass could see it">${u.hits}/${u.need} hits</span>
+    </div>`).join("");
+}
 function renderTargets(){
   mtargets.textContent = targets.length;
-  if (!targets.length){
+  const unc = unconfCardsHTML();
+  if (!targets.length && !unc){
     detCard.textContent = mstate.textContent === "searching"
       ? "searching…" : "none yet";
     thumb.style.display = "none";
     return;
   }
-  detCard.innerHTML = targets.map(t => `
+  detCard.innerHTML = unc + targets.map(t => `
     <div style="display:flex;justify-content:space-between;align-items:center;
                 margin-bottom:8px">
       <span><b>#${t.index} ${t.object_id}</b> · ${(t.confidence*100).toFixed(1)}%
@@ -1299,16 +2097,36 @@ function onEvent(m){
   if (typeof m.lat === "number" && typeof m.lon === "number"){
     line.style.cursor = "pointer";
     line.title = "click to locate on map";
-    line.onclick = () => { view.lat = m.lat; view.lon = m.lon; };
+    line.onclick = () => gotoLL(m.lat, m.lon);
   }
+  cmdLifecycle(m);   // command/sensor/system kinds → toasts + mini-log
 
   const byIndex = i => targets.find(x => x.index === i);
   const jobOf = (tg, sensor) =>
     (tg.jobs || []).find(j => j.sensor === sensor);
   switch (m.kind){
     case "mission.started":
-      setState("searching"); targets = []; mapEvents = []; hoverEvt = null;
+      setState("searching"); targets = []; UNCONF = [];
+      mapEvents = []; hoverEvt = null;
       renderTargets(); break;
+    case "target.unconfirmed":
+      if (!UNCONF.some(u => u.index === m.index))
+        UNCONF.push({ index:m.index, object_id:m.object_id, hits:m.hits,
+          need:m.need, confidence:m.confidence, lat:m.lat, lon:m.lon,
+          frame:m.frame, status:"unconfirmed" });
+      renderTargets(); break;
+    case "target.promoted": {
+      const u = UNCONF.find(x => x.index === m.index);
+      if (u) u.status = "promoted";     // its target card arrives via found
+      renderTargets();
+      toast(`candidate u#${m.index} promoted — investigating`, "ok");
+      break; }
+    case "target.dismissed": {
+      const u = UNCONF.find(x => x.index === m.index);
+      if (u) u.status = "dismissed";    // terminal
+      renderTargets();
+      toast(`candidate u#${m.index} dismissed`, "ok");
+      break; }
     case "mission.target_found":
       targets.push({ index:m.index, object_id:m.object_id,
         confidence:m.confidence, lat:m.lat, lon:m.lon, frame:m.frame,
@@ -1366,6 +2184,230 @@ function onEvent(m){
       setEnabledUI(m.vehicle, false); break;
   }
 }
+
+// ---------- toggleable map legend (adapts to the layers that are ON) -------
+// Ported from v3, trimmed to v2's layers (vehicles / sensors / plan / data /
+// events / targets). Pure client-side; explains the on-map symbology.
+const LEGEND_KEY = "muas2.legend";
+let legendOn = false;
+try { legendOn = localStorage.getItem(LEGEND_KEY) === "1"; } catch (e) {}
+const sw = (style) => `<span class="sw" style="${style}"></span>`;
+function renderLegend(){
+  legendBtn.textContent = legendOn ? "Legend on" : "Legend";
+  legend.style.display = legendOn ? "" : "none";
+  if (!legendOn) return;
+  const parts = [];
+  parts.push(`<h4>Vehicles</h4>
+    <div class="li">${sw("background:#78a9ff;clip-path:polygon(50% 0,100% 100%,0 100%)")}
+      marker points true heading; label = id + AGL; gray = stale link</div>
+    <div class="li">${sw("border:1px dashed #78a9ff")} dashed ring = in fleet framing</div>
+    <div class="li">${sw("background:#78a9ff22;border:1px solid #78a9ff55")} trail = recent track</div>`);
+  if (showSensors)
+    parts.push(`<h4>Sensors (advertised sensor_meta)</h4>
+      <div class="li">${sw("border:1px dashed #78a9ff;background:#78a9ff1a")}
+        camera: nadir footprint quad or forward D/R/I cone</div>
+      <div class="li">${sw("border:1px dashed #ff832b;border-radius:50%")}
+        audio reach: omni circle or beam lobes</div>`);
+  if (plan)
+    parts.push(`<h4>Search plan</h4>
+      <div class="li">${sw("border:1px solid #f1c21b99")} area boundary</div>
+      <div class="li">${sw("background:#4589ff66")} sweep legs · ${
+        sw("background:#78a9ff")} capture points</div>`);
+  if (showData)
+    parts.push(`<h4>Captured data</h4>
+      <div class="li">${sw("border:1px solid #78a9ff")} camera (hollow = evidence, filled = tasked)</div>
+      <div class="li">${sw("border:1px solid #ff832b;border-radius:50%")} audio clip</div>`);
+  if (showEvents)
+    parts.push(`<h4>Events</h4>
+      <div class="li">${sw("background:#42be65;transform:rotate(45deg)")} diamonds, oldest faintest (hit / candidate / found)</div>`);
+  parts.push(`<h4>Targets</h4>
+    <div class="li">${sw("background:#f1c21b;border-radius:50%")} queued · ${
+      sw("background:#4589ff;border-radius:50%")} investigating · ${
+      sw("background:#42be65;border-radius:50%")} done · ${
+      sw("background:#fa4d56;border-radius:50%")} failed</div>
+    <div class="li">${sw("border:1px solid #fa4d56")} ⌖ = placed ground-truth target (sim)</div>`);
+  legend.innerHTML = parts.join("");
+}
+legendBtn.onclick = () => {
+  legendOn = !legendOn;
+  try { localStorage.setItem(LEGEND_KEY, legendOn ? "1" : "0"); } catch (e) {}
+  renderLegend();
+};
+// ---------- command lifecycle: toasts + the Commands mini-log ------------
+// Every operator command gets a visible lifecycle — sent → acked/refused
+// (with the provider's reason) → timeout — as transient toasts AND a
+// compact per-command log, not just event-log lines. The server already
+// emits command.sent / command.result{ok,error} / command.timeout /
+// command.rejected / sensor.rejected / system.rejected. (Ported from v3.)
+const CMDS = { list: [], byId: {} };   // newest first, capped
+function toast(text, cls){
+  if (REPLAY.active && REPLAY.seeking) return;   // seeks fast-dispatch history
+  const el = document.createElement("div");
+  el.className = "toast" + (cls ? " " + cls : "");
+  el.textContent = text;
+  toasts.appendChild(el);
+  while (toasts.children.length > 5) toasts.firstChild.remove();
+  setTimeout(() => { el.classList.add("out");
+    setTimeout(() => el.remove(), 350); }, 4000);
+}
+// A short-lived command that is still in flight can be halted (hold) — the
+// closest honest "stop this" v2 offers without an RTL.
+function abortableOf(c){
+  if (c.state !== "sent" || !c.vehicle) return null;
+  if (["takeoff", "rtl", "land", "hold"].includes(c.command)) return "halt";
+  return null;
+}
+function renderCmdLog(){
+  cmdlog.innerHTML = CMDS.list.map(c => {
+    const cls = c.state === "refused" || c.state === "failed" ? "err"
+      : c.state === "timeout" ? "warn"
+      : c.state === "acked" || c.state === "done" ? "ok" : "";
+    const when = new Date(c.t * 1000).toLocaleTimeString();
+    const ab = abortableOf(c);
+    const x = ab ? `<button class="xabort" data-vid="${c.vehicle}"` +
+      ` title="Halt ${c.vehicle} (hold — no RTL)">✕</button>` : "";
+    return `<div class="n ${cls}">${x}<span class="t">${when}</span>` +
+      `${c.vehicle || ""} ${c.command} <span class="st">${c.state}</span>` +
+      `${c.detail ? " — " + c.detail : ""}</div>`;
+  }).join("") || "<span style='color:#6f6f6f;font-size:12px'>no commands yet</span>";
+}
+cmdlog.addEventListener("click", e => {   // one delegated handler survives rebuilds
+  const b = e.target.closest(".xabort");
+  if (b) send({cmd:"task_abort", vehicle:b.dataset.vid, label:"halt"});
+});
+function cmdUpsert(id, fields){
+  let c = CMDS.byId[id];
+  if (!c){
+    c = { id, vehicle:"", command:"", state:"sent", detail:"", t:0 };
+    CMDS.byId[id] = c; CMDS.list.unshift(c);
+    if (CMDS.list.length > 40){ delete CMDS.byId[CMDS.list.pop().id]; }
+  }
+  Object.assign(c, fields);
+  renderCmdLog();
+  return c;
+}
+function cmdLifecycle(m){
+  const idOf = () => m.request ||
+    `${m.vehicle || "?"}/${m.command || m.sensor || "?"}`;
+  switch (m.kind){
+    case "command.sent":
+      cmdUpsert(idOf(), { vehicle:m.vehicle, command:m.command,
+        state:"sent", t:m.t }); break;
+    case "command.result": {
+      const c = cmdUpsert(idOf(), { vehicle:m.vehicle, command:m.command,
+        state: m.ok ? "acked" : "refused", detail: m.error || "", t:m.t });
+      toast(`${c.vehicle} ${c.command} ${m.ok ? "acked" : "refused"}` +
+        (c.detail ? ` — ${c.detail}` : ""), m.ok ? "ok" : "err");
+      break; }
+    case "command.timeout": {
+      const c = cmdUpsert(idOf(), { vehicle:m.vehicle, command:m.command,
+        state:"timeout", t:m.t });
+      toast(`${c.vehicle} ${c.command} timed out`, "warn"); break; }
+    case "command.rejected":
+      cmdUpsert(idOf(), { vehicle:m.vehicle, command:m.command,
+        state:"refused", detail:m.reason || "", t:m.t });
+      toast(`${m.vehicle} ${m.command} refused — ${m.reason || ""}`, "err");
+      break;
+    case "sensor.rejected":
+      cmdUpsert(`${m.vehicle}/sensor`, { vehicle:m.vehicle, command:"sensor",
+        state:"refused", detail:m.reason || "", t:m.t });
+      toast(`${m.vehicle} sensor refused — ${m.reason || ""}`, "err");
+      break;
+    case "system.rejected":
+      cmdUpsert(`sys/${m.vehicle}`, { vehicle:m.vehicle, command:"shutdown",
+        state:"refused", detail:m.reason || "", t:m.t });
+      toast(`${m.vehicle} shutdown refused — ${m.reason || ""}`, "err");
+      break;
+  }
+}
+
+// ---------- resizable / collapsible side panels (ported from v3) ---------
+const PANEL_KEY = "muas2.panels";
+const PANELS = { side: { w:336, open:true }, right: { w:288, open:true } };
+(function loadPanels(){
+  try {
+    const s = JSON.parse(localStorage.getItem(PANEL_KEY) || "{}");
+    for (const k of ["side","right"]){
+      if (s[k]){
+        if (typeof s[k].w === "number") PANELS[k].w = s[k].w;
+        if (typeof s[k].open === "boolean") PANELS[k].open = s[k].open;
+      }
+    }
+  } catch (e) {}
+})();
+function savePanels(){
+  try { localStorage.setItem(PANEL_KEY, JSON.stringify(PANELS)); } catch (e) {}
+}
+const clampW = w => Math.max(220, Math.min(560, w));
+function applyPanels(){
+  const b = document.body.style;
+  b.setProperty("--side-w", PANELS.side.open ? `${clampW(PANELS.side.w)}px` : "0px");
+  b.setProperty("--right-w", PANELS.right.open ? `${clampW(PANELS.right.w)}px` : "0px");
+  sidebar.style.display = PANELS.side.open ? "" : "none";
+  right.style.display = PANELS.right.open ? "" : "none";
+  sideGrip.style.display = PANELS.side.open ? "" : "none";
+  rightGrip.style.display = PANELS.right.open ? "" : "none";
+  sideTab.textContent = PANELS.side.open ? "◂" : "▸";
+  rightTab.textContent = PANELS.right.open ? "▸" : "◂";
+  resize();          // the map canvas absorbs the width change
+}
+sideTab.onclick = () => { PANELS.side.open = !PANELS.side.open;
+  savePanels(); applyPanels(); };
+rightTab.onclick = () => { PANELS.right.open = !PANELS.right.open;
+  savePanels(); applyPanels(); };
+function gripDrag(grip, which){
+  grip.addEventListener("mousedown", e => {
+    e.preventDefault();
+    grip.classList.add("dragging");
+    const move = ev => {
+      PANELS[which].w = clampW(which === "side"
+        ? ev.clientX : window.innerWidth - ev.clientX);
+      applyPanels();
+    };
+    const up = () => {
+      grip.classList.remove("dragging");
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      savePanels();
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  });
+}
+gripDrag(sideGrip, "side");
+gripDrag(rightGrip, "right");
+// collapsible tool sections: each panel h3 becomes a toggle wrapping its
+// following siblings in a .secbody; open/closed state persists per header.
+function makeCollapsible(panel, panelKey){
+  let body = null;
+  for (const el of [...panel.children]){
+    if (el.tagName === "H3"){
+      body = document.createElement("div");
+      body.className = "secbody";
+      el.after(body);
+      el.classList.add("sech");
+      const chev = document.createElement("span");
+      chev.className = "chev";
+      el.prepend(chev);
+      const key = `muas2.sec.${panelKey}.${el.textContent.trim()}`;
+      const bodyEl = body;
+      let open = true;
+      try { open = localStorage.getItem(key) !== "0"; } catch (e) {}
+      const apply = () => { bodyEl.style.display = open ? "" : "none";
+        chev.textContent = open ? "▾ " : "▸ "; };
+      apply();
+      el.onclick = () => { open = !open; apply();
+        try { localStorage.setItem(key, open ? "1" : "0"); } catch (e) {} };
+    } else if (body) body.appendChild(el);
+  }
+}
+makeCollapsible(sidebar, "side");
+makeCollapsible(right, "right");
+applyPanels();
+
+renderCmdLog();
+renderLegend();
+syncMapCtl();          // reflect any restored map mode/orient before first hello
 
 resize(); connect(); draw();
 setTimeout(preview, 800);

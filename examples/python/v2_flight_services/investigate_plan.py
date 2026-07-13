@@ -52,6 +52,99 @@ DEFAULT_UAS_IPBRC_ROOT = Path(
 CAPTURE_COMMAND_KIND = "capture_still"
 DEFAULT_ORBIT_SPEED_M_S = 3.0
 
+# Flat-earth constant shared with run_drone_agent (v2 uses 111 111 m/deg).
+_EARTH_M_PER_DEG_LAT = 111_111.0
+# Approach/climb-out standoff as a multiple of the dip radius: the vehicle
+# lines up 3R behind the target and climbs out 3R past it, so the low pass
+# is a straight run through the target rather than a hover-and-drop. Mirror
+# of v3 uas-flight `FLYOVER_APPROACH_FACTOR` (patterns.rs).
+FLYOVER_APPROACH_FACTOR = 3.0
+
+
+@dataclass(frozen=True)
+class FlyoverWaypoint:
+    """One waypoint of the acoustic dip-flyover profile.
+
+    Tagged with its `phase` (approach / dip_entry / dip_center / dip_exit /
+    climb_out), the `pass_index` it belongs to, and the compass `bearing`
+    of that pass's run — parity with v3 uas-flight `flyover_targets`, whose
+    MotionTargets carry the same phase/pass/bearing tags.
+    """
+
+    lat_deg: float
+    lon_deg: float
+    agl_m: float
+    phase: str
+    pass_index: int
+    bearing_deg: float
+
+
+def _offset_point(
+    lat: float, lon: float, along_m: float, bearing_deg: float
+) -> tuple[float, float]:
+    """Point `along_m` metres from (lat, lon) along `bearing_deg` (compass)."""
+
+    import math
+
+    theta = math.radians(bearing_deg)
+    dn = along_m * math.cos(theta)
+    de = along_m * math.sin(theta)
+    m_per_deg_lon = _EARTH_M_PER_DEG_LAT * max(math.cos(math.radians(lat)), 1e-6)
+    return (
+        lat + dn / _EARTH_M_PER_DEG_LAT,
+        lon + de / m_per_deg_lon,
+    )
+
+
+def build_flyover_waypoints(
+    *,
+    target_lat: float,
+    target_lon: float,
+    approach_bearing_deg: float,
+    cruise_agl_m: float,
+    dip_agl_m: float,
+    radius_m: float,
+    passes: int,
+) -> list[FlyoverWaypoint]:
+    """Acoustic dip-flyover waypoint list (backport of v3 `flyover_targets`).
+
+    Each pass is five waypoints along its run bearing: approach (-3R, cruise
+    AGL) -> dip_entry (-R, dip AGL) -> dip_center (0, directly over the
+    target, dip AGL, the lowest and only capture point) -> dip_exit (+R, dip
+    AGL) -> climb_out (+3R, cruise AGL). `passes` repeats the profile, each
+    pass rotated 90° (`cross_axis`) from the previous so an omnidirectional
+    mic hears the target from crossed baselines. The dip AGL is the caller's
+    commandable floor, so the pass is as low as the fleet guard allows.
+    """
+
+    radius = max(float(radius_m), 2.0)
+    n = max(int(passes), 1)
+    stand = FLYOVER_APPROACH_FACTOR * radius
+    # (along-track offset metres, AGL, phase) for one pass, front to back.
+    legs = [
+        (-stand, cruise_agl_m, "approach"),
+        (-radius, dip_agl_m, "dip_entry"),
+        (0.0, dip_agl_m, "dip_center"),
+        (radius, dip_agl_m, "dip_exit"),
+        (stand, cruise_agl_m, "climb_out"),
+    ]
+    waypoints: list[FlyoverWaypoint] = []
+    for p in range(n):
+        bearing = (float(approach_bearing_deg) + 90.0 * p) % 360.0
+        for along_m, agl, phase in legs:
+            lat, lon = _offset_point(target_lat, target_lon, along_m, bearing)
+            waypoints.append(
+                FlyoverWaypoint(
+                    lat_deg=lat,
+                    lon_deg=lon,
+                    agl_m=float(agl),
+                    phase=phase,
+                    pass_index=p,
+                    bearing_deg=bearing,
+                )
+            )
+    return waypoints
+
 
 def add_flight_path(root: Path | None = None) -> None:
     """Make `relay.flight` importable from a UAS-IPBRC checkout."""

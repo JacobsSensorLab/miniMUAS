@@ -1,14 +1,20 @@
 name /muas/v2/controller/NDNSF/ControllerPolicy/v1
 
 ; ---------------------------------------------------------------------------
-; miniMUAS v2 deployment controller policy — 4-node fleet.
+; Simulation-fleet controller policy (superset of config/v2_minimuas.policies).
 ;
-; Authorizes: gcs (perception), wuas-01 (raster search + camera), iuas-01
-; (camera close-inspection), and iuas-02 (the USB-microphone airframe added
-; with the mic node). Every vehicle is a full flight/sensor provider and the
-; GCS user may task each one — including sensor/capture on both IUAS, which is
-; the audio-interrogation path for iuas-02. Verified end-to-end in the
-; multi-node sim (sim/fleet.policies mirrors this).
+; The stock v2_minimuas.policies only authorizes iuas-01 and wuas-01 and does
+; not let the GCS user task any IUAS sensor/capture. The multi-node sim adds a
+; second IUAS (iuas-02, the USB-microphone airframe) and drives audio
+; interrogations from the dashboard, so this file additionally grants:
+;   * iuas-02 as a full flight/sensor provider
+;   * the GCS user the right to investigate/task iuas-02 and to run
+;     sensor/capture on either IUAS (the audio-interrogation path)
+;
+; It is loaded via `run_ndnsf_controller.py --policy <this file>` (launch_fleet
+; passes it automatically). Nothing here edits the deployment policy; the real
+; fleet still ships config/v2_minimuas.policies. Keep the controller name line
+; above identical to the stock policy or the ServiceController will reject it.
 ; ---------------------------------------------------------------------------
 
 provider-policies

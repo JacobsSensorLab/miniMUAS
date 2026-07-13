@@ -55,6 +55,8 @@ from contracts import (
     TelemetrySample,
     VideoControlRequest,
     VideoStatus,
+    default_audio_meta,
+    default_camera_meta,
     gps_time_ns,
     mission_frame_name,
     mission_sensor_name,
@@ -82,6 +84,8 @@ from ndnsf_runtime import (
     optional_local_nfd,
     print_json,
     provider_kwargs,
+    start_journal_publisher,
+    start_nfd_counter_scrape,
 )
 
 EARTH_M_PER_DEG_LAT = 111_111.0
@@ -312,9 +316,86 @@ def fly_orbit(
     return "completed"
 
 
+def fly_flyover(
+    flight,
+    *,
+    waypoints,
+    speed_m_s: float,
+    abort: threading.Event,
+    on_dip_center=None,
+) -> str:
+    """Fly the acoustic dip-flyover waypoint list (backport of v3's
+    `fly_flyover` / uas-flight `flyover_targets`).
+
+    An audio target is interrogated with a low straight pass through the
+    point, NOT a camera-style carrot orbit: the vehicle lines up behind the
+    target at cruise AGL, descends to the commandable floor for a run
+    directly over it, then climbs out — repeated for each pass, rotating
+    90° between passes. Waypoints are flown with the same guided-cruise
+    discipline as the raster/orbit legs: a target re-sent every 2 s, a 2.5 m
+    arrival tolerance, and a per-leg deadline that "moves on" rather than
+    hovering a leg the vehicle cannot make (so one blocked leg never strands
+    the pass). The de-confliction altitude overlay rides underneath every
+    `goto` exactly as it does for the orbit.
+
+    v3 left the acoustic capture a stub (its WaypointFlight drops the phase
+    tags and never fires the mic). Here `on_dip_center(waypoint)` is invoked
+    at each dip_center the vehicle actually reaches — that is where the WAV
+    is recorded and published. Returns "completed", "aborted", or "timeout".
+    """
+
+    speed = min(max(float(speed_m_s), 0.5), 8.0)
+    tol_m = 2.5
+    path_len = 0.0
+    for a, b in zip(waypoints, waypoints[1:]):
+        path_len += _dist_m(a.lat_deg, a.lon_deg, b.lat_deg, b.lon_deg)
+    budget = time.monotonic() + 3.0 * path_len / speed + 90.0
+    for wp in waypoints:
+        here = flight.position()
+        leg_deadline = (
+            time.monotonic()
+            + max(_dist_m(here[0], here[1], wp.lat_deg, wp.lon_deg), 5.0)
+            / (0.5 * speed)
+            + 45.0
+        )
+        next_send = 0.0
+        arrived = False
+        while True:
+            if abort.is_set():
+                return "aborted"
+            now = time.monotonic()
+            if now > budget:
+                return "timeout"
+            if flight.at_target(wp.lat_deg, wp.lon_deg, wp.agl_m, tol_m=tol_m):
+                arrived = True
+                break
+            if now > leg_deadline:
+                # never hover a leg we cannot make — advance like the raster
+                break
+            if now >= next_send:
+                flight.goto(
+                    wp.lat_deg, wp.lon_deg, wp.agl_m, yaw_deg=wp.bearing_deg
+                )
+                next_send = now + 2.0
+            time.sleep(0.2)
+        if arrived and wp.phase == "dip_center" and on_dip_center is not None:
+            on_dip_center(wp)
+    return "completed"
+
+
 # ---------------------------------------------------------------------------
 # Fleet coordination: separation by communication
 # ---------------------------------------------------------------------------
+
+# Below ArduCopter's hover noise (~±0.5 m): a maneuver whose own-side bias is
+# smaller than this never engages — it would churn the altitude controller
+# without buying separation. The peer's half (or its uncooperative escalation)
+# carries the pair. This is the guard against the hover-oscillation limit cycle.
+MIN_ENGAGE_BIAS_M = 0.75
+# The merged altitude bias handed to the flight overlay is clamped to this
+# band so stacked conflicts can't command an unbounded climb/descent.
+ALT_BIAS_MIN_M = -4.0
+ALT_BIAS_MAX_M = 8.0
 
 
 class PeerGuard:
@@ -385,6 +466,10 @@ class PeerGuard:
         #   {mode: coop-pending|coop|unco, bias, started, clear_since,
         #    hold_s, expires}
         self._active: dict[str, dict] = {}
+        # GPS time (ns) at which we last released a maneuver against each peer.
+        # A peer's cached coord entry is only adopted if it is NEWER than this,
+        # so a stale "coop" entry can't ping-pong a pair we just settled.
+        self._released_ns: dict[str, int] = {}
         self._stop = threading.Event()
         self._thread = None
 
@@ -425,6 +510,8 @@ class PeerGuard:
             # when several conflicts disagree, climbing wins: descending
             # into one conflict to solve another is never the answer
             bias = max(ups) if ups else min(biases)
+        # keep stacked conflicts from commanding an unbounded excursion
+        bias = max(ALT_BIAS_MIN_M, min(ALT_BIAS_MAX_M, bias))
         if hasattr(self.flight, "set_alt_bias"):
             self.flight.set_alt_bias(bias)
         entries = [
@@ -457,6 +544,9 @@ class PeerGuard:
 
     def _release(self, peer: str, why: str) -> None:
         if self._active.pop(peer, None) is not None:
+            # stamp the release so a stale peer coord entry can't immediately
+            # re-adopt us into the maneuver we just cleared (see _adopt_remote)
+            self._released_ns[peer] = gps_time_ns()
             self._apply()
             self.on_event(kind="coord.clear", peer=peer, reason=why)
 
@@ -518,8 +608,16 @@ class PeerGuard:
             self.vehicle_id, own[2], peer, sample.get("agl_m", 0.0),
             envelope=self.envelope, floor_agl_m=self.floor_agl_m,
         )
+        own_bias = plan.biases[self.vehicle_id]
+        if abs(own_bias) < MIN_ENGAGE_BIAS_M:
+            # our share of the separation is below hover noise (e.g. we are the
+            # descender pinned near the floor): don't churn the controller —
+            # the peer's larger half, or its uncooperative escalation, opens
+            # the full gap. Re-evaluated every poll, so it engages if geometry
+            # later hands us a real share.
+            return
         self._engage(
-            peer, "coop-pending", plan.biases[self.vehicle_id],
+            peer, "coop-pending", own_bias,
             plan.hold_s, plan.reason,
         )
 
@@ -531,6 +629,12 @@ class PeerGuard:
         for entry in entries:
             if entry.get("to_id") != self.vehicle_id:
                 continue
+            # only adopt an entry that is NEWER than our last release against
+            # this peer — otherwise a stale cached "coop" entry re-engages a
+            # pair we just settled and the two ping-pong forever. (Fresh CPA
+            # violations still re-engage ungated via _on_conflict.)
+            if entry.get("gps_time_ns", 0) <= self._released_ns.get(peer, 0):
+                continue
             own_pos = self.flight.position()
             sample = self._peers[peer]["sample"]
             plan = self.dc.cooperative_plan(
@@ -538,8 +642,12 @@ class PeerGuard:
                 peer, sample.get("agl_m", 0.0),
                 envelope=self.envelope, floor_agl_m=self.floor_agl_m,
             )
+            own_bias = plan.biases[self.vehicle_id]
+            if abs(own_bias) < MIN_ENGAGE_BIAS_M:
+                # sub-hover-noise share: let the peer carry it (see _on_conflict)
+                return
             self._engage(
-                peer, "coop", plan.biases[self.vehicle_id],
+                peer, "coop", own_bias,
                 plan.hold_s, "adopted peer-initiated maneuver",
             )
             return
@@ -558,6 +666,9 @@ class PeerGuard:
                 pass
             if confirmed:
                 entry["mode"] = "coop"
+                # re-emit so the CONFIRMED state is visible on our coord/status
+                # wire — a peer adopting us must see "coop", not stale "pending"
+                self._apply()
                 self.on_event(kind="coord.confirmed", peer=peer)
             elif now - entry["started"] > self.grace_s:
                 # peer never joined: assume it holds course, take the
@@ -1013,6 +1124,34 @@ class MavlinkFlightBackend:
         except Exception:
             return None
 
+    def _mode_string(self) -> str:
+        """Human ArduCopter flight mode from the cached HEARTBEAT.
+
+        The v3 agent reports the flight mode in telemetry
+        (`muas-agent/src/telemetry.rs` build_sample copies `t.mode`, filled
+        by the mavlink backend from the heartbeat's custom_mode). The old v2
+        code read `getattr(inner, "mode", "")`, but MavlinkDroneLink exposes
+        no such attribute — only the integer `_last_heartbeat_custom_mode`,
+        refreshed on every telemetry drain (each `position()` call). Resolve
+        that integer to a name through pymavlink's per-vehicle
+        `mode_mapping()` (name->number; e.g. STABILIZE=0, AUTO=3, GUIDED=4,
+        RTL=6, LAND=9). The link's cached custom_mode is sysid-filtered, so
+        (unlike `conn.flightmode`) it is never stomped by another GCS's
+        heartbeat on the shared mavproxy fan-out. Empty string when the
+        mapping is not yet known so the dashboard cell shows its "-" default.
+        """
+        inner = self._link._inner
+        try:
+            conn = inner._conn
+            custom = int(getattr(inner, "_last_heartbeat_custom_mode", 0))
+            mapping = conn.mode_mapping() or {}
+            for name, number in mapping.items():
+                if int(number) == custom:
+                    return str(name)
+        except Exception:
+            pass
+        return ""
+
     def rangefinder_m(self) -> float:
         """Downward rangefinder AGL, metres; -1 when not fitted/no data.
 
@@ -1074,7 +1213,7 @@ class MavlinkFlightBackend:
             "agl_m": agl,
             "heading_deg": self.heading() or 0.0,
             "armed": bool(self._link.is_armed()),
-            "mode": str(getattr(inner, "mode", "") or ""),
+            "mode": self._mode_string(),
             "battery_pct": battery_pct,
             "rangefinder_m": rf,
             "agl_alarm": bool(alarm),
@@ -1261,6 +1400,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--search-frame-height", type=int, default=400)
     parser.add_argument("--search-frame-quality", type=int, default=80)
     parser.add_argument(
+        "--cam-hfov-deg", type=float, default=70.0,
+        help="Camera horizontal FOV advertised in the sensor_meta capability "
+        "key (the dashboard's coverage layer renders the ground footprint "
+        "from this; matches the GCS nadir-projection default of 70 deg).",
+    )
+    parser.add_argument(
         "--max-range-m", type=float, default=300.0,
         help="Field-safety guard: reject search areas / investigate "
         "targets whose reference point is farther than this from the "
@@ -1340,6 +1485,8 @@ def main() -> int:
                 "agent.journal.disabled", dir=args.log_dir, error=str(exc)
             )
 
+    start_nfd_counter_scrape(args.nfd_metrics_interval, enabled=args.nfd_metrics)
+
     # ---- camera + flight backend -----------------------------------------
     try:
         camera = CameraHub(args.camera)
@@ -1392,6 +1539,10 @@ def main() -> int:
     min_agl = 3.5 if flight.source == "mavlink" else 0.5
 
     add_ndnsf_path(args.ndnsf_root)
+    # Serve this vehicle's agent journal (events + metrics + logs) over NDN
+    # under /muas/v2/<vehicle_id>/journal/<session> so the dashboard's mission
+    # bundle sweep can pull the whole flight record without SSH.
+    start_journal_publisher(vehicle_id, args.session)
     from ndnsf import AckDecision, ServiceProvider, ServiceResponse
 
     provider = ServiceProvider(**provider_kwargs(args, prefix, ""))
@@ -2198,12 +2349,32 @@ def main() -> int:
                     quality=args.search_frame_quality,
                 )
                 if jpeg is None:
+                    # Synthetic-camera path: still tag the capture pose, same
+                    # as the real-jpeg branch below. Without lat/lon/agl the
+                    # GCS geo-projects every detection off a (0,0) placeholder
+                    # pose, landing the estimate at ~null island — thousands
+                    # of km from the fleet — which trips the IUAS investigate
+                    # max-range guard so a dispatched investigation always
+                    # fails and the IUAS never take off.
                     payload_bytes = camera.capture_frame_payload(
                         mission_id=request.mission_id,
                         vehicle_id=vehicle_id,
                         sensor_id="bottom",
                         gps_time_ns=ts,
-                        metadata={"heading_deg": f"{heading:.1f}"},
+                        metadata={
+                            "lat_deg": f"{here[0]:.7f}",
+                            "lon_deg": f"{here[1]:.7f}",
+                            "agl_m": f"{here[2]:.2f}",
+                            "heading_deg": f"{heading:.1f}",
+                            **(
+                                {
+                                    "roll_deg": f"{attitude[0]:.1f}",
+                                    "pitch_deg": f"{attitude[1]:.1f}",
+                                }
+                                if attitude is not None
+                                else {}
+                            ),
+                        },
                     )
                 else:
                     payload_bytes = build_frame_bytes(
@@ -2336,12 +2507,32 @@ def main() -> int:
                     status=False,
                     message=f"target {range_m:.0f}m away > {args.max_range_m:.0f}m guard",
                 )
-            return AckDecision(status=True, message="carrot-orbit")
+            pattern = _select_investigate_pattern(request)
+            return AckDecision(
+                status=True,
+                message="dip-flyover" if pattern == "flyover" else "carrot-orbit",
+            )
 
         def _investigate_sensors(request: InvestigatePointRequest) -> set:
             # legacy requesters say "front" for the camera
             plan = request.sensor_plan or ["camera"]
             return {"camera" if s in ("front", "camera") else s for s in plan}
+
+        def _select_investigate_pattern(request: InvestigatePointRequest) -> str:
+            """Pick the flight geometry (v3 `select_investigate_pattern`).
+
+            An audio-only interrogation on an audio-capable airframe (the
+            iuas-02 mic) flies the acoustic DIP FLYOVER; everything else —
+            any camera work — keeps the carrot orbit. The choice keys on the
+            vehicle's own sensors so a camera IUAS never dips.
+            """
+            wanted = _investigate_sensors(request)
+            vehicle = agent_sensors()
+            audio_only = bool(wanted) and wanted <= {"audio"}
+            has_audio = audio_src is not None and "audio" in vehicle
+            if audio_only and has_audio:
+                return "flyover"
+            return "orbit"
 
         def _run_investigate(request: InvestigatePointRequest):
             """Fly the investigation directly on the agent's flight backend.
@@ -2356,15 +2547,158 @@ def main() -> int:
             """
             import types
             from contracts import FlightTaskResult, SensorArtifact
+            from investigate_plan import build_flyover_waypoints
 
             started = gps_time_ns()
             tgt = request.target
             agl = request.approach_alt_m
             speed = request.constraints.max_speed_mps or 3.0
+            pattern = _select_investigate_pattern(request)
+            task_id = f"{vehicle_id}-investigate-{request.source_detection_id}"
             flight.set_cruise_speed(speed)
+
+            artifacts: list[SensorArtifact] = []
+            payloads: list[bytes] = []
+            sensor_errors: list[str] = []
+
+            def _capture_audio(seq_index: int, phase: str) -> bool:
+                """Record + stage a WAV at the CURRENT position and pose.
+
+                This is where the acoustic interrogation actually fires. v3
+                left the flyover's capture a stub (its WaypointFlight drops
+                the phase tags and never records); here it is driven from the
+                dip-center callback, so the mic is hot directly over the
+                target at the lowest point of the pass.
+                """
+                if audio_src is None:
+                    sensor_errors.append("audio: not fitted")
+                    return False
+                here = flight.position()
+                if args.audio_range_m > 0 and _dist_m(
+                    here[0], here[1], tgt.lat_deg, tgt.lon_deg,
+                ) > args.audio_range_m:
+                    sensor_errors.append(
+                        f"audio: outside {args.audio_range_m:.0f} m "
+                        "listen range of the target"
+                    )
+                    return False
+                try:
+                    wav = audio_src.record_wav(args.audio_seconds)
+                except Exception as exc:
+                    sensor_errors.append(f"audio: {exc}")
+                    return False
+                artifact_time = gps_time_ns()
+                heading = flight.heading() if hasattr(flight, "heading") else None
+                pose = Pose(
+                    position=GeoPoint(
+                        lat_deg=here[0], lon_deg=here[1], alt_m=here[2]
+                    ),
+                    yaw_deg=heading if heading is not None else 0.0,
+                )
+                payloads.append(build_frame_bytes(
+                    wav,
+                    mission_id=request.mission_id,
+                    vehicle_id=vehicle_id,
+                    sensor_id="mic",
+                    gps_time_ns=artifact_time,
+                    kind="audio/wav",
+                    metadata={
+                        "target_id": request.source_detection_id,
+                        "lat_deg": f"{here[0]:.7f}",
+                        "lon_deg": f"{here[1]:.7f}",
+                        "agl_m": f"{here[2]:.2f}",
+                        "phase": phase,
+                        "seconds": f"{args.audio_seconds:g}",
+                    },
+                ))
+                artifacts.append(SensorArtifact(
+                    data_name=mission_sensor_name(
+                        request.mission_id, vehicle_id, "mic",
+                        "audio", artifact_time, seq_index,
+                    ),
+                    kind="audio/wav",
+                    gps_time_ns=artifact_time,
+                    pose=pose,
+                    metadata={
+                        "target_id": request.source_detection_id,
+                        "phase": phase,
+                    },
+                ))
+                print_json(
+                    "agent.investigate.audio_captured",
+                    task_id=task_id, phase=phase,
+                    lat_deg=round(here[0], 7), lon_deg=round(here[1], 7),
+                    agl_m=round(here[2], 2), seconds=args.audio_seconds,
+                )
+                return True
+
             if not flight.ensure_airborne(agl):
-                status, note = "failed", "could not reach approach altitude"
+                status, note, mode = (
+                    "failed", "could not reach approach altitude", pattern
+                )
+            elif pattern == "flyover":
+                mode = "dip-flyover"
+                # Approach along the vehicle's natural inbound bearing; dip to
+                # the commandable floor (min_agl, already the goto floor and
+                # the fleet AGL guard) for a low run directly over the target.
+                here = flight.position()
+                approach = math.degrees(math.atan2(
+                    (tgt.lon_deg - here[1]) * _m_per_deg_lon(here[0]),
+                    (tgt.lat_deg - here[0]) * EARTH_M_PER_DEG_LAT,
+                )) % 360.0
+                passes = max(int(round(request.circle_count)), 1)
+                dip_agl = min_agl
+                waypoints = build_flyover_waypoints(
+                    target_lat=tgt.lat_deg,
+                    target_lon=tgt.lon_deg,
+                    approach_bearing_deg=approach,
+                    cruise_agl_m=agl,
+                    dip_agl_m=dip_agl,
+                    radius_m=request.circle_radius_m,
+                    passes=passes,
+                )
+                print_json(
+                    "agent.investigate.flyover",
+                    task_id=task_id, waypoints=len(waypoints), passes=passes,
+                    cruise_agl_m=agl, dip_agl_m=dip_agl,
+                    radius_m=request.circle_radius_m,
+                    approach_bearing_deg=round(approach, 1),
+                )
+                dip_seq = {"n": 0}
+
+                def _on_dip_center(wp) -> None:
+                    dip_seq["n"] += 1
+                    print_json(
+                        "agent.investigate.dip_center",
+                        task_id=task_id, pass_index=wp.pass_index,
+                        agl_m=round(wp.agl_m, 2),
+                        lat_deg=round(wp.lat_deg, 7),
+                        lon_deg=round(wp.lon_deg, 7),
+                        bearing_deg=round(wp.bearing_deg, 1),
+                    )
+                    _capture_audio(dip_seq["n"], "dip_center")
+
+                fly = fly_flyover(
+                    flight,
+                    waypoints=waypoints,
+                    speed_m_s=speed,
+                    abort=abort,
+                    on_dip_center=_on_dip_center,
+                )
+                status = {
+                    "completed": "completed", "aborted": "aborted"
+                }.get(fly, "failed")
+                note = "dip-flyover" if fly == "completed" else f"dip-flyover: {fly}"
+                # Captures already fired at the dip centers; no post-flight
+                # sensor loop for this pattern. Evidence-or-fail: a pass that
+                # never reached a dip center produced nothing.
+                if status != "failed" and not artifacts:
+                    status = "failed"
+                    note = f"{note}; no audio captured at dip center"
+                if sensor_errors:
+                    note = f"{note}; " + "; ".join(sensor_errors)
             else:
+                mode = "carrot-orbit"
                 orbit = fly_orbit(
                     flight,
                     center_lat=tgt.lat_deg,
@@ -2382,105 +2716,62 @@ def main() -> int:
                     "carrot-orbit" if orbit == "completed"
                     else f"carrot-orbit: {orbit}"
                 )
-            # capture per requested sensor from the orbit's end pose: a
-            # camera frame, an audio clip, or both — whatever this
-            # vehicle carries and the request asked for
-            artifacts: list[SensorArtifact] = []
-            payloads: list[bytes] = []
-            here = flight.position()
-            heading = flight.heading() if hasattr(flight, "heading") else None
-            pose = Pose(
-                position=GeoPoint(
-                    lat_deg=here[0], lon_deg=here[1], alt_m=here[2]
-                ),
-                yaw_deg=heading if heading is not None else 0.0,
-            )
-            base_meta = {
-                "target_id": request.source_detection_id,
-                "lat_deg": f"{here[0]:.7f}",
-                "lon_deg": f"{here[1]:.7f}",
-                "agl_m": f"{here[2]:.2f}",
-            }
-            sensor_errors: list[str] = []
-            if status != "failed":
-                for i, sensor in enumerate(sorted(_investigate_sensors(request))):
-                    artifact_time = gps_time_ns()
-                    if sensor == "audio":
-                        if audio_src is None:
-                            sensor_errors.append("audio: not fitted")
-                            continue
-                        if args.audio_range_m > 0 and _dist_m(
-                            here[0], here[1],
-                            request.target.lat_deg, request.target.lon_deg,
-                        ) > args.audio_range_m:
-                            sensor_errors.append(
-                                f"audio: outside {args.audio_range_m:.0f} m "
-                                "listen range of the target"
-                            )
-                            continue
-                        try:
-                            wav = audio_src.record_wav(args.audio_seconds)
-                        except Exception as exc:
-                            sensor_errors.append(f"audio: {exc}")
-                            continue
-                        payloads.append(build_frame_bytes(
-                            wav,
-                            mission_id=request.mission_id,
-                            vehicle_id=vehicle_id,
-                            sensor_id="mic",
-                            gps_time_ns=artifact_time,
-                            kind="audio/wav",
-                            metadata={
-                                **base_meta,
-                                "seconds": f"{args.audio_seconds:g}",
-                            },
-                        ))
-                        artifacts.append(SensorArtifact(
-                            data_name=mission_sensor_name(
-                                request.mission_id, vehicle_id, "mic",
-                                "audio", artifact_time, i + 1,
-                            ),
-                            kind="audio/wav",
-                            gps_time_ns=artifact_time,
-                            pose=pose,
-                            metadata={
-                                "target_id": request.source_detection_id
-                            },
-                        ))
-                    else:
-                        try:
-                            payloads.append(camera.capture_frame_payload(
-                                mission_id=request.mission_id,
-                                vehicle_id=vehicle_id,
-                                sensor_id="front",
+                # capture per requested sensor from the orbit's end pose: a
+                # camera frame, an audio clip, or both — whatever this
+                # vehicle carries and the request asked for
+                here = flight.position()
+                heading = flight.heading() if hasattr(flight, "heading") else None
+                pose = Pose(
+                    position=GeoPoint(
+                        lat_deg=here[0], lon_deg=here[1], alt_m=here[2]
+                    ),
+                    yaw_deg=heading if heading is not None else 0.0,
+                )
+                base_meta = {
+                    "target_id": request.source_detection_id,
+                    "lat_deg": f"{here[0]:.7f}",
+                    "lon_deg": f"{here[1]:.7f}",
+                    "agl_m": f"{here[2]:.2f}",
+                }
+                if status != "failed":
+                    for i, sensor in enumerate(
+                        sorted(_investigate_sensors(request))
+                    ):
+                        artifact_time = gps_time_ns()
+                        if sensor == "audio":
+                            _capture_audio(i + 1, "orbit")
+                        else:
+                            try:
+                                payloads.append(camera.capture_frame_payload(
+                                    mission_id=request.mission_id,
+                                    vehicle_id=vehicle_id,
+                                    sensor_id="front",
+                                    gps_time_ns=artifact_time,
+                                    metadata=dict(base_meta),
+                                ))
+                            except Exception as exc:
+                                sensor_errors.append(f"camera: {exc}")
+                                continue
+                            artifacts.append(SensorArtifact(
+                                data_name=mission_sensor_name(
+                                    request.mission_id, vehicle_id, "front",
+                                    "frame", artifact_time, i + 1,
+                                ),
+                                kind="image/jpeg",
                                 gps_time_ns=artifact_time,
-                                metadata=dict(base_meta),
+                                pose=pose,
+                                metadata={
+                                    "target_id": request.source_detection_id
+                                },
                             ))
-                        except Exception as exc:
-                            sensor_errors.append(f"camera: {exc}")
-                            continue
-                        artifacts.append(SensorArtifact(
-                            data_name=mission_sensor_name(
-                                request.mission_id, vehicle_id, "front",
-                                "frame", artifact_time, i + 1,
-                            ),
-                            kind="image/jpeg",
-                            gps_time_ns=artifact_time,
-                            pose=pose,
-                            metadata={
-                                "target_id": request.source_detection_id
-                            },
-                        ))
-                if sensor_errors:
-                    # the flight succeeded but the evidence didn't: a job
-                    # whose sensor produced nothing must not report done
-                    if not artifacts:
-                        status = "failed"
-                    note = f"{note}; " + "; ".join(sensor_errors)
+                    if sensor_errors:
+                        # the flight succeeded but the evidence didn't: a job
+                        # whose sensor produced nothing must not report done
+                        if not artifacts:
+                            status = "failed"
+                        note = f"{note}; " + "; ".join(sensor_errors)
             result = FlightTaskResult(
-                task_id=(
-                    f"{vehicle_id}-investigate-{request.source_detection_id}"
-                ),
+                task_id=task_id,
                 status=status,
                 started_at_gps_ns=started,
                 completed_at_gps_ns=gps_time_ns(),
@@ -2490,7 +2781,7 @@ def main() -> int:
             return types.SimpleNamespace(
                 result=result,
                 artifact_payloads=payloads if status != "failed" else [],
-                mode="carrot-orbit",
+                mode=mode,
                 command_log=[],
             )
 
@@ -2529,6 +2820,23 @@ def main() -> int:
                 set_busy("")
 
     # ---- capability + run ----------------------------------------------------
+    # sensor_meta: the airframe advertises the FACTS its sensors have so the
+    # dashboard's coverage layer renders them (no airframe knowledge in the
+    # renderer). camera => nadir footprint quad; audio => omni reach circle.
+    def build_sensor_meta() -> dict:
+        sensors = agent_sensors()
+        meta: dict = {}
+        if "camera" in sensors:
+            meta["camera"] = default_camera_meta(
+                args.cam_hfov_deg,
+                args.search_frame_width,
+                args.search_frame_height,
+                facing="down",
+            )
+        if "audio" in sensors and audio_src is not None:
+            meta["audio"] = default_audio_meta(args.audio_range_m)
+        return meta
+
     with optional_local_nfd(args.start_local_nfd):
         profile = CapabilityProfile(
             vehicle_id=vehicle_id,
@@ -2544,6 +2852,7 @@ def main() -> int:
                 (["orbit"] if args.role == "iuas" else [])
                 + sorted(agent_sensors())
             ),
+            sensor_meta=build_sensor_meta(),
         )
         try:
             producers_keepalive.append(

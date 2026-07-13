@@ -1,0 +1,61 @@
+# docker compose front-end for the miniMUAS v2 fleet sim.
+#
+# The image must be built first (it compiles the whole native NDN stack from
+# your local NDN_Service_Framework checkout):
+#
+#   ./run_fleet_sim.sh build          # or the equivalent docker build
+#
+# Then bring the fleet up (dashboard on http://localhost:8080/):
+#
+#   MINIMUAS_ROOT=$(cd ../../../.. && pwd) \
+#   UAS_IPBRC_ROOT=$HOME/Documents/Dev/UAS-IPBRC \
+#   docker compose -f compose.fleet.yml up fleet
+#
+# Or run the headless smoke instead:
+#
+#   docker compose -f compose.fleet.yml run --rm smoke
+#
+# This file only RUNS the prebuilt image; it deliberately does not build, since
+# the build context has to be the NDNSF checkout (outside this directory) — use
+# run_fleet_sim.sh build for that.
+
+services:
+  fleet:
+    image: ${IMAGE:-minimuas-v2-ndnsf}
+    working_dir: /work/miniMUAS
+    command:
+      - python3
+      - examples/python/v2_flight_services/sim/launch_fleet.py
+      - --ndnsf-root
+      - /opt/NDN_Service_Framework
+    environment:
+      NDNSF_ROOT: /opt/NDN_Service_Framework
+      UAS_IPBRC_ROOT: /work/UAS-IPBRC
+    ports:
+      - "${HTTP_PORT:-8080}:8080"
+    volumes:
+      - ${MINIMUAS_ROOT:-../../../..}:/work/miniMUAS
+      - ${UAS_IPBRC_ROOT:-${HOME}/Documents/Dev/UAS-IPBRC}:/work/UAS-IPBRC
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    stdin_open: true
+    tty: true
+
+  smoke:
+    image: ${IMAGE:-minimuas-v2-ndnsf}
+    working_dir: /work/miniMUAS
+    command:
+      - python3
+      - examples/python/v2_flight_services/sim/smoke.py
+      - --ndnsf-root
+      - /opt/NDN_Service_Framework
+    environment:
+      NDNSF_ROOT: /opt/NDN_Service_Framework
+      UAS_IPBRC_ROOT: /work/UAS-IPBRC
+    ports:
+      - "${HTTP_PORT:-8080}:8080"
+    volumes:
+      - ${MINIMUAS_ROOT:-../../../..}:/work/miniMUAS
+      - ${UAS_IPBRC_ROOT:-${HOME}/Documents/Dev/UAS-IPBRC}:/work/UAS-IPBRC
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
