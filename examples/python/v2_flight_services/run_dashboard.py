@@ -522,10 +522,23 @@ class Dashboard:
 
     def _poll_telemetry_forever(self, vid: str) -> None:
         period = 0.3
+        backoff = 0.0
         while True:
             t0 = time.monotonic()
-            self._poll_vehicle(vid)
-            time.sleep(max(0.0, period - (time.monotonic() - t0)))
+            ok = self._poll_vehicle(vid)
+            if ok:
+                backoff = 0.0
+                time.sleep(max(0.0, period - (time.monotonic() - t0)))
+            else:
+                # Unreachable vehicle: the blocking fetch holds the GIL for its
+                # full 800 ms timeout (ndn-cxx Faces aren't thread-safe, so it
+                # can't be released), and period-minus-elapsed goes negative, so
+                # the old loop re-fetched with NO pause — back-to-back GIL-held
+                # timeouts that starve the asyncio event loop and hang the whole
+                # dashboard. Back off (1→2→5 s), sleeping between attempts so the
+                # loop runs; reset to fast polling the instant it answers again.
+                backoff = min(5.0, backoff * 2 or 1.0)
+                time.sleep(backoff)
 
     def _poll_search_forever(self) -> None:
         vid = self.args.wuas_id
@@ -562,6 +575,7 @@ class Dashboard:
                 "age_s": round(age_s, 1),
                 "skew_s": round(skew_s, 1),
             })
+            return True
         except Exception:
             # A single dropped 0.3 s poll must NOT flip the vehicle offline.
             # Only surface staleness after SUSTAINED silence (STALE_AFTER_S);
@@ -575,12 +589,13 @@ class Dashboard:
             # had one, else since we first started polling this vehicle
             silent_s = (now - last) if last is not None else (now - first)
             if silent_s < self.STALE_AFTER_S:
-                return  # transient gap — leave the marker live
+                return False  # transient gap — leave the marker live
             self._send_loop({
                 "type": "telemetry_stale",
                 "vehicle": vid,
                 "silent_s": None if last is None else round(now - last, 1),
             })
+            return False
 
     def _poll_search(self, vid: str) -> None:
         try:
