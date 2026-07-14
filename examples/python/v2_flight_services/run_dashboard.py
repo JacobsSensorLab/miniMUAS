@@ -109,6 +109,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--http-host", default="0.0.0.0")
     parser.add_argument("--http-port", type=int, default=8080)
+    parser.add_argument(
+        "--poll-start-delay-s", type=float, default=8.0,
+        help="Max seconds the NDN pollers wait for the HTTP server to bind "
+        "before starting (they hold the GIL, so this guarantees :8080 comes up "
+        "even when every vehicle is unreachable at startup).",
+    )
     parser.add_argument("--wuas-id", default="wuas-01")
     parser.add_argument("--iuas-id", default="iuas-01")
     parser.add_argument(
@@ -203,6 +209,9 @@ class Dashboard:
         # "targeted" skips the two-phase handshake for known-provider commands,
         # "two-phase" always discovers. Only the initial value comes from args.
         self._command_mode = getattr(args, "command_mode", "targeted")
+        # set True once :8080 is bound; the pollers wait on it so a fleet of
+        # unreachable vehicles can't starve the HTTP bind (see poll_forever)
+        self._http_ready = False
         self.iuas_ids = (
             [v.strip() for v in args.iuas_ids.split(",") if v.strip()]
             if args.iuas_ids
@@ -422,6 +431,17 @@ class Dashboard:
     # ---- pollers (framework threads) ---------------------------------------
 
     def poll_forever(self) -> None:
+        # Let the HTTP server bind first. The pollers do blocking NDN fetches
+        # that HOLD the GIL (ndn-cxx Faces aren't thread-safe, so the fetch
+        # can't release it); when every vehicle is unreachable (e.g. agents not
+        # yet up at field-test start) those fetches all time out and starve the
+        # main thread before it can bind :8080 — the dashboard then never comes
+        # up. A short head start lets the web server bind, after which it stays
+        # reachable even while the pollers churn.
+        for _ in range(int(self.args.poll_start_delay_s * 10)):
+            if getattr(self, "_http_ready", False):
+                break
+            time.sleep(0.1)
         # one poller thread PER STREAM: the old single loop fetched both
         # vehicles' telemetry and the search status serially (800 ms
         # timeout each) then slept 1 s — a slow vehicle stalled everyone
@@ -1977,6 +1997,7 @@ async def run_web(dash: Dashboard, args) -> None:
     await runner.setup()
     site = web.TCPSite(runner, args.http_host, args.http_port)
     await site.start()
+    dash._http_ready = True  # :8080 is bound — release the NDN pollers
     print_json("dash.serving", host=args.http_host, port=args.http_port)
     while True:
         await asyncio.sleep(3600)
