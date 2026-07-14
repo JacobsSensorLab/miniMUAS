@@ -252,6 +252,12 @@ class Dashboard:
         self.detects_pending = 0
         self.detects_done = 0
         self.video_relays: dict[str, dict] = {}  # vid -> {"enabled": bool, "seq": int}
+        # Live video is latest-wins per vehicle. A single drainer coalesces
+        # frames and applies per-send backpressure, so a slow/mesh WS client
+        # drops stale frames instead of piling a broadcast task per frame onto
+        # the loop (which starved the event loop and hung all HTTP).
+        self.video_slots: dict[int, bytes] = {}
+        self._video_drain_task = None
         self.telemetry_age: dict[str, float] = {}
         # link health is measured on OUR clock only: cross-node wall-clock
         # differencing just reports clock skew on an RTC-less fleet (clocks
@@ -310,11 +316,57 @@ class Dashboard:
     # ---- WS plumbing ------------------------------------------------------
 
     def _send_loop(self, payload) -> None:
-        """Schedule a broadcast from any thread."""
-        if self.loop is not None:
+        """Schedule a send from any thread.
+
+        Binary payloads (live video frames) are coalesced per vehicle through
+        a single drainer with per-send backpressure — high-rate frames on a
+        slow WS drop the stale frame instead of flooding the loop with a task
+        per frame (which starved the event loop and hung all HTTP). Dict
+        payloads (telemetry/events) keep the simple per-message broadcast.
+        """
+        if self.loop is None:
+            return
+        if isinstance(payload, (bytes, bytearray)):
+            self.loop.call_soon_threadsafe(self._enqueue_video, bytes(payload))
+        else:
             self.loop.call_soon_threadsafe(
                 lambda: asyncio.ensure_future(self.broadcast(payload))
             )
+
+    def _enqueue_video(self, frame: bytes) -> None:
+        """Latest-wins per-vehicle slot; (re)start the single drainer. Runs on
+        the loop thread (via call_soon_threadsafe), so no lock is needed."""
+        if not frame:
+            return
+        self.video_slots[frame[0]] = frame  # frame[0] = vehicle index header
+        if self._video_drain_task is None or self._video_drain_task.done():
+            self._video_drain_task = asyncio.ensure_future(self._video_drainer())
+
+    async def _video_drainer(self) -> None:
+        """Send the newest frame per vehicle to all clients, at most one send
+        in flight per client; frames that arrive mid-send are dropped."""
+        while self.video_slots:
+            frames = list(self.video_slots.values())
+            self.video_slots.clear()
+            for frame in frames:
+                clients = list(self.clients)
+                if not clients:
+                    continue
+                results = await asyncio.gather(
+                    *(self._safe_send_bytes(ws, frame) for ws in clients),
+                    return_exceptions=True,
+                )
+                for ws, ok in zip(clients, results):
+                    if ok is not True:
+                        self.clients.discard(ws)
+            await asyncio.sleep(0)  # yield so HTTP handlers never starve
+
+    async def _safe_send_bytes(self, ws, frame: bytes) -> bool:
+        try:
+            await asyncio.wait_for(ws.send_bytes(frame), timeout=2.0)
+            return True
+        except Exception:
+            return False
 
     async def broadcast(self, payload) -> None:
         if isinstance(payload, dict):
