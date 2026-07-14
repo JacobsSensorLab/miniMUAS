@@ -2005,15 +2005,13 @@ def main() -> int:
     # ---- service: takeoff (standalone, guarded) ----------------------------
     @provider.ack_handler(vehicle_flight_service(vehicle_id, "takeoff"))
     def ack_takeoff(payload: bytes) -> AckDecision:
-        request = TakeoffRequest.from_bytes(payload)
-        if busy["task"]:
-            return AckDecision(status=False, message=f"busy:{busy['task']}")
-        if not (min_agl <= request.target_agl_m <= args.max_agl_m):
-            return AckDecision(
-                status=False,
-                message=f"agl {request.target_agl_m} outside {min_agl}..{args.max_agl_m}",
-            )
-        return AckDecision(status=True, message=f"agl={request.target_agl_m}")
+        # Accept here; the gate lives in cmd_takeoff. A negative AckDecision is
+        # silently dropped by the NDNSF consumer (ServiceUser logs "Permission
+        # Denied" and returns without invoking the caller's handler), so the
+        # requester never learns the reason — it just times out. Only a
+        # request-handler response is delivered, so cmd_takeoff re-runs the
+        # busy + agl guards and returns a visible rejection.
+        return AckDecision(status=True)
 
     @provider.handler(vehicle_flight_service(vehicle_id, "takeoff"))
     def cmd_takeoff(payload: bytes) -> bytes:
@@ -2053,39 +2051,46 @@ def main() -> int:
     # ---- service: sensor/capture (operator tasking, all roles) -------------
     sensor_service = vehicle_sensor_service(vehicle_id)
 
-    @provider.ack_handler(sensor_service)
-    def ack_sensor(payload: bytes) -> AckDecision:
-        req = SensorCaptureRequest.from_bytes(payload)
+    def _sensor_guard(req) -> str:
+        """Empty string when the capture is permitted, else the refusal."""
         if req.sensor not in agent_sensors():
-            return AckDecision(
-                status=False,
-                message=f"sensor {req.sensor!r} not carried "
-                f"(have: {sorted(agent_sensors())})",
+            return (
+                f"sensor {req.sensor!r} not carried "
+                f"(have: {sorted(agent_sensors())})"
             )
         if req.mode not in ("now", "override", "opportunistic"):
-            return AckDecision(status=False, message=f"unknown mode {req.mode!r}")
+            return f"unknown mode {req.mode!r}"
         if req.mode in ("override", "opportunistic") and req.target is None:
-            return AckDecision(status=False, message=f"{req.mode} needs a target")
+            return f"{req.mode} needs a target"
         if req.target is not None:
             here = flight.position()
             range_m = _dist_m(
                 here[0], here[1], req.target.lat_deg, req.target.lon_deg
             )
             if range_m > args.max_range_m:
-                return AckDecision(
-                    status=False,
-                    message=f"target {range_m:.0f}m away > "
-                    f"{args.max_range_m:.0f}m guard",
+                return (
+                    f"target {range_m:.0f}m away > "
+                    f"{args.max_range_m:.0f}m guard"
                 )
         if req.mode == "override" and busy["task"] == "investigate":
-            return AckDecision(
-                status=False, message="override rejected mid-investigation"
-            )
-        return AckDecision(status=True, message=req.mode)
+            return "override rejected mid-investigation"
+        return ""
+
+    @provider.ack_handler(sensor_service)
+    def ack_sensor(payload: bytes) -> AckDecision:
+        # Gate in sensor_capture, not here: a negative ack never reaches the
+        # requester (the NDNSF consumer drops it -> the request just times out).
+        return AckDecision(status=True)
 
     @provider.handler(sensor_service)
     def sensor_capture(payload: bytes) -> bytes:
         req = SensorCaptureRequest.from_bytes(payload)
+        reason = _sensor_guard(req)
+        if reason:
+            return SensorCaptureResult(
+                request_id=req.request_id, vehicle_id=vehicle_id,
+                sensor=req.sensor, status="rejected", message=reason,
+            ).to_bytes()
         if req.mode == "opportunistic":
             with tasking_lock:
                 tasking["watchpoints"].append({
@@ -2192,10 +2197,11 @@ def main() -> int:
 
     @provider.ack_handler(shutdown_service)
     def ack_shutdown(payload: bytes) -> AckDecision:
-        reason = _shutdown_guard(payload)
-        if reason:
-            return AckDecision(status=False, message=reason)
-        return AckDecision(status=True, message="will sync + poweroff")
+        # Gate in cmd_shutdown, not here: a negative AckDecision is dropped by
+        # the NDNSF consumer, so a refused shutdown (armed / busy / bad confirm)
+        # would just time out with no reason on the dashboard. cmd_shutdown
+        # re-runs _shutdown_guard and returns a visible "rejected" result.
+        return AckDecision(status=True)
 
     @provider.handler(shutdown_service)
     def cmd_shutdown(payload: bytes) -> bytes:
@@ -2248,40 +2254,39 @@ def main() -> int:
         search_service = vehicle_flight_service(vehicle_id, "raster-search")
         services.append(search_service)
 
-        @provider.ack_handler(search_service)
-        def ack_search(payload: bytes) -> AckDecision:
-            request = RasterSearchRequest.from_bytes(payload)
+        def _search_guard(request) -> str:
+            """Empty string when the search is permitted, else the refusal."""
             if busy["task"]:
-                return AckDecision(status=False, message=f"busy:{busy['task']}")
+                return f"busy:{busy['task']}"
             if not (min_agl <= request.agl_m <= args.max_agl_m):
-                return AckDecision(
-                    status=False,
-                    message=f"agl {request.agl_m} outside {min_agl}..{args.max_agl_m}",
-                )
+                return f"agl {request.agl_m} outside {min_agl}..{args.max_agl_m}"
             from raster import resolve_area
 
             center_lat, center_lon, _w, _h = resolve_area(request.area)
             here = flight.position()
             range_m = _dist_m(here[0], here[1], center_lat, center_lon)
             if range_m > args.max_range_m:
-                return AckDecision(
-                    status=False,
-                    message=f"area {range_m:.0f}m away > {args.max_range_m:.0f}m guard",
-                )
+                return f"area {range_m:.0f}m away > {args.max_range_m:.0f}m guard"
             plan = build_raster(
                 request.area,
                 leg_spacing_m=request.leg_spacing_m,
                 capture_every_m=request.capture_every_m,
             )
             if not plan.captures:
-                return AckDecision(status=False, message="empty raster")
-            return AckDecision(
-                status=True, message=f"legs={len(plan.legs)}"
-            )
+                return "empty raster"
+            return ""
+
+        @provider.ack_handler(search_service)
+        def ack_search(payload: bytes) -> AckDecision:
+            # Gate in raster_search: a negative ack is dropped by the consumer.
+            return AckDecision(status=True)
 
         @provider.handler(search_service)
         def raster_search(payload: bytes) -> bytes:
             request = RasterSearchRequest.from_bytes(payload)
+            reason = _search_guard(request)
+            if reason:
+                return ServiceResponse(status=False, error=reason)
             if not set_busy("raster-search"):
                 return ServiceResponse(
                     status=False, error=f"busy:{busy['task']}"
@@ -2471,31 +2476,22 @@ def main() -> int:
         investigate_service = vehicle_flight_service(vehicle_id, "investigate")
         services.append(investigate_service)
 
-        @provider.ack_handler(investigate_service)
-        def ack_investigate(payload: bytes) -> AckDecision:
-            request = InvestigatePointRequest.from_bytes(payload)
+        def _investigate_guard(request) -> str:
+            """Empty string when the investigation is permitted, else refusal."""
             if busy["task"]:
-                return AckDecision(status=False, message=f"busy:{busy['task']}")
+                return f"busy:{busy['task']}"
             if request.circle_radius_m <= 0 or request.circle_count <= 0:
-                return AckDecision(status=False, message="invalid request geometry")
+                return "invalid request geometry"
             wanted = _investigate_sensors(request)
             unknown = wanted - {"camera", "audio"}
             if unknown:
-                return AckDecision(
-                    status=False,
-                    message=f"unknown sensors: {sorted(unknown)}",
-                )
+                return f"unknown sensors: {sorted(unknown)}"
             if "audio" in wanted and audio_src is None:
-                return AckDecision(
-                    status=False, message="no audio capability on this vehicle"
-                )
+                return "no audio capability on this vehicle"
             if not (min_agl <= request.approach_alt_m <= args.max_agl_m):
-                return AckDecision(
-                    status=False,
-                    message=(
-                        f"agl {request.approach_alt_m} outside "
-                        f"{min_agl}..{args.max_agl_m} guard"
-                    ),
+                return (
+                    f"agl {request.approach_alt_m} outside "
+                    f"{min_agl}..{args.max_agl_m} guard"
                 )
             here = flight.position()
             range_m = _dist_m(
@@ -2503,15 +2499,14 @@ def main() -> int:
                 request.target.lat_deg, request.target.lon_deg,
             )
             if range_m > args.max_range_m:
-                return AckDecision(
-                    status=False,
-                    message=f"target {range_m:.0f}m away > {args.max_range_m:.0f}m guard",
-                )
-            pattern = _select_investigate_pattern(request)
-            return AckDecision(
-                status=True,
-                message="dip-flyover" if pattern == "flyover" else "carrot-orbit",
-            )
+                return f"target {range_m:.0f}m away > {args.max_range_m:.0f}m guard"
+            return ""
+
+        @provider.ack_handler(investigate_service)
+        def ack_investigate(payload: bytes) -> AckDecision:
+            # Gate in the investigate handler: a negative ack is dropped by the
+            # NDNSF consumer, so the requester would just time out with no reason.
+            return AckDecision(status=True)
 
         def _investigate_sensors(request: InvestigatePointRequest) -> set:
             # legacy requesters say "front" for the camera
@@ -2788,6 +2783,9 @@ def main() -> int:
         @provider.handler(investigate_service)
         def investigate(payload: bytes) -> bytes:
             request = InvestigatePointRequest.from_bytes(payload)
+            reason = _investigate_guard(request)
+            if reason:
+                return ServiceResponse(status=False, error=reason)
             if not set_busy("investigate"):
                 return ServiceResponse(status=False, error=f"busy:{busy['task']}")
             abort.clear()
