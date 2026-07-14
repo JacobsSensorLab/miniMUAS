@@ -258,6 +258,10 @@ class Dashboard:
         # the loop (which starved the event loop and hung all HTTP).
         self.video_slots: dict[int, bytes] = {}
         self._video_drain_task = None
+        # ONE shared relay thread for all feeds (never one per vehicle): the
+        # NDN fetch holds the GIL, so concurrent relay threads starved the
+        # asyncio HTTP loop. See _ensure_video_thread / _video_relay_loop.
+        self._video_thread = None
         self.telemetry_age: dict[str, float] = {}
         # link health is measured on OUR clock only: cross-node wall-clock
         # differencing just reports clock skew on an RTC-less fleet (clocks
@@ -1315,11 +1319,10 @@ class Dashboard:
             if response.status:
                 status = VideoStatus.from_bytes(response.payload)
                 relay["seq"] = status.seq
-                if request.enable and not relay.get("thread_alive"):
-                    relay["thread_alive"] = True
-                    threading.Thread(
-                        target=self._video_relay, args=(vid, relay), daemon=True
-                    ).start()
+                if request.enable:
+                    # one shared, paced relay thread for the whole fleet — never
+                    # a blocking-fetch thread per vehicle (that starved HTTP).
+                    self._ensure_video_thread()
             else:
                 self.event("video.control_failed", vehicle=vid, error=response.error)
 
@@ -1336,51 +1339,73 @@ class Dashboard:
             vehicle=vid,
         )
 
-    def _video_relay(self, vid: str, relay: dict) -> None:
-        """Poll the vehicle's latest-wins live name and forward new frames.
+    def _ensure_video_thread(self) -> None:
+        """Start the single shared relay thread if it isn't already running.
 
-        fetch_segmented on the base name runs version discovery, so every
-        poll returns the NEWEST published frame — latency is one fetch,
-        independent of how long the stream has run. The 8-byte seq header
-        drops duplicates (same version fetched twice, possibly from the
-        local NFD content store within the freshness window) and the rare
-        out-of-order race during producer handover. Binary WS message:
-        1 byte vehicle index + JPEG.
+        Per-vehicle relay threads each ran a blocking NDN fetch that HOLDS the
+        GIL (the wrapper can't release it — ndn-cxx isn't thread-safe for
+        concurrent use), so several at once starved the asyncio HTTP loop and
+        hung the server. One thread round-robins the enabled feeds and paces
+        itself to a bounded aggregate fetch rate, so the interpreter is never
+        monopolised. Live video is latest-wins, so the only cost is a lower
+        per-vehicle framerate.
         """
-        name = vehicle_video_live_name(vid)
-        last_seq = 0
-        window_t0 = time.monotonic()
-        window_bytes = 0
-        window_frames = 0
-        while relay["enabled"]:
-            try:
-                payload = fetch_segmented(name, timeout_ms=1000)
-                seq = int.from_bytes(payload[:8], "big")
-                if seq <= last_seq and seq != 0:
-                    time.sleep(0.08)  # nothing new yet; cheap local re-poll
+        t = self._video_thread
+        if t is not None and t.is_alive():
+            return
+        self._video_thread = threading.Thread(
+            target=self._video_relay_loop, daemon=True
+        )
+        self._video_thread.start()
+
+    def _video_relay_loop(self) -> None:
+        """Round-robin the enabled feeds from one paced thread. Poll each
+        vehicle's latest-wins live name (version discovery -> newest frame),
+        drop duplicate seqs, forward new JPEGs through the coalescing WS
+        drainer. The per-fetch sleep is where the asyncio loop gets to run, so
+        the single GIL-holding fetch never starves HTTP.
+        """
+        # aggregate fetch cap across ALL enabled feeds; per-vehicle fps ~= /N
+        min_period = 1.0 / 8.0
+        last_seq: dict[str, int] = {}
+        stat_t0 = time.monotonic()
+        stat: dict[str, list] = {}  # vid -> [frames, bytes]
+        while True:
+            enabled = [
+                vid for vid in self.vehicles
+                if self.video_relays.get(vid, {}).get("enabled")
+            ]
+            if not enabled:
+                return  # set_video restarts us on the next enable
+            for vid in enabled:
+                if not self.video_relays.get(vid, {}).get("enabled"):
                     continue
-                last_seq = seq
-                jpeg = payload[8:]
-                window_bytes += len(jpeg)
-                window_frames += 1
-                index = self.vehicles.index(vid)
-                self._send_loop(bytes([index]) + jpeg)
-                now = time.monotonic()
-                if now - window_t0 >= 2.0:
+                t0 = time.monotonic()
+                try:
+                    payload = fetch_segmented(
+                        vehicle_video_live_name(vid), timeout_ms=700
+                    )
+                    seq = int.from_bytes(payload[:8], "big")
+                    if seq != last_seq.get(vid) or seq == 0:
+                        last_seq[vid] = seq
+                        jpeg = payload[8:]
+                        self._send_loop(bytes([self.vehicles.index(vid)]) + jpeg)
+                        s = stat.setdefault(vid, [0, 0])
+                        s[0] += 1
+                        s[1] += len(jpeg)
+                except Exception:
+                    pass  # stream gap; the next success is the live frame
+                time.sleep(max(0.0, min_period - (time.monotonic() - t0)))
+            now = time.monotonic()
+            if now - stat_t0 >= 2.0:
+                for vid, (frames, nbytes) in stat.items():
                     self._send_loop({
-                        "type": "video_stats",
-                        "vehicle": vid,
-                        "fps": round(window_frames / (now - window_t0), 1),
-                        "kbps": round(window_bytes * 8 / (now - window_t0) / 1000),
-                        "seq": seq,
+                        "type": "video_stats", "vehicle": vid,
+                        "fps": round(frames / (now - stat_t0), 1),
+                        "kbps": round(nbytes * 8 / (now - stat_t0) / 1000),
+                        "seq": last_seq.get(vid, 0),
                     })
-                    window_t0, window_bytes, window_frames = now, 0, 0
-            except Exception:
-                # stream gap (producer restarting, radio loss): brief pause,
-                # then re-poll — the next success is the live frame, never
-                # a backlog
-                time.sleep(0.15)
-        relay["thread_alive"] = False
+                stat_t0, stat = now, {}
 
     def fetch_artifact(self, name: str) -> tuple[bytes, str] | None:
         """Artifact body + declared content type (image/jpeg, audio/wav...).
