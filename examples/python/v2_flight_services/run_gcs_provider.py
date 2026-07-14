@@ -65,12 +65,58 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lon-offset-deg", type=float, default=0.00006)
     parser.add_argument("--frame-fetch-timeout-ms", type=int, default=5000)
     parser.add_argument(
+        "--frames-dir",
+        default="/var/lib/minimuas/frames",
+        help="Save every analyzed frame (annotated) + a JSON sidecar here, "
+        "grouped by mission, for post-test analysis (empty string disables).",
+    )
+    parser.add_argument(
+        "--frames-keep",
+        type=int,
+        default=4000,
+        help="Cap on saved frames per mission dir; oldest are pruned.",
+    )
+    parser.add_argument(
         "--log-dir",
         default="/var/lib/minimuas/log",
         help="Directory for the fsync-per-line metrics/event journal "
         "(empty string disables).",
     )
     return parser
+
+
+def _save_analyzed_frame(
+    frames_dir, keep, mission_id, frame_name, annotated, sidecar, cv2
+) -> None:
+    """Persist the analyzed (annotated) frame + a JSON sidecar for post-test
+    analysis. Grouped per mission, filename encodes seq + top class + conf, and
+    each mission dir is capped at `keep` frames (oldest pruned). Best-effort:
+    never let a save error touch the detection response."""
+    import json as _json
+    import os as _os
+
+    if not frames_dir:
+        return
+    try:
+        seq = (frame_name or "").rsplit("/", 1)[-1] or "0"
+        mdir = _os.path.join(frames_dir, (mission_id or "adhoc").replace("/", "_"))
+        _os.makedirs(mdir, exist_ok=True)
+        top = sidecar.get("all_classes") or []
+        label = (top[0]["label"] if top else "none").replace(" ", "-").replace("/", "-")
+        conf = f"{top[0]['confidence']:.2f}" if top else "0.00"
+        base = f"{int(seq):06d}_{label}_{conf}" if seq.isdigit() else f"{seq}_{label}_{conf}"
+        cv2.imwrite(_os.path.join(mdir, base + ".jpg"), annotated)
+        with open(_os.path.join(mdir, base + ".json"), "w") as fh:
+            _json.dump(sidecar, fh)
+        jpgs = sorted(p for p in _os.listdir(mdir) if p.endswith(".jpg"))
+        for old in jpgs[: max(0, len(jpgs) - keep)]:
+            for ext in (".jpg", ".json"):
+                try:
+                    _os.remove(_os.path.join(mdir, old[:-4] + ext))
+                except OSError:
+                    pass
+    except Exception:
+        pass
 
 
 def main() -> int:
@@ -209,6 +255,24 @@ def main() -> int:
                         2,
                     )
                 cv2.imwrite("/tmp/muas-last-detect.jpg", annotated)
+                _save_analyzed_frame(
+                    args.frames_dir, args.frames_keep,
+                    request.mission_id, request.frame.data_name, annotated,
+                    {
+                        "frame": request.frame.data_name,
+                        "mission": request.mission_id,
+                        "gps_time_ns": timestamp_ns,
+                        "capture_pose": {
+                            "lat": cap_lat, "lon": cap_lon, "agl_m": cap_agl,
+                            "heading_deg": heading,
+                        },
+                        "detections": [d.as_dict() for d in detections],
+                        "all_classes": [
+                            d.as_dict() for d in detector.last_all_detections
+                        ],
+                    },
+                    cv2,
+                )
             except Exception:
                 pass
             if not detections:

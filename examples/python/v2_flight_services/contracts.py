@@ -567,6 +567,10 @@ class TelemetrySample:
     vn_m_s: float = 0.0
     ve_m_s: float = 0.0
     avoid_bias_m: float = 0.0
+    # Collision-avoidance priority: 1 idle < 2 navigating < 3 working. Peers use
+    # it to decide who holds course and who yields (see PeerGuard). Defaulted so
+    # older telemetry without the field still decodes.
+    avoid_tier: int = 1
 
     def to_bytes(self) -> bytes:
         return encode_dataclass(self)

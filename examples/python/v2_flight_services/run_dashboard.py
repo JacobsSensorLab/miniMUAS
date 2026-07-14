@@ -99,6 +99,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="miniMUAS v2 GCS dashboard")
     add_common_arguments(parser)
     parser.add_argument("--user", default="/muas/v2/gcs")
+    parser.add_argument(
+        "--command-mode",
+        choices=["targeted", "two-phase", "alternate"],
+        default="targeted",
+        help="How known-provider commands are sent: 'targeted' skips the "
+        "two-phase discovery/ACK (NDNSF fast path), 'two-phase' always "
+        "discovers, 'alternate' flips per request for a paired latency A/B.",
+    )
     parser.add_argument("--http-host", default="0.0.0.0")
     parser.add_argument("--http-port", type=int, default=8080)
     parser.add_argument("--wuas-id", default="wuas-01")
@@ -173,10 +181,29 @@ def _dist_m(lat_a, lon_a, lat_b, lon_b) -> float:
     return math.hypot(dn, de)
 
 
+def _provider_of(service: str):
+    """The single provider identity that serves a name, or None for a shared
+    multi-provider namespace. Per-vehicle /muas/v2/<vid>/... and the GCS
+    /muas/v2/gcs/... are single-provider (a targeted request can go straight to
+    /muas/v2/<vid|gcs>); mission/group are not."""
+    parts = service.strip("/").split("/")
+    if (
+        len(parts) >= 4 and parts[0] == "muas" and parts[1] == "v2"
+        and parts[2] not in ("mission", "group")
+    ):
+        return "/muas/v2/" + parts[2]
+    return None
+
+
 class Dashboard:
     def __init__(self, args, user) -> None:
         self.args = args
         self.user = user
+        # command routing: "targeted" (skip the two-phase handshake for
+        # known-provider commands), "two-phase" (always discover), or
+        # "alternate" (odd/even, for a paired latency A/B in one run)
+        self._command_mode = getattr(args, "command_mode", "targeted")
+        self._cmd_seq = 0
         self.iuas_ids = (
             [v.strip() for v in args.iuas_ids.split(",") if v.strip()]
             if args.iuas_ids
@@ -574,23 +601,47 @@ class Dashboard:
         """
         sent = metrics.stamp()
 
+        # A named service under a single KNOWN provider (a per-vehicle
+        # /muas/v2/<vid>/... command, or the GCS detector /muas/v2/gcs/...) can
+        # skip the two-phase discovery/ACK via a targeted request. mission/group
+        # are genuinely multi-provider, so they stay two-phase.
+        provider = _provider_of(service)
+        use_targeted = (
+            provider is not None and self._command_mode != "two-phase"
+            and not (self._command_mode == "alternate" and (self._cmd_seq % 2))
+        )
+        self._cmd_seq += 1
+        mode = "targeted" if use_targeted else "two-phase"
+
         def wrapped_response(response) -> None:
             metrics.record_service_result(
-                label, sent, response, service=service, **ctx
+                label, sent, response, service=service, mode=mode, **ctx
             )
             on_response(response)
 
         def wrapped_timeout(request_id) -> None:
-            metrics.record_service_timeout(label, sent, service=service, **ctx)
+            metrics.record_service_timeout(
+                label, sent, service=service, mode=mode, **ctx
+            )
             on_timeout(request_id)
 
-        self.user.request_service_async(
-            service,
-            payload,
-            on_response=wrapped_response,
-            on_timeout=wrapped_timeout,
-            timeout_ms=timeout_ms,
-        )
+        if use_targeted:
+            self.user.request_service_targeted_async(
+                provider,
+                service,
+                payload,
+                on_response=wrapped_response,
+                on_timeout=wrapped_timeout,
+                timeout_ms=timeout_ms,
+            )
+        else:
+            self.user.request_service_async(
+                service,
+                payload,
+                on_response=wrapped_response,
+                on_timeout=wrapped_timeout,
+                timeout_ms=timeout_ms,
+            )
 
     # ---- detection fan-out ---------------------------------------------------
 
@@ -1943,6 +1994,12 @@ def main() -> int:
 
     user = ServiceUser(**user_kwargs(args, args.user))
     user.start()  # background event loop for request_service_async
+    if args.command_mode != "two-phase" and hasattr(user, "set_use_tokens"):
+        # controlled-experiment mode: disable one-time replay tokens so a
+        # targeted request always takes the direct fast path (no token
+        # bootstrap), for a clean targeted-vs-two-phase latency comparison
+        user.set_use_tokens(False)
+        print_json("dash.use_tokens.disabled", reason="targeted-experiment")
 
     dash = Dashboard(args, user)
     threading.Thread(target=dash.poll_forever, daemon=True).start()

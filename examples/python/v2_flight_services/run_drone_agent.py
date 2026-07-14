@@ -397,6 +397,34 @@ MIN_ENGAGE_BIAS_M = 0.75
 ALT_BIAS_MIN_M = -4.0
 ALT_BIAS_MAX_M = 8.0
 
+# A busy task that neither heartbeats (busy_touch, called from its motion loop)
+# nor keeps its owner thread alive for this long is treated as stranded, and the
+# flag is reclaimed — otherwise one hung/dead task bricks the vehicle until a
+# power-cycle (observed: a stuck takeoff left busy set, so the next mission was
+# rejected). Longer than any single flight primitive: takeoff's ensure_airborne
+# deadline is 120 s, and every goto_and_wait heartbeats every 0.2 s.
+BUSY_STALE_S = 150.0
+
+# Collision-avoidance priority tiers, advertised in telemetry so peers know who
+# yields. A drone WORKING a task (e.g. a camera raster whose whole value is a
+# steady low search altitude) outranks one merely NAVIGATING to its task zone,
+# which outranks an IDLE loiterer. Higher tier holds its course/altitude; the
+# lower-tier peer yields — maneuvering if it is navigating/idle, or pausing in
+# place if it is itself mid-task. Same-tier conflicts fall back to the
+# deconfliction module's symmetric cooperative plan.
+AVOID_IDLE, AVOID_NAV, AVOID_WORK = 1, 2, 3
+
+# Which avoidance tier each busy task advertises. A camera raster and an active
+# investigation/capture are altitude/position-critical -> WORK (they hold, and
+# peers yield to them). A takeoff is transient transit -> NAV. Anything not
+# listed defaults to WORK (hold) rather than silently yielding.
+_TASK_TIER = {
+    "raster-search": AVOID_WORK,
+    "investigate": AVOID_WORK,
+    "sensor-capture": AVOID_WORK,
+    "takeoff": AVOID_NAV,
+}
+
 
 class PeerGuard:
     """Watches peer telemetry, predicts conflicts, flies vertical avoidance.
@@ -436,6 +464,8 @@ class PeerGuard:
         deconflict_module,
         envelope=None,
         on_event=None,
+        own_tier=None,
+        pause_event=None,
         min_airborne_agl_m: float = 2.0,
         floor_agl_m: float = 3.5,
         grace_s: float = 2.5,
@@ -450,6 +480,10 @@ class PeerGuard:
         self.dc = deconflict_module
         self.envelope = envelope or deconflict_module.DeconflictionEnvelope()
         self.on_event = on_event or (lambda **kw: None)
+        # own_tier() -> our current AVOID_* priority; pause_event is set when a
+        # higher-priority peer requires us to hold position mid-task
+        self.own_tier = own_tier or (lambda: AVOID_IDLE)
+        self.pause_event = pause_event
         self.min_airborne = min_airborne_agl_m
         # fleet-wide flight floor: the cooperative plan never asks a
         # descender to give altitude it doesn't have above this (the
@@ -514,6 +548,13 @@ class PeerGuard:
         bias = max(ALT_BIAS_MIN_M, min(ALT_BIAS_MAX_M, bias))
         if hasattr(self.flight, "set_alt_bias"):
             self.flight.set_alt_bias(bias)
+        # a "pause" entry means a higher-priority peer requires us to hold
+        # position mid-task; drive the shared pause flag the task loop honors
+        if self.pause_event is not None:
+            if any(e["mode"] == "pause" for e in self._active.values()):
+                self.pause_event.set()
+            else:
+                self.pause_event.clear()
         entries = [
             {
                 "from_id": self.vehicle_id,
@@ -604,6 +645,39 @@ class PeerGuard:
         self._expire_all(now)
 
     def _on_conflict(self, peer: str, sample: dict, own) -> None:
+        # Priority arbitration first: WORKING outranks NAVIGATING outranks IDLE.
+        # Both sides read the same tiers from shared telemetry.
+        own_tier = self.own_tier()
+        peer_tier = int(sample.get("avoid_tier", AVOID_IDLE))
+        if own_tier > peer_tier:
+            # higher priority: hold our course/altitude, let the peer yield —
+            # this keeps a searching camera drone on its search altitude instead
+            # of being shoved up by an idle/navigating peer.
+            if peer in self._active:
+                self._release(peer, "priority-hold")
+            return
+        if own_tier < peer_tier:
+            # lower priority: take the whole avoidance burden by maneuvering,
+            # since the higher-priority peer holds
+            plan = self.dc.uncooperative_plan(
+                self.vehicle_id, peer, envelope=self.envelope,
+            )
+            self._engage(peer, "yield", plan.biases[self.vehicle_id],
+                         plan.hold_s, "yield: maneuver (outranked)")
+            return
+        if own_tier >= AVOID_WORK:
+            # two drones both mid-task can't both hold; break the tie
+            # deterministically (lower vehicle id holds) so exactly one pauses in
+            # place while the other continues its task.
+            if self.vehicle_id < peer:
+                if peer in self._active:
+                    self._release(peer, "priority-hold")
+                return
+            self._engage(peer, "pause", 0.0, self.grace_s,
+                         "yield: pause (working, tie)")
+            return
+
+        # both navigating or both idle: the symmetric cooperative plan, unchanged
         plan = self.dc.cooperative_plan(
             self.vehicle_id, own[2], peer, sample.get("agl_m", 0.0),
             envelope=self.envelope, floor_agl_m=self.floor_agl_m,
@@ -636,7 +710,10 @@ class PeerGuard:
             if entry.get("gps_time_ns", 0) <= self._released_ns.get(peer, 0):
                 continue
             own_pos = self.flight.position()
-            sample = self._peers[peer]["sample"]
+            sample = self._peers[peer]["sample"] or {}
+            if self.own_tier() > int(sample.get("avoid_tier", AVOID_IDLE)):
+                # we outrank the peer: ignore its adopt request and hold course
+                return
             plan = self.dc.cooperative_plan(
                 self.vehicle_id, own_pos[2],
                 peer, sample.get("agl_m", 0.0),
@@ -1432,12 +1509,15 @@ def build_parser() -> argparse.ArgumentParser:
         "Empty disables (single-vehicle behavior).",
     )
     parser.add_argument(
-        "--coord-hsep-m", type=float, default=8.0,
-        help="Horizontal separation minimum for conflict prediction.",
+        "--coord-hsep-m", type=float, default=5.0,
+        help="Horizontal separation minimum for conflict prediction "
+        "(small-airframe default; raise for larger/faster vehicles).",
     )
     parser.add_argument(
-        "--coord-vsep-m", type=float, default=4.0,
-        help="Vertical separation minimum for conflict prediction.",
+        "--coord-vsep-m", type=float, default=2.0,
+        help="Vertical separation minimum for conflict prediction. The "
+        "yielder climbs vsep*1.5 (uncooperative) or the pair splits vsep*1.25 "
+        "(cooperative); 2 m suits the small quads (~3 m climb).",
     )
     parser.add_argument(
         "--coord-horizon-s", type=float, default=20.0,
@@ -1549,8 +1629,10 @@ def main() -> int:
 
     # ---- shared state ------------------------------------------------------
     state_lock = threading.Lock()
-    busy = {"task": ""}              # "", "raster-search", "investigate"
+    busy = {"task": "", "owner": None, "beat": 0.0}  # "", "raster-search", ...
     abort = threading.Event()        # raised by hold/rtl/land during a task
+    avoid = {"tier": AVOID_IDLE}     # collision priority advertised to peers
+    avoid_pause = threading.Event()  # PeerGuard sets this to pause our task motion
     search_status = {"value": None}  # latest SearchStatus or None
     video_cfg = {
         "enabled": False, "width": 320, "height": 240,
@@ -1679,9 +1761,26 @@ def main() -> int:
         flight.goto(lat, lon, agl)
         next_send = time.monotonic() + 2.0
         deadline = time.monotonic() + timeout_s
+        pause_anchor = None
         while not flight.at_target(lat, lon, agl, tol_m=tol_m):
             if abort.is_set() or time.monotonic() > deadline:
                 return False
+            busy_touch()  # heartbeat the busy flag while actively flying
+            if avoid_pause.is_set():
+                # yield-by-pausing: hold where we are until the higher-priority
+                # peer clears, rather than flying our task path into the conflict
+                if pause_anchor is None:
+                    pause_anchor = flight.position()
+                    print_json("agent.avoid.pause_hold", lat=pause_anchor[0],
+                               lon=pause_anchor[1], agl_m=pause_anchor[2])
+                flight.goto(pause_anchor[0], pause_anchor[1], pause_anchor[2])
+                deadline += 0.2  # a legitimate pause must not exhaust the budget
+                next_send = time.monotonic() + 2.0
+                time.sleep(0.2)
+                continue
+            if pause_anchor is not None:
+                pause_anchor = None  # conflict cleared: resume toward the target
+                print_json("agent.avoid.pause_resume")
             if time.monotonic() >= next_send:
                 flight.goto(lat, lon, agl)
                 next_send = time.monotonic() + 2.0
@@ -1761,11 +1860,42 @@ def main() -> int:
                     do_sensor_capture(req)
 
     def set_busy(task: str) -> bool:
+        now = time.monotonic()
+        reclaimed = None
         with state_lock:
-            if task and busy["task"]:
-                return False
-            busy["task"] = task
-            return True
+            if not task:
+                # release: only the current owner (or nobody) may clear, so a
+                # stale thread's late finally can't wipe a successor's task
+                if busy["owner"] in (None, threading.current_thread()):
+                    busy.update(task="", owner=None, beat=0.0)
+                    avoid["tier"] = AVOID_IDLE
+                    avoid_pause.clear()
+                return True
+            if busy["task"]:
+                owner = busy["owner"]
+                fresh = (
+                    owner is not None
+                    and owner.is_alive()
+                    and now - busy["beat"] <= BUSY_STALE_S
+                )
+                if fresh:
+                    return False
+                reclaimed = busy["task"]  # stranded: dead owner or no heartbeat
+            busy.update(task=task, owner=threading.current_thread(), beat=now)
+            avoid["tier"] = _TASK_TIER.get(task, AVOID_WORK)
+            if avoid["tier"] < AVOID_WORK:
+                avoid_pause.clear()
+        if reclaimed is not None:
+            print_json("agent.busy.reclaimed", was=reclaimed, by=task)
+        return True
+
+    def busy_touch() -> None:
+        # heartbeat from the owning task's motion loop, so the watchdog can tell
+        # a live, progressing task from a stalled or dead one
+        cur = threading.current_thread()
+        with state_lock:
+            if busy["owner"] is cur:
+                busy["beat"] = time.monotonic()
 
     # ---- fleet coordination: PeerGuard + smart RTL ---------------------------
     fleet_ids = [v.strip() for v in args.fleet_ids.split(",") if v.strip()]
@@ -1828,6 +1958,8 @@ def main() -> int:
             on_event=lambda **kw: print_json(
                 "agent." + str(kw.pop("kind")), **kw
             ),
+            own_tier=lambda: avoid["tier"],
+            pause_event=avoid_pause,
         )
         print_json(
             "agent.coord.ready", peers=peer_ids,
@@ -1872,6 +2004,7 @@ def main() -> int:
                     gps_time_ns=gps_time_ns(),
                     source=flight.source,
                     busy=busy["task"],
+                    avoid_tier=avoid["tier"],
                     **{k: v for k, v in t.items()},
                 )
                 telemetry_pub.publish(sample.to_bytes())
