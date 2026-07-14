@@ -26,6 +26,7 @@ in the field until pose carries yaw.
 from __future__ import annotations
 
 import math
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -105,6 +106,26 @@ class YoloOnnxDetector:
         except Exception as exc:
             raise DetectorError(f"could not load ONNX model {model_path!r}: {exc}")
 
+        # cv2.dnn.Net is not thread-safe, and forward() releases the GIL, so
+        # concurrent detect requests (a burst of search frames arriving at
+        # once) race inside the net's lazy graph finalize and trip an OpenCV
+        # assertion (outputs.size() == scaleFactors.size() in 'finalize'),
+        # which then wedges the net for every subsequent frame. Serialize
+        # inference (below), and force the one-time finalize here, single-
+        # threaded, with a warm-up frame so the race cannot happen at request
+        # time. Observed in the field: frame #1 detect.miss with that
+        # assertion, then every following frame detect.timeout.
+        self._infer_lock = threading.Lock()
+        try:
+            warm = np.zeros((self.imgsz, self.imgsz, 3), dtype=np.uint8)
+            warm_blob = cv2.dnn.blobFromImage(
+                warm, 1.0 / 255.0, (self.imgsz, self.imgsz), swapRB=True
+            )
+            self._net.setInput(warm_blob)
+            self._net.forward()
+        except Exception:
+            pass
+
     def detect(self, image_bgr) -> list[Detection]:
         cv2, np = self._cv2, self._np
         height, width = image_bgr.shape[:2]
@@ -121,8 +142,9 @@ class YoloOnnxDetector:
         blob = cv2.dnn.blobFromImage(
             canvas, 1.0 / 255.0, (self.imgsz, self.imgsz), swapRB=True
         )
-        self._net.setInput(blob)
-        output = self._net.forward()
+        with self._infer_lock:
+            self._net.setInput(blob)
+            output = self._net.forward()
 
         # YOLOv8 head: (1, 4 + n_classes, n_anchors) -> (n_anchors, 4 + n)
         predictions = np.squeeze(output)
