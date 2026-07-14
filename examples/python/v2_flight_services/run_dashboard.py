@@ -101,11 +101,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--user", default="/muas/v2/gcs")
     parser.add_argument(
         "--command-mode",
-        choices=["targeted", "two-phase", "alternate"],
+        choices=["targeted", "two-phase"],
         default="targeted",
-        help="How known-provider commands are sent: 'targeted' skips the "
-        "two-phase discovery/ACK (NDNSF fast path), 'two-phase' always "
-        "discovers, 'alternate' flips per request for a paired latency A/B.",
+        help="INITIAL command routing (toggled live from the dashboard "
+        "afterwards): 'targeted' skips the two-phase discovery/ACK for "
+        "known-provider commands (NDNSF fast path), 'two-phase' always discovers.",
     )
     parser.add_argument("--http-host", default="0.0.0.0")
     parser.add_argument("--http-port", type=int, default=8080)
@@ -199,11 +199,10 @@ class Dashboard:
     def __init__(self, args, user) -> None:
         self.args = args
         self.user = user
-        # command routing: "targeted" (skip the two-phase handshake for
-        # known-provider commands), "two-phase" (always discover), or
-        # "alternate" (odd/even, for a paired latency A/B in one run)
+        # command routing, toggled live from the console (no redeploy):
+        # "targeted" skips the two-phase handshake for known-provider commands,
+        # "two-phase" always discovers. Only the initial value comes from args.
         self._command_mode = getattr(args, "command_mode", "targeted")
-        self._cmd_seq = 0
         self.iuas_ids = (
             [v.strip() for v in args.iuas_ids.split(",") if v.strip()]
             if args.iuas_ids
@@ -606,11 +605,7 @@ class Dashboard:
         # skip the two-phase discovery/ACK via a targeted request. mission/group
         # are genuinely multi-provider, so they stay two-phase.
         provider = _provider_of(service)
-        use_targeted = (
-            provider is not None and self._command_mode != "two-phase"
-            and not (self._command_mode == "alternate" and (self._cmd_seq % 2))
-        )
-        self._cmd_seq += 1
+        use_targeted = provider is not None and self._command_mode == "targeted"
         mode = "targeted" if use_targeted else "two-phase"
 
         def wrapped_response(response) -> None:
@@ -1647,6 +1642,14 @@ class Dashboard:
                 # targets that queued while it was disabled
                 if self.enabled[vid]:
                     self._pump_dispatch()
+        elif kind == "command_mode":
+            # live toggle (no redeploy): route known-provider commands via the
+            # targeted fast path or the two-phase handshake. metric.latency is
+            # tagged with the mode, so flipping this mid-run yields the A/B.
+            mode = message.get("mode", "")
+            if mode in ("targeted", "two-phase"):
+                self._command_mode = mode
+                self.event("command_mode", mode=mode)
         elif kind == "flight":
             vid = message.get("vehicle", "")
             command = message.get("command", "")
@@ -1994,10 +1997,10 @@ def main() -> int:
 
     user = ServiceUser(**user_kwargs(args, args.user))
     user.start()  # background event loop for request_service_async
-    if args.command_mode != "two-phase" and hasattr(user, "set_use_tokens"):
-        # controlled-experiment mode: disable one-time replay tokens so a
-        # targeted request always takes the direct fast path (no token
-        # bootstrap), for a clean targeted-vs-two-phase latency comparison
+    if hasattr(user, "set_use_tokens"):
+        # tokens off so a targeted request always takes the direct fast path (no
+        # per-provider bootstrap); two-phase works token-free too, so the console
+        # can flip modes live for a clean targeted-vs-two-phase comparison
         user.set_use_tokens(False)
         print_json("dash.use_tokens.disabled", reason="targeted-experiment")
 

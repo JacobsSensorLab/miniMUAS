@@ -403,6 +403,8 @@ h3.sech .chev { display: inline-block; width: 14px; color: var(--cds-text-helper
   <button class="cds-btn cds-btn--ghost" id="dataBtn">Data on</button>
   <button class="cds-btn cds-btn--ghost" id="eventsBtn">Events on</button>
   <button class="cds-btn cds-btn--ghost" id="imageryBtn">Imagery on</button>
+  <button class="cds-btn cds-btn--ghost" id="cmdModeBtn"
+          title="Command routing (live, no redeploy): targeted = NDNSF fast path straight to the known provider; two-phase = full discovery/ACK handshake. metric.latency is tagged with the mode, so flipping this mid-run gives the targeted-vs-two-phase A/B.">Cmd: targeted</button>
   <button class="cds-btn cds-btn--ghost" id="legendBtn"
           title="Toggle the map legend (explains the symbology of the layers currently on)">Legend</button>
   <span class="cds-tag cds-tag--red" id="conn">offline</span>
@@ -1683,6 +1685,17 @@ dataBtn.onclick = () => {
   dataBtn.textContent = showData ? "Data on" : "Data off";
   renderLegend();
 };
+let cmdMode = "targeted";
+const applyCmdMode = m => {
+  cmdMode = m;
+  cmdModeBtn.textContent = "Cmd: " + m;
+  cmdModeBtn.classList.toggle("cds-btn--danger", m === "two-phase");
+};
+cmdModeBtn.onclick = () => {
+  const next = cmdMode === "targeted" ? "two-phase" : "targeted";
+  send({ kind: "command_mode", mode: next });
+  applyCmdMode(next);  // optimistic; server confirms via dash.command_mode event
+};
 modalClose.onclick = closeModal;
 modal.onclick = e => { if (e.target === modal) closeModal(); };
 window.addEventListener("keydown", e => {
@@ -2064,6 +2077,7 @@ function renderTargets(){
 }
 
 function onEvent(m){
+  if (m.kind === "command_mode" && m.mode) applyCmdMode(m.mode);
   const line = document.createElement("div");
   line.className = "n";
   const t = new Date(m.t*1000).toLocaleTimeString();
