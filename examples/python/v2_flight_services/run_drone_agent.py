@@ -1627,6 +1627,12 @@ def main() -> int:
     from ndnsf import AckDecision, ServiceProvider, ServiceResponse
 
     provider = ServiceProvider(**provider_kwargs(args, prefix, ""))
+    # Run the provider tokens-off to match the tokens-off users (dashboard,
+    # bench). With tokens on, the provider silently drops every token-less
+    # request ("Missing UserToken") — which timed out all targeted requests and
+    # the dashboard's video/flight commands. Also enables the targeted fast path.
+    if hasattr(provider, "set_use_tokens"):
+        provider.set_use_tokens(False)
 
     # ---- shared state ------------------------------------------------------
     state_lock = threading.Lock()

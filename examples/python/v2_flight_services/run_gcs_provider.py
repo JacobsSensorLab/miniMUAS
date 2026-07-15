@@ -145,6 +145,10 @@ def main() -> int:
     provider = ServiceProvider(
         **provider_kwargs(args, args.provider_prefix, args.provider_id)
     )
+    # Tokens-off to match the tokens-off users (dashboard, bench); otherwise the
+    # provider silently drops token-less requests and they time out.
+    if hasattr(provider, "set_use_tokens"):
+        provider.set_use_tokens(False)
 
     @provider.ack_handler(args.service)
     def acknowledge(payload: bytes) -> AckDecision:
