@@ -124,6 +124,8 @@ user-policies
             /muas/v2/iuas-01/flight/rtl
             /muas/v2/iuas-02/flight/investigate
             /muas/v2/iuas-02/flight/rtl
+            /muas/v2/iuas-01/bench/echo
+            /muas/v2/iuas-02/bench/echo
         }
     }
 }
