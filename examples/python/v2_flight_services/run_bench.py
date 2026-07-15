@@ -208,15 +208,16 @@ def aggregate(cell: dict, records: list, wall_s: float, nfd: dict) -> dict:
 
 
 # ---- sweep matrix ----------------------------------------------------------
-def build_matrix(sizes, concs, n_payload, n_conc, n_tokens, tokens_sweep) -> list:
+def build_matrix(sizes, concs, n_payload, n_conc, n_tokens, tokens_sweep,
+                 modes=("two-phase", "targeted"), timeout_ms=5000) -> list:
     cells = []
 
     def add(name, mode, resp_size, concurrency, tokens, n, delay_ms=0):
         cells.append({"name": name, "mode": mode, "resp_size": resp_size,
                       "concurrency": concurrency, "tokens": tokens, "n": n,
-                      "delay_ms": delay_ms})
+                      "delay_ms": delay_ms, "timeout_ms": timeout_ms})
 
-    for mode in ("two-phase", "targeted"):
+    for mode in modes:
         # A: payload sweep (concurrency 1, tokens off)
         for size in sizes:
             add(f"A_payload_{size}_{mode}", mode, size, 1, False, n_payload)
@@ -289,6 +290,12 @@ def main() -> int:
     p.add_argument("--n-conc", type=int, default=200)
     p.add_argument("--n-tokens", type=int, default=120)
     p.add_argument("--no-tokens-sweep", action="store_true")
+    p.add_argument("--modes", default="two-phase,targeted",
+                   help="Request modes to sweep (csv: two-phase,targeted).")
+    p.add_argument("--timeout-ms", type=int, default=5000,
+                   help="Per-request timeout (bounds failing cells).")
+    p.add_argument("--no-shuffle", action="store_true",
+                   help="Keep matrix order (small/two-phase-first) instead of shuffling.")
     args = p.parse_args()
 
     add_ndnsf_path(args.ndnsf_root)
@@ -339,9 +346,12 @@ def main() -> int:
 
     sizes = [int(x) for x in args.sizes.split(",") if x]
     concs = [int(x) for x in args.concurrencies.split(",") if x]
+    modes = tuple(m.strip() for m in args.modes.split(",") if m.strip())
     matrix = build_matrix(sizes, concs, args.n_payload, args.n_conc,
-                          args.n_tokens, not args.no_tokens_sweep)
-    random.Random(1).shuffle(matrix)  # deterministic de-biasing of cell order
+                          args.n_tokens, not args.no_tokens_sweep,
+                          modes=modes, timeout_ms=args.timeout_ms)
+    if not args.no_shuffle:
+        random.Random(1).shuffle(matrix)  # deterministic de-biasing of cell order
 
     summaries = []
     t_start = time.monotonic()
