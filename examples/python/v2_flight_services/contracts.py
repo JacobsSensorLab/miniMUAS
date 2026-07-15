@@ -45,6 +45,16 @@ def vehicle_system_service(vehicle_id: str, action: str) -> str:
     return f"/muas/v2/{vehicle_id}/system/{action}"
 
 
+def vehicle_bench_service(vehicle_id: str) -> str:
+    """Synthetic echo service for NDNSF latency/throughput benchmarking.
+
+    Request payload: 8-byte big-endian header [resp_size u32][delay_ms u32]
+    (plus optional request padding, ignored). The provider sleeps delay_ms
+    then returns resp_size zero bytes, isolating NDNSF transport cost from any
+    real service processing."""
+    return f"/muas/v2/{vehicle_id}/bench/echo"
+
+
 def vehicle_journal_name(node_id: str, session: str) -> str:
     """Named segmented object where a role serves its ``<role>.jsonl`` journal
     (events + metrics + logs) for a mission session.

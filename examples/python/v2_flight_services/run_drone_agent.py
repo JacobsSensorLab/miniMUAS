@@ -61,6 +61,7 @@ from contracts import (
     mission_frame_name,
     mission_sensor_name,
     tasked_sensor_name,
+    vehicle_bench_service,
     vehicle_flight_service,
     vehicle_coord_status_name,
     vehicle_search_status_name,
@@ -2066,6 +2067,19 @@ def main() -> int:
             if delay > 0:
                 time.sleep(delay)
 
+    # ---- service: bench/echo (NDNSF latency/throughput instrument) ---------
+    # Synthetic workload: sleep delay_ms, return resp_size bytes. Isolates the
+    # NDNSF request path (discovery/ACK/ABE/response) from real service work so
+    # the benchmark harness can sweep payload size + provider cost cleanly.
+    @provider.handler(vehicle_bench_service(vehicle_id))
+    def bench_echo(payload: bytes) -> bytes:
+        resp_size = int.from_bytes(payload[0:4], "big") if len(payload) >= 4 else 64
+        delay_ms = int.from_bytes(payload[4:8], "big") if len(payload) >= 8 else 0
+        resp_size = min(resp_size, 4_000_000)  # sanity cap
+        if delay_ms:
+            time.sleep(delay_ms / 1000.0)
+        return bytes(resp_size)
+
     # ---- service: video/control -------------------------------------------
     @provider.handler(vehicle_video_service(vehicle_id))
     def video_control(payload: bytes) -> bytes:
@@ -2373,6 +2387,7 @@ def main() -> int:
         ).to_bytes()
 
     services = [
+        vehicle_bench_service(vehicle_id),
         vehicle_video_service(vehicle_id),
         vehicle_sensor_service(vehicle_id),
         vehicle_system_service(vehicle_id, "shutdown"),
