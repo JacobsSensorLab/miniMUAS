@@ -127,6 +127,7 @@ def run_cell(user, cell: dict, service: str, provider: str, writer) -> dict:
         with lock:
             records.append(rec)
             writer.write(json.dumps(rec, sort_keys=True) + "\n")
+            writer.flush()
             counters["done"] += 1
             if counters["done"] >= n:
                 done.set()
@@ -207,8 +208,7 @@ def aggregate(cell: dict, records: list, wall_s: float, nfd: dict) -> dict:
 
 
 # ---- sweep matrix ----------------------------------------------------------
-def default_matrix() -> list:
-    """~2400 requests across mode x {payload, concurrency, tokens}, 1-hop."""
+def build_matrix(sizes, concs, n_payload, n_conc, n_tokens, tokens_sweep) -> list:
     cells = []
 
     def add(name, mode, resp_size, concurrency, tokens, n, delay_ms=0):
@@ -218,15 +218,48 @@ def default_matrix() -> list:
 
     for mode in ("two-phase", "targeted"):
         # A: payload sweep (concurrency 1, tokens off)
-        for size in (64, 4096, 65536):
-            add(f"A_payload_{size}_{mode}", mode, size, 1, False, 120)
+        for size in sizes:
+            add(f"A_payload_{size}_{mode}", mode, size, 1, False, n_payload)
         # B: concurrency sweep (256 B, tokens off)
-        for c in (1, 4, 16):
-            add(f"B_conc_{c}_{mode}", mode, 256, c, False, 200)
+        for c in concs:
+            add(f"B_conc_{c}_{mode}", mode, 256, c, False, n_conc)
         # C: tokens sweep (256 B, concurrency 1)
-        for tok in (False, True):
-            add(f"C_tokens_{'on' if tok else 'off'}_{mode}", mode, 256, 1, tok, 120)
+        if tokens_sweep:
+            for tok in (False, True):
+                add(f"C_tokens_{'on' if tok else 'off'}_{mode}",
+                    mode, 256, 1, tok, n_tokens)
     return cells
+
+
+def one_request(user, mode, service, provider, resp_size, timeout_ms=8000):
+    """Send a single request, block, return {ok, status, total_ms, resp_bytes}."""
+    done = threading.Event()
+    box: dict = {}
+
+    def _fin(resp, ok):
+        box["recv"] = time.time_ns()
+        box["ok"] = ok
+        if ok and resp is not None:
+            box["status"] = bool(resp.status)
+            box["resp_bytes"] = len(resp.payload) if resp.payload else 0
+            box["error"] = resp.error or ""
+        done.set()
+
+    payload = make_payload(resp_size, 0, 0)
+    sent = time.time_ns()
+    if mode == "targeted":
+        user.request_service_targeted_async(
+            provider, service, payload,
+            on_response=lambda r: _fin(r, True),
+            on_timeout=lambda _r: _fin(None, False), timeout_ms=timeout_ms)
+    else:
+        user.request_service_async(
+            service, payload, on_response=lambda r: _fin(r, True),
+            on_timeout=lambda _r: _fin(None, False), timeout_ms=timeout_ms)
+    done.wait(timeout=timeout_ms / 1000.0 + 3.0)
+    return {"ok": box.get("ok", False), "status": box.get("status"),
+            "resp_bytes": box.get("resp_bytes"),
+            "total_ms": round((box.get("recv", time.time_ns()) - sent) / 1e6, 2)}
 
 
 def main() -> int:
@@ -245,6 +278,17 @@ def main() -> int:
     p.add_argument("--warmup", type=int, default=15)
     p.add_argument("--settle-ms", type=int, default=300,
                    help="Idle gap between cells so background traffic settles.")
+    p.add_argument("--probe", action="store_true",
+                   help="Send one request per size/mode and report; find the "
+                        "inline-response ceiling + real latencies, then exit.")
+    p.add_argument("--sizes", default="64,1024,8192",
+                   help="Payload-sweep response sizes (bytes, csv).")
+    p.add_argument("--concurrencies", default="1,4,16",
+                   help="Concurrency-sweep levels (csv).")
+    p.add_argument("--n-payload", type=int, default=120)
+    p.add_argument("--n-conc", type=int, default=200)
+    p.add_argument("--n-tokens", type=int, default=120)
+    p.add_argument("--no-tokens-sweep", action="store_true")
     args = p.parse_args()
 
     add_ndnsf_path(args.ndnsf_root)
@@ -282,7 +326,21 @@ def main() -> int:
         wu_done.wait(timeout=60.0)
         print_json("bench.warmup.done", n=wu["n"])
 
-    matrix = default_matrix()
+    if args.probe:
+        for size in (64, 1024, 4096, 16384, 65536, 262144):
+            for mode in ("two-phase", "targeted"):
+                r = one_request(user, mode, service, provider, size)
+                print_json("bench.probe", size=size, mode=mode, **r)
+        try:
+            user.stop()
+        except Exception:
+            pass
+        return 0
+
+    sizes = [int(x) for x in args.sizes.split(",") if x]
+    concs = [int(x) for x in args.concurrencies.split(",") if x]
+    matrix = build_matrix(sizes, concs, args.n_payload, args.n_conc,
+                          args.n_tokens, not args.no_tokens_sweep)
     random.Random(1).shuffle(matrix)  # deterministic de-biasing of cell order
 
     summaries = []
