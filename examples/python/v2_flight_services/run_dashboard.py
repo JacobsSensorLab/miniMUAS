@@ -287,6 +287,11 @@ class Dashboard:
         self.detects_pending = 0
         self.detects_done = 0
         self.video_relays: dict[str, dict] = {}  # vid -> {"enabled": bool, "seq": int}
+        # Predictive-stream subscribers, one per vehicle whose video/status
+        # advertises transport=="stream". These push frames into the SAME
+        # _send_loop path as the segmented poller, so the WS side is identical;
+        # only the fabric-facing half differs (subscribe vs poll).
+        self.video_subs: dict[str, object] = {}
         # Live video is latest-wins per vehicle. A single drainer coalesces
         # frames and applies per-send backpressure, so a slow/mesh WS client
         # drops stale frames instead of piling a broadcast task per frame onto
@@ -1385,24 +1390,40 @@ class Dashboard:
         )
 
     def set_video(self, vid: str, params: dict) -> None:
+        transport = params.get("transport", "segmented")
+        if transport not in ("segmented", "stream"):
+            transport = "segmented"
         request = VideoControlRequest(
             enable=bool(params.get("enable", False)),
             width=int(params.get("width", 320)),
             height=int(params.get("height", 240)),
             fps=float(params.get("fps", 5.0)),
             quality=int(params.get("quality", 40)),
+            transport=transport,
         )
         relay = self.video_relays.setdefault(vid, {"enabled": False, "seq": 0})
         relay["enabled"] = request.enable
-        self.event("video.control", vehicle=vid, enable=request.enable)
+        # Any transport change or a disable tears down an existing stream
+        # subscription; the segmented poller stops itself when relay disabled.
+        if not request.enable or transport != "stream":
+            self._stop_video_sub(vid)
+        self.event("video.control", vehicle=vid, enable=request.enable,
+                   transport=transport)
 
         def on_response(response) -> None:
             if response.status:
                 status = VideoStatus.from_bytes(response.payload)
                 relay["seq"] = status.seq
-                if request.enable:
-                    # one shared, paced relay thread for the whole fleet — never
-                    # a blocking-fetch thread per vehicle (that starved HTTP).
+                if not request.enable:
+                    return
+                if status.transport == "stream" and status.descriptor:
+                    # Subscribe once to the vehicle's predictive stream; frames
+                    # arrive on framework threads and feed the same WS drainer.
+                    self._start_video_sub(vid, status.descriptor)
+                else:
+                    # segmented: one shared, paced relay thread for the whole
+                    # fleet — never a blocking-fetch thread per vehicle (that
+                    # starved HTTP).
                     self._ensure_video_thread()
             else:
                 self.event("video.control_failed", vehicle=vid, error=response.error)
@@ -1419,6 +1440,59 @@ class Dashboard:
             timeout_ms=15000,
             vehicle=vid,
         )
+
+    def _start_video_sub(self, vid: str, descriptor_json: str) -> None:
+        """Subscribe to a vehicle's predictive video stream (idempotent).
+
+        Replaces any prior subscription (a re-enable mints a new descriptor).
+        The on_item callback runs on framework threads and forwards each frame
+        through the same coalescing WS drainer the segmented poller uses, so
+        the browser side is transport-agnostic.
+        """
+        if vid not in self.vehicles:
+            return
+        self._stop_video_sub(vid)
+        try:
+            from video_stream import VideoStreamConsumer
+
+            idx = self.vehicles.index(vid)
+            # Per-vehicle stream is a single subscriber thread, so these
+            # counters need no lock. Emit the same video_stats the poll loop
+            # does (~2 s window) so the UI fps/kbps indicator works on stream.
+            stat = {"frames": 0, "bytes": 0, "t0": None}
+
+            def on_frame(cursor: int, jpeg: bytes) -> None:
+                self._send_loop(bytes([idx]) + jpeg)
+                now = time.monotonic()
+                if stat["t0"] is None:
+                    stat["t0"] = now
+                stat["frames"] += 1
+                stat["bytes"] += len(jpeg)
+                dt = now - stat["t0"]
+                if dt >= 2.0:
+                    self._send_loop({
+                        "type": "video_stats", "vehicle": vid,
+                        "fps": round(stat["frames"] / dt, 1),
+                        "kbps": round(stat["bytes"] * 8 / dt / 1000),
+                        "seq": cursor,
+                    })
+                    stat["frames"], stat["bytes"], stat["t0"] = 0, 0, now
+
+            self.video_subs[vid] = VideoStreamConsumer(
+                self.user, descriptor_json, on_frame,
+            )
+            self.event("video.stream_subscribed", vehicle=vid)
+        except Exception as exc:
+            self.event("video.stream_subscribe_failed", vehicle=vid,
+                       error=str(exc))
+
+    def _stop_video_sub(self, vid: str) -> None:
+        sub = self.video_subs.pop(vid, None)
+        if sub is not None:
+            try:
+                sub.stop()
+            except Exception:
+                pass
 
     def _ensure_video_thread(self) -> None:
         """Start the single shared relay thread if it isn't already running.

@@ -73,6 +73,7 @@ from contracts import (
     vehicle_video_live_name,
     vehicle_video_service,
     vehicle_video_status_name,
+    vehicle_video_stream_name,
 )
 from camera import frame_source_from_spec
 from dataplane import build_frame_bytes, fetch_segmented, publish_segmented
@@ -1697,7 +1698,17 @@ def main() -> int:
     video_cfg = {
         "enabled": False, "width": 320, "height": 240,
         "fps": 5.0, "quality": 40, "seq": 0,
+        # Video transport: "segmented" (default, unchanged latest-wins path)
+        # or "stream" (NDNSF predictive stream). `descriptor` carries the
+        # JSON PredictiveStreamDescriptor once a stream session is live so the
+        # dashboard can subscribe; empty on the segmented path.
+        "transport": "segmented", "descriptor": "",
     }
+    # Owns the lifecycle of the predictive video stream (stream transport
+    # only). The video/control handler is the sole creator (so the descriptor
+    # is ready in its response); the video loop only pushes frames.
+    video_stream = {"producer": None, "key": None}
+    video_stream_lock = threading.Lock()
     producers_keepalive: list[object] = []  # frames must outlive handlers
 
     telemetry_pub = LatestPublisher(
@@ -2083,15 +2094,78 @@ def main() -> int:
             height=video_cfg["height"],
             fps=video_cfg["fps"],
             quality=video_cfg["quality"],
+            transport=video_cfg["transport"],
+            descriptor=video_cfg["descriptor"],
         )
         video_status_pub.publish(status.to_bytes())
 
+    def sync_video_stream() -> None:
+        """(Re)build or tear down the predictive stream to match video_cfg.
+
+        Sole authority for the stream producer lifecycle, called from the
+        video/control handler so the descriptor is ready in its response. A
+        new producer (new descriptor) is minted only when the transport turns
+        on or the encoding knobs change; otherwise the existing session is
+        kept so the dashboard's subscription stays valid. Never raises — a
+        failure to build the stream just leaves the vehicle without stream
+        video (logged), and the caller reports an empty descriptor.
+        """
+        want_stream = video_cfg["enabled"] and video_cfg["transport"] == "stream"
+        key = (
+            (video_cfg["width"], video_cfg["quality"], round(video_cfg["fps"], 2))
+            if want_stream else None
+        )
+        with video_stream_lock:
+            if video_stream["key"] == key and video_stream["producer"] is not None:
+                return  # already matches; keep the live session + descriptor
+            old = video_stream["producer"]
+            video_stream["producer"] = None
+            video_stream["key"] = None
+            if old is not None:
+                try:
+                    old.stop()
+                except Exception:
+                    pass
+            if not want_stream:
+                video_cfg["descriptor"] = ""
+                return
+            try:
+                from video_stream import VideoStreamProducer
+
+                producer = VideoStreamProducer(
+                    provider,
+                    stream_id=vehicle_id,
+                    data_prefix=vehicle_video_stream_name(vehicle_id),
+                    fps=video_cfg["fps"],
+                )
+                video_stream["producer"] = producer
+                video_stream["key"] = key
+                video_cfg["descriptor"] = producer.descriptor_json.decode()
+                print_json(
+                    "agent.video.stream_started",
+                    fps=video_cfg["fps"], w=video_cfg["width"],
+                    q=video_cfg["quality"],
+                )
+            except Exception as exc:
+                video_cfg["descriptor"] = ""
+                print_json("agent.video.stream_start_failed", error=str(exc))
+
     def video_loop() -> None:
-        # Live video is latest-wins: every frame republishes the SAME
-        # well-known name with a new version and short freshness. Keeping
-        # exactly one previous producer alive covers fetches in flight;
-        # anything older is stopped — no history tail, so a consumer can
+        # Two transports share this loop; the transport is chosen per
+        # video/control request and defaults to segmented.
+        #
+        # segmented (default): live video is latest-wins — every frame
+        # republishes the SAME well-known name with a new version and short
+        # freshness. Keeping exactly one previous producer alive covers
+        # fetches in flight; anything older is stopped, so a consumer can
         # never accumulate a playback backlog.
+        #
+        # stream: push each frame into the long-lived predictive stream
+        # session that sync_video_stream() owns. No per-frame producer churn
+        # (the segmented path's churn is what poisons the SVS node); the
+        # consumer subscribes once with adaptive prefetch + FEC.
+        from video_stream import FRAME_BUDGET as _FRAME_BUDGET
+
         prev = None
         curr = None
         while True:
@@ -2105,21 +2179,52 @@ def main() -> int:
             )
             if jpeg is not None:
                 video_cfg["seq"] += 1
-                payload = video_cfg["seq"].to_bytes(8, "big") + jpeg
-                try:
-                    producer = publish_segmented(
-                        vehicle_video_live_name(vehicle_id),
-                        payload,
-                        freshness_ms=300,
-                    )
-                    if prev is not None:
+                if video_cfg["transport"] == "stream":
+                    with video_stream_lock:
+                        producer = video_stream["producer"]
+                    if producer is None:
+                        # sync_video_stream() (the control handler) is the
+                        # creator; if it failed we just idle until re-enabled.
+                        if video_cfg["seq"] % 50 == 1:
+                            print_json("agent.video.stream_not_ready")
+                    else:
+                        frame = jpeg
+                        if len(frame) > _FRAME_BUDGET:
+                            # one push == one signed Data under the wire cap;
+                            # re-encode smaller once rather than drop the frame.
+                            alt, _d, _t = camera.jpeg(
+                                width=min(video_cfg["width"], 256),
+                                quality=min(video_cfg["quality"], 30),
+                            )
+                            if alt is not None:
+                                frame = alt
                         try:
-                            prev.stop()
-                        except Exception:
-                            pass
-                    prev, curr = curr, producer
-                except Exception as exc:
-                    print_json("agent.video.publish_failed", error=str(exc))
+                            if not producer.publish_frame(frame):
+                                if video_cfg["seq"] % 50 == 1:
+                                    print_json(
+                                        "agent.video.frame_too_large",
+                                        bytes=len(frame),
+                                    )
+                        except Exception as exc:
+                            print_json(
+                                "agent.video.stream_push_failed", error=str(exc)
+                            )
+                else:
+                    payload = video_cfg["seq"].to_bytes(8, "big") + jpeg
+                    try:
+                        producer = publish_segmented(
+                            vehicle_video_live_name(vehicle_id),
+                            payload,
+                            freshness_ms=300,
+                        )
+                        if prev is not None:
+                            try:
+                                prev.stop()
+                            except Exception:
+                                pass
+                        prev, curr = curr, producer
+                    except Exception as exc:
+                        print_json("agent.video.publish_failed", error=str(exc))
                 if video_cfg["seq"] % 50 == 1:
                     publish_video_status()
             delay = (1.0 / max(video_cfg["fps"], 0.5)) - (time.monotonic() - t0)
@@ -2143,17 +2248,23 @@ def main() -> int:
     @provider.handler(vehicle_video_service(vehicle_id))
     def video_control(payload: bytes) -> bytes:
         request = VideoControlRequest.from_bytes(payload)
+        transport = request.transport if request.transport in ("segmented", "stream") else "segmented"
         video_cfg.update(
             enabled=request.enable,
             width=max(120, min(request.width, 1280)),
             height=max(90, min(request.height, 800)),
             fps=max(0.5, min(request.fps, 15.0)),
             quality=max(10, min(request.quality, 95)),
+            transport=transport,
         )
+        # Build/tear down the predictive stream to match, so the descriptor is
+        # ready to hand back in this response (the dashboard subscribes from
+        # it). No-op on the segmented path beyond clearing any old session.
+        sync_video_stream()
         publish_video_status()
         print_json(
             "agent.video.control",
-            enabled=video_cfg["enabled"],
+            enabled=video_cfg["enabled"], transport=video_cfg["transport"],
             w=video_cfg["width"], h=video_cfg["height"],
             fps=video_cfg["fps"], q=video_cfg["quality"],
         )
@@ -2166,6 +2277,8 @@ def main() -> int:
             height=video_cfg["height"],
             fps=video_cfg["fps"],
             quality=video_cfg["quality"],
+            transport=video_cfg["transport"],
+            descriptor=video_cfg["descriptor"],
         ).to_bytes()
 
     # ---- services: rtl / land / hold ----------------------------------------

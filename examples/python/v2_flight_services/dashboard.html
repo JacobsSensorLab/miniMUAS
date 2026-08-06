@@ -207,6 +207,10 @@ h3:first-child { margin-top: 0; }
   object-fit: contain; display: block; margin-top: var(--sp-03); }
 .vidstats { font: 400 12px var(--font-mono); color: var(--cds-text-helper);
   margin-top: var(--sp-02); }
+.vxport { margin-left: auto; height: 20px; font: 400 11px var(--font-mono);
+  background: var(--cds-field); color: var(--cds-text-primary);
+  border: 1px solid var(--cds-border-subtle); }
+.vxport:disabled { opacity: 0.5; }
 
 /* ---- event log: inline-notification style --------------------------------------- */
 #log { height: 220px; overflow-y: auto; }
@@ -1892,6 +1896,10 @@ function onHello(m){
     vp.className = "cds-tile vidpanel";
     vp.innerHTML = `
       <div class="head"><b style="color:${COLORS[vid]}">${vid}</b>
+        <select id="vxport-${vid}" class="vxport" title="video transport">
+          <option value="segmented">poll</option>
+          <option value="stream">stream</option>
+        </select>
         <span class="cds-toggle" id="vtog-${vid}" role="switch" aria-checked="false"
               tabindex="0"><span class="lbl">camera</span><span class="track"></span></span>
       </div>
@@ -1900,13 +1908,18 @@ function onHello(m){
     videos.appendChild(vp);
     let on = false;
     const tog = document.getElementById(`vtog-${vid}`);
+    const xport = document.getElementById(`vxport-${vid}`);
     const flip = () => {
       on = !on;
       tog.classList.toggle("on", on);
       tog.setAttribute("aria-checked", on);
+      // Lock the transport selector while a feed is live — the vehicle mints
+      // its stream session on enable, so transport can only change off->on.
+      xport.disabled = on;
       document.getElementById(`vimg-${vid}`).style.display = on ? "" : "none";
       send({cmd:"video", vehicle:vid,
-            params:{enable:on, width:320, height:240, fps:8, quality:40}});
+            params:{enable:on, width:320, height:240, fps:8, quality:40,
+                    transport:xport.value}});
     };
     tog.onclick = flip;
     tog.onkeydown = e => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); flip(); } };

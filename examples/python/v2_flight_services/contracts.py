@@ -538,6 +538,16 @@ def vehicle_video_status_name(vehicle_id: str) -> str:
     return f"/muas/v2/{vehicle_id}/video/status"
 
 
+def vehicle_video_stream_name(vehicle_id: str) -> str:
+    """Data prefix for the vehicle's NDNSF predictive video stream.
+
+    Used only when video transport == "stream": the stream session owns the
+    namespace beneath this prefix (mapping blocks, sample Data, FEC parity).
+    Distinct from the latest-wins ``video/live`` name of the segmented path so
+    the two transports never collide if both are ever exercised."""
+    return f"/muas/v2/{vehicle_id}/video/stream"
+
+
 def vehicle_video_service(vehicle_id: str) -> str:
     return f"/muas/v2/{vehicle_id}/video/control"
 
@@ -890,6 +900,11 @@ class VideoControlRequest:
     height: int = 240
     fps: float = 5.0
     quality: int = 40
+    # Video transport: "segmented" (per-frame latest-wins publish_segmented +
+    # dashboard poll — the default, unchanged path) or "stream" (NDNSF
+    # predictive stream: one session, adaptive prefetch, reorder, FEC). The
+    # toggle stays segmented until an operator explicitly opts into stream.
+    transport: str = "segmented"
 
     def to_bytes(self) -> bytes:
         return encode_dataclass(self)
@@ -903,6 +918,7 @@ class VideoControlRequest:
             height=int(value.get("height", 240)),
             fps=float(value.get("fps", 5.0)),
             quality=int(value.get("quality", 40)),
+            transport=str(value.get("transport", "segmented")),
         )
 
 
@@ -918,6 +934,11 @@ class VideoStatus:
     height: int = 240
     fps: float = 5.0
     quality: int = 40
+    # Transport the vehicle is serving video on, and (stream only) the JSON
+    # PredictiveStreamDescriptor the dashboard needs to subscribe. Empty
+    # descriptor on the segmented path.
+    transport: str = "segmented"
+    descriptor: str = ""
 
     def to_bytes(self) -> bytes:
         return encode_dataclass(self)
@@ -934,4 +955,6 @@ class VideoStatus:
             height=int(value.get("height", 240)),
             fps=float(value.get("fps", 5.0)),
             quality=int(value.get("quality", 40)),
+            transport=str(value.get("transport", "segmented")),
+            descriptor=str(value.get("descriptor", "")),
         )
