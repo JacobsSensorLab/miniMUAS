@@ -95,7 +95,13 @@ class YoloOnnxDetector:
         self.conf_threshold = float(conf_threshold)
         self.iou_threshold = float(iou_threshold)
         self.imgsz = int(imgsz)
-        self.last_all_detections: list[Detection] = []
+        # Per-thread, NOT a shared instance attribute: the NDNSF handler pool
+        # runs several detect() calls concurrently, and the provider reads
+        # last_all_detections right after its own detect() to draw the annotated
+        # frame + fill the response's all_classes. A shared attribute would hand
+        # a thread the *other* frame's detections — the stuck/misassociated boxes
+        # seen in the saved field frames. Read from the same thread that set it.
+        self._tls = threading.local()
         self.class_filter = (
             {name.strip().lower() for name in class_filter}
             if class_filter
@@ -126,6 +132,10 @@ class YoloOnnxDetector:
         except Exception:
             pass
 
+    @property
+    def last_all_detections(self) -> list[Detection]:
+        return getattr(self._tls, "all_detections", [])
+
     def detect(self, image_bgr) -> list[Detection]:
         cv2, np = self._cv2, self._np
         height, width = image_bgr.shape[:2]
@@ -144,7 +154,15 @@ class YoloOnnxDetector:
         )
         with self._infer_lock:
             self._net.setInput(blob)
-            output = self._net.forward()
+            # forward() returns a VIEW into the net's internal output blob, which
+            # is reused on the next forward(). All parsing below runs after the
+            # lock releases, so without copying, a concurrent detect() thread's
+            # forward() overwrites this buffer mid-parse — every racing frame then
+            # reads the last-forwarded result. Symptom in the field: the same
+            # bounding box repeated across frames, "jumping" only when a new
+            # detection landed, with labels misassociated to the wrong image.
+            # Snapshot inside the lock so each thread parses its own frame.
+            output = self._net.forward().copy()
 
         # YOLOv8 head: (1, 4 + n_classes, n_anchors) -> (n_anchors, 4 + n)
         predictions = np.squeeze(output)
@@ -207,7 +225,7 @@ class YoloOnnxDetector:
         # everything the model saw above threshold, pre-class-filter —
         # essential for diagnosing "empty" results (bad frame vs missed
         # target class vs filter mismatch)
-        self.last_all_detections = all_detections
+        self._tls.all_detections = all_detections
         return detections
 
     def describe(self) -> dict[str, Any]:
