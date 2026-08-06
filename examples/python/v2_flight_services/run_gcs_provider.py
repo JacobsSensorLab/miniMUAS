@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 
 from contracts import (
     DetectionRequest,
@@ -64,6 +67,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lat-offset-deg", type=float, default=0.00008)
     parser.add_argument("--lon-offset-deg", type=float, default=0.00006)
     parser.add_argument("--frame-fetch-timeout-ms", type=int, default=5000)
+    parser.add_argument(
+        "--detect-admit", type=int, default=2,
+        help="Max detection requests in flight; excess is fast-rejected so "
+        "framework threads aren't held waiting on a busy detector.",
+    )
+    parser.add_argument(
+        "--detect-timeout-s", type=float, default=10.0,
+        help="Per-request ceiling on the offloaded detection worker; a "
+        "request exceeding it returns a clean busy/timeout response.",
+    )
     parser.add_argument(
         "--frames-dir",
         default="/var/lib/minimuas/frames",
@@ -158,8 +171,20 @@ def main() -> int:
             message="gcs-detection-ready",
         )
 
-    @provider.handler(args.service)
-    def detect_object(payload: bytes) -> bytes | ServiceResponse:
+    # Heavy detection (fetch + decode + YOLO) runs on ONE dedicated worker so
+    # concurrent inferences never thrash the GIL against each other, and a
+    # bounded admission gate fast-rejects overflow instead of piling NDNSF
+    # handler threads on a busy detector. This keeps the framework's own
+    # crypto/sync threads free — the field failure where request_decrypt
+    # ballooned to seconds was YOLO monopolising the single interpreter. The
+    # native-heavy sections (cv2 decode/forward) release the GIL, so the
+    # framework makes progress while the worker runs.
+    _infer_pool = ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="gcs-detect"
+    )
+    _detect_gate = threading.BoundedSemaphore(max(1, args.detect_admit))
+
+    def _detect_impl(payload: bytes) -> bytes | ServiceResponse:
         import time as _time
         import math as _math
         handler_t0 = _time.monotonic()
@@ -436,6 +461,25 @@ def main() -> int:
             confidence=response.confidence,
         )
         return response.to_bytes()
+
+    @provider.handler(args.service)
+    def detect_object(payload: bytes) -> bytes | ServiceResponse:
+        # Admission gate: only args.detect_admit requests may be in flight;
+        # excess is fast-rejected so a framework thread isn't parked waiting
+        # behind a backlog of inferences. The accepted request runs on the
+        # single inference worker and this thread waits on the future — doing
+        # no CPU work, so the GIL stays free for the framework meanwhile.
+        if not _detect_gate.acquire(blocking=False):
+            print_json("gcs.detection.rejected", reason="detector-busy")
+            return ServiceResponse(status=False, error="detector busy")
+        try:
+            future = _infer_pool.submit(_detect_impl, payload)
+            return future.result(timeout=args.detect_timeout_s)
+        except FuturesTimeoutError:
+            print_json("gcs.detection.timeout", timeout_s=args.detect_timeout_s)
+            return ServiceResponse(status=False, error="detector timeout")
+        finally:
+            _detect_gate.release()
 
     with optional_local_nfd(args.start_local_nfd):
         print_json("gcs.provider.starting", service=args.service)

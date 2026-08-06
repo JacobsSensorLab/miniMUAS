@@ -38,6 +38,7 @@ import os
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from contracts import (
@@ -1827,6 +1828,38 @@ def main() -> int:
         )
         return result
 
+    # Serialize captures on one worker (the audio device is single-user and a
+    # recording runs up to 30 s) and keep that long op off the caller's thread.
+    # On the NDNSF handler path a concurrent request fast-rejects rather than
+    # holding a framework thread, so a running recording can never delay a
+    # flight command (rtl/hold/land) by exhausting the handler pool. Mission
+    # and override captures on task threads wait their turn instead of dropping
+    # coverage.
+    sensor_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sensor")
+    sensor_gate = threading.BoundedSemaphore(1)
+
+    def capture_sensor(
+        req: SensorCaptureRequest, *, reject_if_busy: bool
+    ) -> SensorCaptureResult:
+        if reject_if_busy:
+            if not sensor_gate.acquire(blocking=False):
+                print_json(
+                    "agent.sensor.rejected",
+                    request=req.request_id, sensor=req.sensor,
+                    reason="capture-in-progress",
+                )
+                return SensorCaptureResult(
+                    request_id=req.request_id, vehicle_id=vehicle_id,
+                    sensor=req.sensor, status="rejected",
+                    message="sensor busy (a capture is already running)",
+                )
+        else:
+            sensor_gate.acquire()
+        try:
+            return sensor_pool.submit(do_sensor_capture, req).result()
+        finally:
+            sensor_gate.release()
+
     def goto_and_wait(lat: float, lon: float, agl: float,
                       tol_m: float = 2.5, timeout_s: float = 120.0) -> bool:
         flight.goto(lat, lon, agl)
@@ -1876,7 +1909,7 @@ def main() -> int:
             req.target.lat_deg, req.target.lon_deg, resume[2],
             tol_m=max(2.5, req.radius_m),
         ):
-            slot["result"] = do_sensor_capture(req)
+            slot["result"] = capture_sensor(req, reject_if_busy=False)
         else:
             slot["result"] = SensorCaptureResult(
                 request_id=req.request_id, vehicle_id=vehicle_id,
@@ -1928,7 +1961,7 @@ def main() -> int:
                     except Exception:
                         pass
                 else:
-                    do_sensor_capture(req)
+                    capture_sensor(req, reject_if_busy=False)
 
     def set_busy(task: str) -> bool:
         now = time.monotonic()
@@ -2429,8 +2462,10 @@ def main() -> int:
             ).to_bytes()
 
         if req.mode == "now" or req.target is None:
-            # capture where we are — the "directly requested" case
-            return do_sensor_capture(req).to_bytes()
+            # capture where we are — the "directly requested" case. Fast-reject
+            # if a capture is already running so this framework handler thread
+            # is freed for flight commands rather than queued behind audio.
+            return capture_sensor(req, reject_if_busy=True).to_bytes()
 
         # override with a target
         if busy["task"] == "raster-search":
@@ -2485,7 +2520,9 @@ def main() -> int:
                     sensor=req.sensor, status="failed",
                     message="could not reach the target point",
                 ).to_bytes()
-            return do_sensor_capture(req).to_bytes()
+            # Already flew here holding this task; wait our turn rather than
+            # reject, so the flight isn't wasted.
+            return capture_sensor(req, reject_if_busy=False).to_bytes()
         finally:
             set_busy("")
 
