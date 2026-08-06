@@ -38,6 +38,14 @@ def build_parser() -> argparse.ArgumentParser:
         ],
     )
     parser.add_argument(
+        "--bootstrap-token-file",
+        default="",
+        help="Path to the identity->token[ role] map the controller serves "
+        "for ndncert cert bootstrap (upstream NDNSF, tokens on). The "
+        "controller auto-generates it for --bootstrap-identity entries if the "
+        "file is absent. Leave empty on the tokens-off fork.",
+    )
+    parser.add_argument(
         "--log-dir",
         default="/var/lib/minimuas/log",
         help="Directory for the fsync-per-line metrics/event journal "

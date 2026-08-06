@@ -63,34 +63,69 @@ def add_common_arguments(parser) -> None:
         "(/muas/v2/<node>/journal/<session>), so the dashboard's mission "
         "bundle sweep can pull it. Defaults to the well-known 'latest'.",
     )
+    parser.add_argument(
+        "--bootstrap-token",
+        default="",
+        help="This node's per-identity NDNSF bootstrap token (ndncert cert "
+        "bootstrap). Required by upstream NDNSF (tokens on); leave empty on "
+        "the tokens-off fork, where it is omitted entirely.",
+    )
 
 
 def provider_kwargs(args, provider_prefix: str, provider_id: str = "") -> dict:
-    return {
+    kw = {
         "provider_id": provider_id,
         "group": args.group,
         "controller": args.controller,
         "provider_prefix": provider_prefix,
         "trust_schema": str(args.trust_schema),
     }
+    _add_bootstrap_token(kw, args)
+    return kw
 
 
 def user_kwargs(args, user: str) -> dict:
-    return {
+    kw = {
         "group": args.group,
         "controller": args.controller,
         "user": user,
         "trust_schema": str(args.trust_schema),
     }
+    _add_bootstrap_token(kw, args)
+    return kw
 
 
 def controller_kwargs(args) -> dict:
-    return {
+    kw = {
         "controller_prefix": args.controller,
         "policy_file": str(args.policy),
         "trust_schema": str(args.trust_schema),
         "bootstrap_identities": list(args.bootstrap_identity),
     }
+    # Controller-side token map (identity -> token [role]); the controller
+    # auto-generates it for its bootstrap_identities if the file is absent.
+    token_file = getattr(args, "bootstrap_token_file", "")
+    if token_file:
+        kw["bootstrap_token_file"] = str(token_file)
+    return kw
+
+
+def _add_bootstrap_token(kw: dict, args) -> None:
+    """Attach a per-identity bootstrap token only when one is configured.
+
+    Upstream NDNSF keeps tokens ON and authenticates via an ndncert bootstrap
+    token, so each provider/user presents its own token. The older Quarmire
+    fork instead runs tokens OFF (the hasattr-guarded set_use_tokens(False) in
+    each entrypoint) and its constructors do NOT accept a bootstrap_token
+    kwarg. Omitting the key when empty keeps the identical code working against
+    both: no --bootstrap-token -> fork path (tokens off); token set -> upstream
+    path (tokens on + bootstrap). The set_use_tokens(False) calls stay: they
+    turn tokens off on the fork and are a no-op on upstream (no such setter),
+    where the hardcoded tokens-on + the presented token take over.
+    """
+    token = getattr(args, "bootstrap_token", "")
+    if token:
+        kw["bootstrap_token"] = str(token)
 
 
 _JSON_LOG = {"file": None}
