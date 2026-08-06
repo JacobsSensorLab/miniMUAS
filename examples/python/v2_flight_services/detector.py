@@ -1,9 +1,9 @@
-"""Real object detection for the GCS: YOLOv8 ONNX via OpenCV's DNN module.
+"""Real object detection for the GCS: YOLOv8 ONNX, CPU-optimized for ARM.
 
 Replaces the v2 detection stub with actual vision. A `yolo:` detector spec
 selects this path on the GCS provider:
 
-    --detector "yolo:/path/yolov8n.onnx?conf=0.35&classes=tennis racket"
+    --detector "yolo:/path/yolov8n.onnx?backend=onnxruntime&imgsz=320&conf=0.35&classes=tennis racket"
 
 The model is a stock COCO-trained YOLOv8 export (no training needed for
 the demo target — "tennis racket" is COCO class 38), produced once with:
@@ -11,9 +11,28 @@ the demo target — "tennis racket" is COCO class 38), produced once with:
     pip install ultralytics
     yolo export model=yolov8n.pt format=onnx imgsz=640 opset=12
 
-On an Odroid C4 (4×A55), yolov8n at 640px runs in roughly 1.5–3 s per
-frame on CPU through cv2.dnn — irrelevant for detect-per-search-frame,
-unsuitable for continuous video (which the design doesn't ask of it).
+Speed on the Odroid C4 (Amlogic S905X3: 4×Cortex-A55, Mali-G31 MP2 GPU,
+no NPU). The Mali GPU is NOT a useful accelerator here — the Panfrost/
+NixOS stack exposes no OpenCL, and a 2-core Mali-G31 is smaller than the
+CPU anyway — so every lever is CPU-side:
+
+  * backend=onnxruntime (default when the package is importable): multi-
+    threaded MLAS/XNNPACK NEON kernels across all 4 cores, markedly faster
+    than backend=opencv (cv2.dnn's single inference path). Add onnxruntime
+    to the GCS Python env to enable it; auto-falls back to opencv if it
+    is absent, so behaviour degrades gracefully. `threads=` overrides the
+    core count.
+  * imgsz: inference cost scales ~quadratically, so 640 -> 320 is ~4x
+    faster. Needs a model whose input accepts the size: re-export smaller
+    (`yolo export ... imgsz=320`) or with dynamic axes (`... dynamic=True`);
+    a static-640 ONNX only runs at 640.
+  * INT8: quantize the ONNX offline (onnxruntime.quantization; the A55 has
+    the ARMv8.2 DotProd extension, so INT8 GEMM is a real speedup) and
+    point the spec at the quantized model — ~2x more, small accuracy cost.
+
+Reference: yolov8n via cv2.dnn at 640 is ~1.5-3 s/frame on the A55s;
+onnxruntime at 320 lands well under a second. Detection runs per search
+frame on its own worker (see run_gcs_provider), not on continuous video.
 
 Also hosts the nadir geo-projection: a pixel detection in a downward
 camera frame becomes a ground offset from the capture position via
@@ -70,8 +89,15 @@ class Detection:
         }
 
 
-class YoloOnnxDetector:
-    """COCO YOLOv8 ONNX inference through cv2.dnn (CPU)."""
+class _YoloDetectorBase:
+    """Shared COCO YOLOv8 letterbox + decode; a backend supplies _infer().
+
+    Splitting inference from pre/post-processing lets the cv2.dnn and
+    onnxruntime backends share the exact same geometry and NMS, so switching
+    runtimes for speed never changes detection semantics.
+    """
+
+    backend = "yolo"
 
     def __init__(
         self,
@@ -95,8 +121,7 @@ class YoloOnnxDetector:
         self.conf_threshold = float(conf_threshold)
         self.iou_threshold = float(iou_threshold)
         self.imgsz = int(imgsz)
-        # Per-thread, NOT a shared instance attribute: the NDNSF handler pool
-        # runs several detect() calls concurrently, and the provider reads
+        # Per-thread, NOT a shared instance attribute: the provider reads
         # last_all_detections right after its own detect() to draw the annotated
         # frame + fill the response's all_classes. A shared attribute would hand
         # a thread the *other* frame's detections — the stuck/misassociated boxes
@@ -107,40 +132,18 @@ class YoloOnnxDetector:
             if class_filter
             else None
         )
-        try:
-            self._net = cv2.dnn.readNetFromONNX(model_path)
-        except Exception as exc:
-            raise DetectorError(f"could not load ONNX model {model_path!r}: {exc}")
-
-        # cv2.dnn.Net is not thread-safe, and forward() releases the GIL, so
-        # concurrent detect requests (a burst of search frames arriving at
-        # once) race inside the net's lazy graph finalize and trip an OpenCV
-        # assertion (outputs.size() == scaleFactors.size() in 'finalize'),
-        # which then wedges the net for every subsequent frame. Serialize
-        # inference (below), and force the one-time finalize here, single-
-        # threaded, with a warm-up frame so the race cannot happen at request
-        # time. Observed in the field: frame #1 detect.miss with that
-        # assertion, then every following frame detect.timeout.
-        self._infer_lock = threading.Lock()
-        try:
-            warm = np.zeros((self.imgsz, self.imgsz, 3), dtype=np.uint8)
-            warm_blob = cv2.dnn.blobFromImage(
-                warm, 1.0 / 255.0, (self.imgsz, self.imgsz), swapRB=True
-            )
-            self._net.setInput(warm_blob)
-            self._net.forward()
-        except Exception:
-            pass
 
     @property
     def last_all_detections(self) -> list[Detection]:
         return getattr(self._tls, "all_detections", [])
 
-    def detect(self, image_bgr) -> list[Detection]:
+    def _preprocess(self, image_bgr):
+        """Letterbox to imgsz×imgsz -> normalized NCHW blob + geometry.
+
+        Returns the same (1,3,imgsz,imgsz) float32 RGB/255 tensor whether the
+        backend is cv2.dnn or onnxruntime (both expect exactly this)."""
         cv2, np = self._cv2, self._np
         height, width = image_bgr.shape[:2]
-
-        # letterbox to imgsz×imgsz, preserving aspect
         scale = min(self.imgsz / width, self.imgsz / height)
         new_w, new_h = int(round(width * scale)), int(round(height * scale))
         pad_x, pad_y = (self.imgsz - new_w) / 2.0, (self.imgsz - new_h) / 2.0
@@ -148,21 +151,20 @@ class YoloOnnxDetector:
         canvas = np.full((self.imgsz, self.imgsz, 3), 114, dtype=np.uint8)
         top, left = int(round(pad_y - 0.1)), int(round(pad_x - 0.1))
         canvas[top:top + new_h, left:left + new_w] = resized
-
         blob = cv2.dnn.blobFromImage(
             canvas, 1.0 / 255.0, (self.imgsz, self.imgsz), swapRB=True
         )
-        with self._infer_lock:
-            self._net.setInput(blob)
-            # forward() returns a VIEW into the net's internal output blob, which
-            # is reused on the next forward(). All parsing below runs after the
-            # lock releases, so without copying, a concurrent detect() thread's
-            # forward() overwrites this buffer mid-parse — every racing frame then
-            # reads the last-forwarded result. Symptom in the field: the same
-            # bounding box repeated across frames, "jumping" only when a new
-            # detection landed, with labels misassociated to the wrong image.
-            # Snapshot inside the lock so each thread parses its own frame.
-            output = self._net.forward().copy()
+        return blob, scale, pad_x, pad_y
+
+    def _infer(self, blob):
+        """Run the model on one NCHW blob; return the raw output array."""
+        raise NotImplementedError
+
+    def detect(self, image_bgr) -> list[Detection]:
+        cv2, np = self._cv2, self._np
+        height, width = image_bgr.shape[:2]
+        blob, scale, pad_x, pad_y = self._preprocess(image_bgr)
+        output = self._infer(blob)
 
         # YOLOv8 head: (1, 4 + n_classes, n_anchors) -> (n_anchors, 4 + n)
         predictions = np.squeeze(output)
@@ -176,6 +178,7 @@ class YoloOnnxDetector:
         confidences = class_scores[np.arange(len(class_ids)), class_ids]
         keep = confidences >= self.conf_threshold
         if not np.any(keep):
+            self._tls.all_detections = []
             return []
         boxes_cxcywh = predictions[keep, :4]
         class_ids = class_ids[keep]
@@ -230,7 +233,7 @@ class YoloOnnxDetector:
 
     def describe(self) -> dict[str, Any]:
         return {
-            "detector": "yolo-onnx",
+            "detector": self.backend,
             "model": self.model_path,
             "conf": self.conf_threshold,
             "imgsz": self.imgsz,
@@ -238,11 +241,114 @@ class YoloOnnxDetector:
         }
 
 
+class YoloOnnxDetector(_YoloDetectorBase):
+    """YOLOv8 ONNX via OpenCV cv2.dnn (CPU). Portable, no extra dep, but the
+    slowest backend on ARM — prefer onnxruntime where it is available."""
+
+    backend = "yolo-opencv"
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        cv2, np = self._cv2, self._np
+        try:
+            self._net = cv2.dnn.readNetFromONNX(self.model_path)
+        except Exception as exc:
+            raise DetectorError(
+                f"could not load ONNX model {self.model_path!r}: {exc}"
+            )
+        # cv2.dnn.Net is not thread-safe, and forward() releases the GIL, so
+        # concurrent detect requests race inside the net's lazy graph finalize
+        # and trip an OpenCV assertion (outputs.size()==scaleFactors.size() in
+        # 'finalize') that wedges the net for every subsequent frame. Serialize
+        # inference (below) and force the one-time finalize here, single-
+        # threaded, with a warm-up so the race cannot happen at request time.
+        self._infer_lock = threading.Lock()
+        try:
+            warm = np.zeros((1, 3, self.imgsz, self.imgsz), dtype=np.float32)
+            self._net.setInput(warm)
+            self._net.forward()
+        except Exception:
+            pass
+
+    def _infer(self, blob):
+        with self._infer_lock:
+            self._net.setInput(blob)
+            # forward() returns a VIEW into the net's internal output blob,
+            # reused on the next forward(); copy inside the lock so a
+            # concurrent detect() can't overwrite this buffer mid-parse.
+            return self._net.forward().copy()
+
+
+class YoloOrtDetector(_YoloDetectorBase):
+    """YOLOv8 ONNX via onnxruntime (CPU, multi-threaded MLAS/XNNPACK).
+
+    Markedly faster than cv2.dnn on the Odroid's A55s — MLAS runs NEON GEMM
+    across all cores, XNNPACK (when the onnxruntime build ships it) adds
+    more. InferenceSession.run is thread-safe, so no per-call lock is needed;
+    the offloaded worker serializes calls anyway."""
+
+    backend = "yolo-onnxruntime"
+
+    def __init__(self, *args, threads: int | None = None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        try:
+            import onnxruntime as ort
+        except ImportError as exc:
+            raise DetectorError(
+                "backend=onnxruntime requires the onnxruntime package "
+                "(add python3Packages.onnxruntime to the GCS env)"
+            ) from exc
+        import os
+
+        opts = ort.SessionOptions()
+        opts.intra_op_num_threads = int(threads or os.cpu_count() or 4)
+        opts.graph_optimization_level = (
+            ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        )
+        available = set(ort.get_available_providers())
+        # XNNPACK first when present (fastest ARM path), else MLAS CPU EP.
+        providers = [
+            p for p in ("XnnpackExecutionProvider", "CPUExecutionProvider")
+            if p in available
+        ] or None
+        try:
+            self._sess = ort.InferenceSession(
+                self.model_path, sess_options=opts, providers=providers
+            )
+        except Exception as exc:
+            raise DetectorError(
+                f"could not load ONNX model {self.model_path!r}: {exc}"
+            )
+        self._input_name = self._sess.get_inputs()[0].name
+        self._providers = self._sess.get_providers()
+        self._threads = opts.intra_op_num_threads
+        try:
+            warm = self._np.zeros(
+                (1, 3, self.imgsz, self.imgsz), dtype=self._np.float32
+            )
+            self._sess.run(None, {self._input_name: warm})
+        except Exception:
+            pass
+
+    def _infer(self, blob):
+        return self._sess.run(None, {self._input_name: blob})[0]
+
+    def describe(self) -> dict[str, Any]:
+        info = super().describe()
+        info["providers"] = getattr(self, "_providers", [])
+        info["threads"] = getattr(self, "_threads", None)
+        return info
+
+
 def detector_from_spec(spec: str | None):
     """Build a detector from a `--detector` spec; None for the stub.
 
         stub                          (default; offset-based fake detection)
-        yolo:<model.onnx>[?conf=0.35&iou=0.45&imgsz=640&classes=a,b]
+        yolo:<model.onnx>[?backend=auto&conf=0.35&iou=0.45&imgsz=640&threads=N&classes=a,b]
+
+    backend: auto (default; onnxruntime if importable, else opencv),
+    onnxruntime, or opencv. imgsz below 640 needs a model exported at that
+    size or with dynamic axes.
     """
 
     spec = (spec or "stub").strip()
@@ -264,12 +370,26 @@ def detector_from_spec(spec: str | None):
         if "classes" in params
         else None
     )
-    return YoloOnnxDetector(
-        target,
+    common = dict(
         conf_threshold=float(params.get("conf", 0.35)),
         iou_threshold=float(params.get("iou", 0.45)),
         imgsz=int(params.get("imgsz", 640)),
         class_filter=class_filter,
+    )
+    backend = params.get("backend", "auto").lower()
+    if backend == "auto":
+        try:
+            import onnxruntime  # noqa: F401
+            backend = "onnxruntime"
+        except ImportError:
+            backend = "opencv"
+    if backend in ("onnxruntime", "ort"):
+        threads = int(params["threads"]) if "threads" in params else None
+        return YoloOrtDetector(target, threads=threads, **common)
+    if backend in ("opencv", "cv2", "dnn"):
+        return YoloOnnxDetector(target, **common)
+    raise DetectorError(
+        f"unknown detector backend {backend!r} (auto|onnxruntime|opencv)"
     )
 
 
