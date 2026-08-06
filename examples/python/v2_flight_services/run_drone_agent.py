@@ -166,6 +166,8 @@ def fly_raster(
 
     def cruise(t_lat, t_lon, fire_from=None) -> str:
         here = flight.position()
+        start = here
+        start_dist = _dist_m(here[0], here[1], t_lat, t_lon)
         travel_deadline = (
             time.monotonic()
             + _dist_m(here[0], here[1], t_lat, t_lon) / (0.5 * speed)
@@ -194,6 +196,18 @@ def fly_raster(
             if flight.at_target(t_lat, t_lon, agl_m, tol_m=2.5):
                 return "arrived"
             if now > travel_deadline:
+                moved = _dist_m(start[0], start[1], here[0], here[1])
+                if start_dist > 5.0 and moved < 3.0:
+                    # commanded to fly >5 m but the vehicle never left the
+                    # start point: the FC is ignoring guided gotos (the
+                    # "mission runs but nothing happens" failure). Surface
+                    # it loudly instead of reporting the leg as covered.
+                    print_json(
+                        "agent.raster.stalled",
+                        start_dist_m=round(start_dist, 1),
+                        moved_m=round(moved, 1),
+                    )
+                    return "stalled"
                 # blocked short of the target (wind, EKF disagreement):
                 # move on rather than hover — the caller captures any
                 # stragglers so coverage is not silently dropped
@@ -203,7 +217,7 @@ def fly_raster(
     for leg_index, (leg_start, leg_end) in enumerate(plan.legs):
         on_leg(leg_index)
         outcome = cruise(leg_start[0], leg_start[1])
-        if outcome in ("aborted", "timeout"):
+        if outcome in ("aborted", "timeout", "stalled"):
             return outcome
         axis, _length = _leg_axis(leg_start, leg_end)
         pending = sorted(
@@ -218,7 +232,7 @@ def fly_raster(
             if abort.is_set():
                 return "aborted"
             on_capture(cp, flight.position())
-        if outcome in ("aborted", "timeout"):
+        if outcome in ("aborted", "timeout", "stalled"):
             return outcome
     return "completed"
 
@@ -1107,6 +1121,45 @@ class MavlinkFlightBackend:
         # standalone manual takeoff == the same arm+climb path the
         # raster/investigate use, exposed as its own command.
         return self.ensure_airborne(agl)
+
+    def confirm_guided(self, *, timeout_s: float = 8.0) -> bool:
+        """Verify the FC is actually holding GUIDED, re-asserting it if not.
+
+        `ensure_airborne` returning True only means "armed and at altitude";
+        it does NOT guarantee the guided controller is engaged with an active
+        target. Two field failure modes hide behind that gap: on the shared
+        mavproxy fan-out a set-mode confirmation can be mis-read, and
+        ArduCopter can sit in GUIDED with no active guided command, silently
+        ignoring every goto. That was the 2026-08 field failure — "start
+        mission completes without doing anything until the flight mode is
+        cycled off GUIDED and back on."
+
+        This is the programmatic equivalent of that manual cycle: re-assert
+        GUIDED and prime an active guided target at the current position
+        (via hold()), then confirm the FC reports GUIDED through its
+        sysid-filtered heartbeat (telemetry() drains a fresh one each call)
+        before we commit to the sweep. Returns False if GUIDED cannot be
+        confirmed within timeout_s so the caller can fail loudly instead of
+        flying a no-op mission.
+        """
+        deadline = time.monotonic() + timeout_s
+        primed = False
+        while True:
+            mode = str(self.telemetry().get("mode", "")).upper()
+            if mode == "GUIDED" and primed:
+                return True
+            if time.monotonic() >= deadline:
+                print_json(
+                    "agent.confirm_guided.timeout",
+                    mode=mode or "-", timeout_s=timeout_s,
+                )
+                return False
+            # hold() = set_mode_guided + goto(current pos, current agl):
+            # re-engages the mode and gives the guided controller a live
+            # target without commanding any motion.
+            self.hold()
+            primed = True
+            time.sleep(1.0)
 
     def _effective_agl(self, agl: float) -> float:
         # floor 3.5: the link suppresses gotos below the 3 m takeoff gate
@@ -2584,6 +2637,18 @@ def main() -> int:
                         task_id=task_id, status="failed",
                         notes="could not reach search altitude",
                     ).to_bytes()
+                # Airborne != flyable. Confirm the FC is actually holding
+                # GUIDED with a live target before the sweep, so we never
+                # run a mission that silently does nothing (2026-08 field
+                # failure: sweep "completed" without moving until GUIDED
+                # was manually cycled).
+                if not flight.confirm_guided():
+                    push_status("guided not engaged")
+                    print_json("agent.search.guided_failed", task=task_id)
+                    return RasterSearchResult(
+                        task_id=task_id, status="failed",
+                        notes="flight controller did not engage GUIDED",
+                    ).to_bytes()
 
                 def on_leg(leg_index: int) -> None:
                     status_state.update(state="searching", leg=leg_index)
@@ -2606,7 +2671,8 @@ def main() -> int:
                     on_leg=on_leg,
                     service_interrupt=service_override,
                 )
-                if outcome == "timeout":
+                raw_outcome = outcome
+                if outcome in ("timeout", "stalled"):
                     outcome = "failed"
                 status_state["state"] = (
                     "done" if outcome == "completed" else outcome
@@ -2614,13 +2680,19 @@ def main() -> int:
                 push_status(outcome)
                 print_json(
                     "agent.search.finished",
-                    task=task_id, outcome=outcome, frames=frames,
+                    task=task_id, outcome=raw_outcome, frames=frames,
                 )
+                if raw_outcome == "stalled":
+                    notes = "vehicle did not respond to GUIDED commands (stalled)"
+                elif raw_outcome == "timeout":
+                    notes = f"timed out; legs={len(plan.legs)}"
+                else:
+                    notes = f"legs={len(plan.legs)}"
                 return RasterSearchResult(
                     task_id=task_id,
                     status=outcome,
                     frames_captured=frames,
-                    notes=f"legs={len(plan.legs)}",
+                    notes=notes,
                 ).to_bytes()
             finally:
                 set_busy("")
