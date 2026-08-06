@@ -82,6 +82,7 @@ from dataplane import (
     fetch_segmented,
     frame_body,
     parse_frame,
+    set_runtime,
 )
 from raster import build_raster, estimate_duration_s
 from ndnsf_runtime import (
@@ -2106,6 +2107,9 @@ def main() -> int:
     from ndnsf_runtime import user_kwargs
 
     user = ServiceUser(**user_kwargs(args, args.user))
+    # Route dataplane fetches (telemetry/video/status pollers) through this
+    # user's Face — one Face/process, so the pollers can't crash the runtime.
+    set_runtime(user)
     user.start()  # background event loop for request_service_async
     if hasattr(user, "set_use_tokens"):
         # tokens off so a targeted request always takes the direct fast path (no

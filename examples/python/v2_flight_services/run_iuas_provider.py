@@ -30,7 +30,7 @@ from contracts import (
     vehicle_telemetry_state_name,
 )
 from camera import frame_source_from_spec
-from dataplane import publish_segmented
+from dataplane import publish_segmented, set_runtime
 from ndnsf_runtime import (
     add_common_arguments,
     add_ndnsf_path,
@@ -252,6 +252,7 @@ def main() -> int:
     provider = ServiceProvider(
         **provider_kwargs(args, args.provider_prefix, args.provider_id)
     )
+    set_runtime(provider)  # dataplane fetches run on this provider's Face
 
     # Live segmented-object producers for published sensor artifacts. They
     # must stay referenced (and running) so WUAS/GCS can fetch the objects

@@ -20,6 +20,21 @@ import json
 from typing import Any
 
 
+# The live ServiceUser/ServiceProvider for this process, registered at startup
+# via set_runtime(). fetch_segmented() runs on its Face when present, so only
+# ONE ndn::Face exists per process. Without it (or on the old fork, whose
+# runtime has no fetch_segmented method) we fall back to the standalone
+# fetch_segmented_object — a second Face, which the upstream streaming runtime
+# crashes on. Set once, read by every fetch.
+_RUNTIME = None
+
+
+def set_runtime(runtime) -> None:
+    """Register the process's ServiceUser/ServiceProvider for runtime fetches."""
+    global _RUNTIME
+    _RUNTIME = runtime
+
+
 FRAME_MAGIC = b"MUASFRAME1\n"
 FRAME_CONTENT_TYPE = "application/x-muas-frame"
 DEFAULT_FRAME_WIDTH = 320
@@ -192,15 +207,20 @@ def fetch_segmented(
     artifacts, capability profile) pass a name.
     """
 
-    from ndnsf import fetch_segmented_object
+    def _do() -> bytes:
+        runtime = _RUNTIME
+        # Prefer the runtime's own Face (one Face per process). Fall back to
+        # the standalone fetcher only with no runtime registered, or on the
+        # old fork whose runtime lacks fetch_segmented.
+        if runtime is not None and hasattr(runtime, "fetch_segmented"):
+            return runtime.fetch_segmented(base_name, timeout_ms=timeout_ms)
+        from ndnsf import fetch_segmented_object
+
+        return fetch_segmented_object(base_name, timeout_ms=timeout_ms)
 
     if metric_name is None:
-        return fetch_segmented_object(base_name, timeout_ms=timeout_ms)
+        return _do()
 
     import metrics
 
-    return metrics.time_fetch(
-        lambda: fetch_segmented_object(base_name, timeout_ms=timeout_ms),
-        name=metric_name,
-        target=base_name,
-    )
+    return metrics.time_fetch(_do, name=metric_name, target=base_name)

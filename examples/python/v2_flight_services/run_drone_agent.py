@@ -77,7 +77,12 @@ from contracts import (
     vehicle_video_stream_name,
 )
 from camera import frame_source_from_spec
-from dataplane import build_frame_bytes, fetch_segmented, publish_segmented
+from dataplane import (
+    build_frame_bytes,
+    fetch_segmented,
+    publish_segmented,
+    set_runtime,
+)
 from raster import build_raster
 from ndnsf_runtime import (
     add_common_arguments,
@@ -1682,6 +1687,8 @@ def main() -> int:
     from ndnsf import AckDecision, ServiceProvider, ServiceResponse
 
     provider = ServiceProvider(**provider_kwargs(args, prefix, ""))
+    # Route dataplane fetches through this provider's Face (one Face/process).
+    set_runtime(provider)
     # Run the provider tokens-off to match the tokens-off users (dashboard,
     # bench). With tokens on, the provider silently drops every token-less
     # request ("Missing UserToken") — which timed out all targeted requests and

@@ -30,6 +30,7 @@ from dataplane import (
     fetch_segmented,
     parse_frame,
     publish_segmented,
+    set_runtime,
     sha256_hex,
 )
 from ndnsf_runtime import (
@@ -130,6 +131,7 @@ def main() -> int:
             return 2
         print_json("wuas.camera.ready", **frame_source.describe())
         user = ServiceUser(**user_kwargs(args, args.user))
+        set_runtime(user)  # dataplane fetches run on this user's Face
         if args.list_services:
             for entry in user.get_allowed_services():
                 print_json(

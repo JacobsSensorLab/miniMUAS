@@ -17,7 +17,7 @@ from contracts import (
     mission_evidence_name,
     nearest_visual_anomaly,
 )
-from dataplane import fetch_segmented, frame_body, parse_frame
+from dataplane import fetch_segmented, frame_body, parse_frame, set_runtime
 from detector import (
     decode_image,
     detector_from_spec,
@@ -158,6 +158,8 @@ def main() -> int:
     provider = ServiceProvider(
         **provider_kwargs(args, args.provider_prefix, args.provider_id)
     )
+    # Route dataplane fetches (frame fetch) through this provider's Face.
+    set_runtime(provider)
     # Tokens-off to match the tokens-off users (dashboard, bench); otherwise the
     # provider silently drops token-less requests and they time out.
     if hasattr(provider, "set_use_tokens"):
