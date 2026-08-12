@@ -101,6 +101,8 @@ def run_producer(args) -> int:
         prod = VideoStreamProducer(
             provider, args.stream_id, _frame_prefix(args.stream_id),
             fps=args.fps,
+            fec_group_frames=args.fec_group,
+            fec_scheme=args.fec_scheme,
         )
         # Advertise the descriptor on the small-payload plane so the consumer
         # can subscribe; keep it alive for late joiners for the whole run.
@@ -299,6 +301,8 @@ def _summarize(rec: _Recorder, args, *, recovered: int) -> dict:
         "transport": args.transport,
         "stream_id": args.stream_id,
         "target_fps": args.fps,
+        "fec_group": args.fec_group if args.transport == "stream" else None,
+        "fec_scheme": args.fec_scheme if args.transport == "stream" else None,
         "delivered": n,
         "unique_seqs": len(set(seqs)),
         "seq_span": span_seq,
@@ -335,6 +339,13 @@ def main() -> int:
                    help="consumer: seconds to wait for the producer descriptor")
     p.add_argument("--require-full", action="store_true",
                    help="stream consumer: require_full_delivery")
+    p.add_argument("--fec-group", type=int, default=1,
+                   help="stream producer: frames per FEC group == flush cadence "
+                        "(1 = flush every frame; 4 = GF(256) two-repair over 4)")
+    p.add_argument("--fec-scheme", default="auto",
+                   choices=["auto", "none", "xor", "gf256"],
+                   help="stream producer: FEC scheme; 'auto' derives it from "
+                        "--fec-group (1->xor one-repair, >1->gf256 two-repair)")
     p.add_argument("--loopback-latency", action="store_true",
                    help="also report one-way latency (valid only same-host)")
     p.add_argument("--out", type=Path, default=None,
