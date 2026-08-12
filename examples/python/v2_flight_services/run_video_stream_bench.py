@@ -90,6 +90,10 @@ def run_producer(args) -> int:
     provider = ServiceProvider(
         **provider_kwargs(args, _frame_prefix(args.stream_id), "")
     )
+    # Descriptor publish rides the provider's own runtime Face (avoid a second
+    # ndn::Face in-process; same crash class fixed for the dashboard).
+    from dataplane import set_runtime as _set_runtime
+    _set_runtime(provider)
     period = 1.0 / max(args.fps, 1.0)
     deadline = time.monotonic() + args.seconds
     published = 0
@@ -101,6 +105,10 @@ def run_producer(args) -> int:
         prod = VideoStreamProducer(
             provider, args.stream_id, _frame_prefix(args.stream_id),
             fps=args.fps,
+            # Frames must be signed by the stream's provider identity — the Core
+            # rejects any push whose signer != definition.provider ("outside
+            # provider authority"). Here the provider prefix IS that identity.
+            signing_identity=_frame_prefix(args.stream_id),
             fec_group_frames=args.fec_group,
             fec_scheme=args.fec_scheme,
         )
@@ -196,10 +204,15 @@ def run_consumer(args) -> int:
     if args.transport == "stream":
         from ndnsf import ServiceUser
 
-        from dataplane import fetch_segmented
+        from dataplane import fetch_segmented, set_runtime
         from video_stream import VideoStreamConsumer
 
         user = ServiceUser(**user_kwargs(args, args.user))
+        # Route the descriptor fetch through the user's OWN runtime Face. Without
+        # this, fetch_segmented falls back to a standalone ndn::Face; two Faces in
+        # one process race ndn-cxx global state and SIGSEGV under the streaming
+        # runtime (same crash class fixed for the dashboard).
+        set_runtime(user)
         descriptor_json = _await_descriptor(fetch_segmented, args)
         if descriptor_json is None:
             print(json.dumps({"event": "consumer.no_descriptor"}), flush=True)

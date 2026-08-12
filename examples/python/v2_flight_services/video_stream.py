@@ -96,31 +96,39 @@ FEC_MAX_SOURCE_BYTES = SIGNED_WIRE_CAP
 FEC_RECOVERY_BUDGET_MS = 200  # reasonable for real-time local Wi-Fi
 
 
+def predictive_data_name(mapping_root: str, mapping_version: int, seq: int) -> str:
+    """Canonical predictive-stream Data name for one pushed sample.
+
+    Delegates to NDNSF's ``make_predictive_data_name`` (mirrors the C++
+    ``nsf::makePredictiveDataName``): ``mappingRoot + "v" + Number(version) +
+    SequenceNumber(seq)``. The version is a nonNegativeInteger component, not
+    ASCII digits, so a hand-built f-string name is rejected by the Core as
+    "non-canonical predictive Data name".
+    """
+    from ndnsf import make_predictive_data_name
+
+    return make_predictive_data_name(mapping_root, int(mapping_version), int(seq))
+
+
 def make_app_signed_data(
     name: str, payload: bytes, signing_identity: str = ""
 ) -> bytes:
     """Return the signed NDN Data wire for one frame, app-named + app-signed.
 
-    Uses NDNSF's single-shot segmented signer with a segment size at the wire
-    cap so a within-budget frame yields exactly one packet — the wire we push.
-    Raises if the frame would segment (caller must downscale below
-    ``FRAME_BUDGET``), because the high-level ``push`` is one-Data-per-call.
+    Uses NDNSF's exact-name signer (``make_signed_data``) so the Data carries the
+    verbatim predictive name — the high-level ``push`` is one-Data-per-call and
+    rejects any name with an appended version/segment. The caller must keep the
+    frame a single packet by downscaling below ``FRAME_BUDGET`` (the Core also
+    enforces ``signed_wire_cap`` and rejects an over-budget push).
     """
-    from ndnsf import make_segmented_data_packets
+    from ndnsf import make_signed_data
 
-    packets = make_segmented_data_packets(
+    return make_signed_data(
         name,
         payload,
         signing_identity=signing_identity,
-        max_segment_size=SIGNED_WIRE_CAP,
         freshness_ms=300,
     )
-    if len(packets) != 1:
-        raise ValueError(
-            f"frame {len(payload)}B did not fit one Data "
-            f"({len(packets)} segments); downscale below {FRAME_BUDGET}B"
-        )
-    return packets[0].wire
 
 
 def _build_fec(scheme: str, group_frames: int, max_source_bytes: int,
@@ -251,9 +259,10 @@ class VideoStreamProducer:
         if len(jpeg) > FRAME_BUDGET:
             return False
         with self._lock:
-            name = (
-                f"{self._definition.mapping_root}/v/"
-                f"{self._definition.mapping_version}/seq={self._seq}"
+            name = predictive_data_name(
+                self._definition.mapping_root,
+                self._definition.mapping_version,
+                self._seq,
             )
             self._stream.push(
                 make_app_signed_data(name, jpeg, self._signing_identity)
