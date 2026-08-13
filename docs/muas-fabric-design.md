@@ -207,8 +207,13 @@ actual v2/v3 work — tracked separately).
 
 ## 8. Open/verify list
 
-1. ndn-fwd multicast-strategy equivalent on `/muas` over multiple udp faces (§4.2).
-2. ndn-fwd udp face MTU/LP-reliability knobs vs the mtu-1452 lesson (§4.2).
+1. ~~ndn-fwd multicast-strategy~~ ANSWERED (phase-2 response §3a): default is
+   best-route (one nexthop) — the fabric's ndn-fwd setup script sets the
+   multicast strategy via `ndn-ctl strategy set /muas` at every cell start.
+2. ~~ndn-fwd MTU/LP-reliability~~ ANSWERED (§3b): udp MTU defaults 1400
+   (< 1452 — already safe); LP reliability enabled per-face at cell start via
+   `ndn-ctl face update <id> --flags 0x2`. Static TOML fields = upstream
+   feature request.
 3. App prefix re-registration after socket swap: confirm restart-nudge covers every
    registrar (NDNSF runtime + journal publishers + svsgen).
 4. ndn-fwd packaging from committed revs (currently local dirty trees; scratch
