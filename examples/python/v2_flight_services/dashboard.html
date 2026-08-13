@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>miniMUAS v2 — Mission Console</title>
+<title>miniMUAS v3 — Mission Console</title>
 <style>
 /* =======================================================================
    Carbon Design System (Gray 100 theme), hand-rolled for offline use:
@@ -40,8 +40,6 @@
   --cds-layer-selected-inverse: #f4f4f4;
   /* spacing scale */
   --sp-02: 4px; --sp-03: 8px; --sp-04: 12px; --sp-05: 16px; --sp-06: 24px;
-  /* side-panel widths (operator-resizable; JS overrides via body.style) */
-  --side-w: 336px; --right-w: 288px;
   /* type */
   --font-sans: 'IBM Plex Sans', system-ui, 'Helvetica Neue', Arial, sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
@@ -52,6 +50,9 @@ body {
   background: var(--cds-background); color: var(--cds-text-primary);
   font: 400 14px/1.29 var(--font-sans); letter-spacing: .16px;
   display: grid; grid-template-rows: 48px 1fr;
+  /* side panels are resizable (drag grips) and fully collapsible (edge
+     tabs); the vars are set by the panel controller and persisted */
+  --side-w: 336px; --right-w: 288px;
   grid-template-columns: var(--side-w) 1fr var(--right-w);
   grid-template-areas: "header header header" "side map right";
   overflow: hidden;
@@ -207,6 +208,8 @@ h3:first-child { margin-top: 0; }
   object-fit: contain; display: block; margin-top: var(--sp-03); }
 .vidstats { font: 400 12px var(--font-mono); color: var(--cds-text-helper);
   margin-top: var(--sp-02); }
+/* per-vehicle video transport selector (only rendered when the backend
+   advertises hello.video_transport) */
 .vxport { margin-left: auto; height: 20px; font: 400 11px var(--font-mono);
   background: var(--cds-field); color: var(--cds-text-primary);
   border: 1px solid var(--cds-border-subtle); }
@@ -223,6 +226,46 @@ h3:first-child { margin-top: 0; }
 #log .n.hit { border-left-color: var(--cds-support-success); }
 #log .n.err { border-left-color: var(--cds-support-error); }
 
+/* ---- event log filter bar (chips = union; vehicle/text intersect) ----- */
+#logfilter { margin-bottom: var(--sp-03); }
+#logchips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: var(--sp-02); }
+.logchip {
+  display: inline-flex; align-items: center; gap: 4px; height: 20px;
+  padding: 0 var(--sp-03); border: 1px solid var(--cds-border-subtle);
+  border-radius: 10px; background: var(--cds-layer-01);
+  color: var(--cds-text-secondary); font-size: 11px; letter-spacing: .32px;
+  cursor: pointer;
+}
+.logchip:hover { background: var(--cds-layer-02); }
+.logchip.on {
+  background: var(--cds-layer-selected-inverse); color: var(--cds-text-inverse);
+  border-color: transparent;
+}
+.logchip .ct { font-family: var(--font-mono); font-size: 10px; opacity: .75; }
+#logfilter .rowf { display: flex; gap: var(--sp-02); align-items: center; }
+#logvid {
+  flex: 0 0 38%; height: 24px; padding: 0 var(--sp-02);
+  background: var(--cds-field-01); color: var(--cds-text-primary);
+  border: none; border-bottom: 1px solid var(--cds-border-strong);
+  border-radius: 0; font-size: 11px;
+}
+#logtext {
+  flex: 1; min-width: 0; height: 24px; padding: 0 var(--sp-03);
+  background: var(--cds-field-01); color: var(--cds-text-primary);
+  border: none; border-bottom: 1px solid var(--cds-border-strong);
+  border-radius: 0; font: 400 11px var(--font-mono);
+}
+#logtext::placeholder { color: var(--cds-text-placeholder); }
+
+/* ---- unconfirmed candidate cards (end-of-raster, operator-disposed) ---- */
+#detCard .unconf {
+  border-left: 3px solid var(--cds-support-warning);
+  padding-left: var(--sp-03);
+}
+#detCard .unconf .ubtn {
+  height: 22px; padding: 0 var(--sp-03); font-size: 11px; margin-top: 4px;
+}
+
 /* ---- map overlays ------------------------------------------------------------------ */
 #mission-banner {
   position: absolute; top: var(--sp-03); left: var(--sp-03); z-index: 5;
@@ -237,17 +280,21 @@ h3:first-child { margin-top: 0; }
   padding: var(--sp-02) var(--sp-05); font-size: 12px; font-weight: 600;
   display: none; z-index: 5;
 }
-#estimate { font: 400 12px var(--font-mono); color: var(--cds-text-secondary);
-  display: block; margin: var(--sp-02) 0 0; }
-#thumb { width: 100%; margin-top: var(--sp-03); display: none; }
-#detCard a { color: var(--cds-link-primary); text-decoration: none; }
-#detCard a:hover { text-decoration: underline; }
-#detCard .mono { font-family: var(--font-mono); font-size: 12px; }
+
+/* ---- sensor-tasking popover (anchored at the clicked map glyph) --------- */
+.taskpop {
+  position: absolute; z-index: 6; display: none; max-width: 220px;
+  background: var(--cds-layer-01); border: 1px solid var(--cds-border-subtle);
+  padding: var(--sp-03) var(--sp-05); font: 400 12px var(--font-mono);
+}
+.taskpop .row { color: var(--cds-text-secondary); margin-bottom: 2px; }
+.taskpop .row b { color: var(--cds-text-primary); }
+.taskpop button {
+  margin-top: var(--sp-03); height: 26px; padding: 0 var(--sp-04);
+  font-size: 12px;
+}
 
 /* ---- map follow / orientation cluster (top right, pictogram-first) ------- */
-/* Ported from v3 (crates/muas-dashboard/assets/dashboard.html). Adds camera
-   modes (free/fixed/follow/fleet) and orientation (north-up/heading-up) to
-   the v2 canvas — which gains a rotation transform (view.rot) to match. */
 #mapctl {
   position: absolute; top: var(--sp-03); right: var(--sp-03); z-index: 5;
   display: flex; flex-direction: column; align-items: flex-end;
@@ -307,30 +354,22 @@ h3:first-child { margin-top: 0; }
 .tilemap .follow-btn:focus-visible { outline: 2px solid var(--cds-focus); outline-offset: -2px; }
 .tilemap label { display: inline-flex; gap: 4px; align-items: center;
   font-size: 11px; color: var(--cds-text-secondary); cursor: pointer; }
+#estimate { font: 400 12px var(--font-mono); color: var(--cds-text-secondary);
+  display: block; margin: var(--sp-02) 0 0; }
+#thumb { width: 100%; margin-top: var(--sp-03); display: none; }
+#detCard a { color: var(--cds-link-primary); text-decoration: none; }
+#detCard a:hover { text-decoration: underline; }
+#detCard .mono { font-family: var(--font-mono); font-size: 12px; }
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-thumb { background: var(--cds-layer-02); }
 
-/* ---- map legend overlay (ported from v3, trimmed to v2's layers) --------- */
-#legend {
-  position: absolute; bottom: var(--sp-05); right: var(--sp-03); z-index: 5;
-  display: none; background: var(--cds-layer-01);
-  border: 1px solid var(--cds-border-subtle); padding: var(--sp-03) var(--sp-04);
-  max-width: 260px; font-size: 11px; color: var(--cds-text-secondary);
-}
-#legend h4 { font-size: 11px; font-weight: 600; margin: var(--sp-03) 0 var(--sp-02);
-  color: var(--cds-text-primary); }
-#legend h4:first-child { margin-top: 0; }
-#legend .li { display: flex; gap: 6px; align-items: center; margin-bottom: 2px;
-  line-height: 1.3; }
-#legend .sw { flex: none; width: 14px; height: 10px; display: inline-block; }
-
-/* ---- collapsible tool sections (h3 = section header w/ chevron) --------- */
-/* Ported from v3: makeCollapsible() turns each panel h3 into a toggle and
-   wraps its following siblings in a .secbody; state persists per header. */
+/* ---- collapsible tool sections (h3 = section header w/ chevron) ---------- */
 h3.sech { cursor: pointer; user-select: none; }
 h3.sech:hover { color: var(--cds-text-primary); }
 h3.sech .chev { display: inline-block; width: 14px; color: var(--cds-text-helper);
   font-size: 10px; }
 
-/* ---- resizable / collapsible side panels (ported from v3) --------------- */
+/* ---- resizable / collapsible side panels ---------------------------------- */
 .grip {
   position: fixed; top: 48px; bottom: 0; width: 7px; z-index: 40;
   cursor: col-resize; background: transparent;
@@ -348,9 +387,23 @@ h3.sech .chev { display: inline-block; width: 14px; color: var(--cds-text-helper
 #sideTab { left: var(--side-w); border-left: none; }
 #rightTab { right: var(--right-w); border-right: none; }
 
-/* ---- command lifecycle: toasts + mini-log (ported from v3) -------------- */
+/* ---- map legend overlay ---------------------------------------------------- */
+#legend {
+  position: absolute; bottom: var(--sp-05); left: var(--sp-03); z-index: 6;
+  background: rgba(22,22,22,0.92); border: 1px solid var(--cds-border-subtle);
+  padding: var(--sp-04); font-size: 11px; letter-spacing: .32px;
+  max-width: 280px; max-height: 60%; overflow-y: auto; display: none;
+}
+#legend h4 { font-size: 11px; font-weight: 600; margin: var(--sp-03) 0 var(--sp-02);
+  color: var(--cds-text-secondary); }
+#legend h4:first-child { margin-top: 0; }
+#legend .li { display: flex; gap: 6px; align-items: center; margin-bottom: 2px;
+  color: var(--cds-text-secondary); }
+#legend .sw { flex: none; width: 14px; height: 10px; display: inline-block; }
+
+/* ---- command lifecycle: toasts + mini-log ---------------------------------- */
 #toasts {
-  position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+  position: absolute; top: 44px; left: 50%; transform: translateX(-50%);
   z-index: 30; display: flex; flex-direction: column; gap: 4px;
   align-items: center; pointer-events: none;
 }
@@ -376,41 +429,215 @@ h3.sech .chev { display: inline-block; width: 14px; color: var(--cds-text-helper
 #cmdlog .n.err { border-left-color: var(--cds-support-error); }
 #cmdlog .n.warn { border-left-color: var(--cds-support-warning); }
 #cmdlog .st { font-weight: 600; }
+
+/* ---- scoped cancel (✕) affordances + sim anomaly list ----------------------- */
 .xabort {
-  background: none; border: 1px solid var(--cds-border-subtle);
+  background: none; border: 1px solid var(--cds-border-subtle, #393939);
   color: var(--cds-text-secondary); cursor: pointer; font-size: 10px;
-  line-height: 1; padding: 1px 4px; float: right;
+  line-height: 1; padding: 1px 4px; margin-left: 6px; vertical-align: 1px;
 }
 .xabort:hover { color: var(--cds-support-error); border-color: var(--cds-support-error); }
-/* ---- unconfirmed-candidate action buttons ------------------------------- */
-.unconf .ubtn { height: 24px; padding: 0 var(--sp-03); font-size: 12px;
-  margin-top: var(--sp-02); margin-right: var(--sp-02); }
+#cmdlog .n .xabort { float: right; }
+#alist { max-height: 130px; overflow-y: auto; }
+#alist .arow {
+  display: flex; justify-content: space-between; align-items: center;
+  background: var(--cds-layer-01); padding: 2px var(--sp-03);
+  margin-bottom: 2px; font-size: 11px;
+}
+#alist .arow.sel { outline: 1px dashed var(--cds-text-primary); }
 
-::-webkit-scrollbar { width: 8px; }
-::-webkit-scrollbar-thumb { background: var(--cds-layer-02); }
+/* ---- per-vehicle task-queue strip (bottom of each vehicle tile) ---------- */
+.qstrip { margin-top: var(--sp-03); border-top: 1px solid var(--cds-border-subtle);
+  padding-top: var(--sp-02); }
+.qhead { display: flex; align-items: center; gap: var(--sp-02);
+  font-size: 11px; letter-spacing: .32px; color: var(--cds-text-secondary);
+  cursor: pointer; user-select: none; }
+.qhead:hover { color: var(--cds-text-primary); }
+.qhead .chev { width: 12px; font-size: 9px; color: var(--cds-text-helper); }
+.qhead .qcount { font-family: var(--font-mono); font-size: 10px;
+  color: var(--cds-text-helper); }
+.qactive { display: flex; align-items: center; gap: var(--sp-02);
+  background: var(--cds-layer-02); padding: 3px var(--sp-03);
+  margin-top: var(--sp-02); font-size: 11px; }
+.qactive .qkind { font-weight: 600; }
+.qactive.qsplit-target { outline: 1px dashed var(--cds-support-warning); }
+.qbar { flex: 1; min-width: 40px; height: 4px; background: var(--cds-background); }
+.qfill { display: block; height: 100%; background: var(--cds-interactive); }
+.qeta, .qchip .qmeta { font-family: var(--font-mono); font-size: 10px;
+  color: var(--cds-text-helper); white-space: nowrap; }
+.qsplitwarn { display: none; color: var(--cds-support-warning);
+  font-size: 10px; white-space: nowrap; }
+.qactive.qsplit-target .qsplitwarn { display: inline; }
+.qchips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+  margin-top: var(--sp-02); }
+.qchip { display: inline-flex; align-items: center; gap: 4px; height: 20px;
+  padding: 0 var(--sp-03); border: 1px solid var(--cds-border-subtle);
+  background: var(--cds-layer-01); color: var(--cds-text-secondary);
+  font-size: 11px; letter-spacing: .32px; cursor: grab; }
+.qchip:hover { background: var(--cds-layer-02); color: var(--cds-text-primary); }
+.qchip.dragging { opacity: .35; }
+.qchip.qdrop-before { box-shadow: -2px 0 0 0 var(--cds-interactive); }
+.qchip.qdrop-after { box-shadow: 2px 0 0 0 var(--cds-interactive); }
+.qbadge { background: #302400; color: #f1c21b; border-radius: 8px;
+  font-size: 9px; padding: 0 5px; }
+.qdone { font-size: 10px; color: var(--cds-text-helper);
+  font-family: var(--font-mono); }
+#qpop { position: fixed; z-index: 50; display: none; max-width: 250px;
+  background: var(--cds-layer-01); border: 1px solid var(--cds-border-subtle);
+  padding: var(--sp-03) var(--sp-05); font: 400 12px var(--font-mono); }
+#qpop .row { color: var(--cds-text-secondary); margin-bottom: 2px; }
+#qpop .row b { color: var(--cds-text-primary); }
+
+/* ---- display (viz config) panel -------------------------------------------- */
+#dispPanel .row { display: grid; grid-template-columns: 1fr 76px 34px;
+  gap: var(--sp-03); align-items: center; margin-bottom: 6px; }
+#dispPanel .row label { font-size: 11px; letter-spacing: .32px;
+  color: var(--cds-text-secondary); }
+#dispPanel .row output { font: 400 11px var(--font-mono);
+  color: var(--cds-text-primary); text-align: right; }
+#dispPanel input[type=range] { width: 100%; accent-color: var(--cds-interactive); }
+#dispPanel input[type=checkbox] { justify-self: end;
+  accent-color: var(--cds-interactive); }
+#estimate .statline { display: block; }
+
+/* ---- network panel: namespace lens chips ------------------------------------ */
+#nschips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: var(--sp-02); }
+.nschip {
+  display: inline-flex; align-items: center; gap: 5px; height: 20px;
+  padding: 0 var(--sp-03); border: 1px solid var(--cds-border-subtle);
+  border-radius: 10px; background: var(--cds-layer-01);
+  color: var(--cds-text-secondary); font-size: 11px; letter-spacing: .32px;
+  cursor: pointer; max-width: 100%;
+}
+.nschip:hover { background: var(--cds-layer-02); }
+.nschip.on {
+  background: var(--cds-layer-selected-inverse); color: var(--cds-text-inverse);
+  border-color: transparent;
+}
+.nschip .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+.nschip .rate { font-family: var(--font-mono); font-size: 10px; opacity: .75; }
+.nschip .pfx { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#netnote { font-size: 11px; letter-spacing: .32px; color: var(--cds-text-helper);
+  line-height: 1.4; }
+
+/* ---- catalog panel (surface self-description, read-only this round) --------- */
+#catsearch {
+  width: 100%; height: 26px; padding: 0 var(--sp-03); margin-bottom: var(--sp-03);
+  background: var(--cds-field-01); color: var(--cds-text-primary);
+  border: none; border-bottom: 1px solid var(--cds-border-strong);
+  border-radius: 0; font: 400 11px var(--font-mono);
+}
+#catsearch::placeholder { color: var(--cds-text-placeholder); }
+#catalogPanel h5 { font-size: 11px; font-weight: 600; letter-spacing: .32px;
+  color: var(--cds-text-secondary); margin: var(--sp-03) 0 var(--sp-02); }
+#catalogPanel h5 .ct { font-family: var(--font-mono); font-weight: 400;
+  color: var(--cds-text-helper); }
+.catrow {
+  display: flex; justify-content: space-between; align-items: center; gap: 6px;
+  background: var(--cds-layer-01); padding: 3px var(--sp-03); margin-bottom: 2px;
+  font-size: 11px; letter-spacing: .32px; color: var(--cds-text-secondary);
+  cursor: pointer;
+}
+.catrow:hover { background: var(--cds-layer-02); color: var(--cds-text-primary); }
+.catrow .cid { font-family: var(--font-mono); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.catrow .ctag { flex: none; font-size: 9px; padding: 0 5px; border-radius: 8px;
+  background: var(--cds-layer-02); color: var(--cds-text-helper); }
+.catrow .ctag.refuse { background: #520408; color: #ff8389; }
+#catpop { position: fixed; z-index: 50; display: none; max-width: 280px;
+  background: var(--cds-layer-01); border: 1px solid var(--cds-border-subtle);
+  padding: var(--sp-03) var(--sp-05); font: 400 11px/1.5 var(--font-sans); }
+#catpop .row { color: var(--cds-text-secondary); margin-bottom: 3px; }
+#catpop .row b { color: var(--cds-text-primary); }
+#catpop .mono { font-family: var(--font-mono); }
+
+/* ---- RC pilot surface (RC-CONTROL R2) --------------------------------------- */
+.rcstrip {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-top: 8px; padding: 4px 6px; border-radius: 2px;
+  background: var(--cds-layer-01); border-left: 3px solid var(--cds-border-subtle);
+  font: 400 10px/1.4 var(--font-mono); color: var(--cds-text-secondary);
+}
+.rcstrip.rc-green  { border-left-color: #42be65; }
+.rcstrip.rc-amber  { border-left-color: #f1c21b; }
+.rcstrip.rc-red    { border-left-color: #fa4d56; }
+.rcstrip.rc-gray   { border-left-color: #6f6f6f; }
+.rcstrip .rcdot { width: 8px; height: 8px; border-radius: 50%; flex: none;
+  background: #6f6f6f; }
+.rcstrip.rc-green .rcdot { background: #42be65; }
+.rcstrip.rc-amber .rcdot { background: #f1c21b; }
+.rcstrip.rc-red   .rcdot { background: #fa4d56; }
+.rcstrip .rcstate { font-weight: 600; letter-spacing: .3px; text-transform: uppercase; }
+.rcstrip .rck { color: var(--cds-text-helper); }
+#pilotPanel { font-size: 12px; }
+#pilotPanel .prow { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+#pilotPanel select { flex: 1; height: 28px; background: var(--cds-field-01);
+  color: var(--cds-text-primary); border: none;
+  border-bottom: 1px solid var(--cds-border-strong); font: 400 12px var(--font-mono); }
+#pilotEngage { flex: 1; }
+.pilot-sticks { display: flex; gap: 12px; justify-content: center; margin: 8px 0; }
+.stickbox { position: relative; width: 92px; height: 92px; border-radius: 3px;
+  background: var(--cds-layer-01); border: 1px solid var(--cds-border-subtle); }
+.stickbox::before, .stickbox::after { content: ""; position: absolute;
+  background: var(--cds-border-subtle); }
+.stickbox::before { left: 50%; top: 4px; bottom: 4px; width: 1px; transform: translateX(-.5px); }
+.stickbox::after  { top: 50%; left: 4px; right: 4px; height: 1px; transform: translateY(-.5px); }
+.stickbox .dot { position: absolute; width: 12px; height: 12px; border-radius: 50%;
+  background: #4589ff; margin: -6px 0 0 -6px; transition: left .04s linear, top .04s linear; }
+.stickbox .lbl { position: absolute; bottom: 2px; left: 0; right: 0; text-align: center;
+  font: 400 9px var(--font-mono); color: var(--cds-text-helper); }
+.chbars { display: grid; grid-template-columns: auto 1fr auto; gap: 3px 6px;
+  align-items: center; margin: 8px 0; }
+.chbars .cn { font: 400 10px var(--font-mono); color: var(--cds-text-helper); }
+.chbars .cv { font: 400 10px var(--font-mono); color: var(--cds-text-secondary);
+  text-align: right; }
+.chbar { position: relative; height: 8px; background: var(--cds-layer-01);
+  border-radius: 4px; overflow: hidden; }
+.chbar > i { position: absolute; top: 0; bottom: 0; background: #4589ff;
+  left: 50%; width: 0; }
+#pilotEstop { width: 100%; height: 44px; margin-top: 8px; font-size: 15px;
+  font-weight: 700; letter-spacing: .5px; background: #da1e28; color: #fff;
+  border: none; border-radius: 3px; cursor: pointer; }
+#pilotEstop:disabled { background: #525252; color: #8d8d8d; cursor: not-allowed; }
+#pilotEstop.latched { background: #fff; color: #da1e28; border: 2px solid #da1e28;
+  animation: rcblink 1s steps(2) infinite; }
+@keyframes rcblink { 50% { opacity: .55; } }
+#pilotHint { font-size: 10px; color: var(--cds-text-helper); line-height: 1.5;
+  margin-top: 6px; }
+#pilotHint kbd { font-family: var(--font-mono); background: var(--cds-layer-02);
+  padding: 0 3px; border-radius: 2px; }
+#manualBanner { position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+  z-index: 40; display: none; padding: 4px 16px; border-radius: 3px;
+  background: #da1e28; color: #fff; font: 700 13px var(--font-mono);
+  letter-spacing: 1px; box-shadow: 0 2px 8px rgba(0,0,0,.5); }
+#manualBanner.on { display: block; }
 </style>
 </head>
 <body>
 
 <header class="cds-header">
-  <span class="name"><b>miniMUAS</b>v2 Mission Console</span>
+  <span class="name"><b>miniMUAS</b>v3 Mission Console</span>
   <span class="cds-tag cds-tag--gray" id="mstate">idle</span>
   <span class="spacer"></span>
-  <button class="cds-btn cds-btn--ghost" id="downloadBtn"
+  <button class="cds-btn cds-btn--ghost" id="downloadBtn" style="display:none"
           title="Pull the ENTIRE mission (every node's journal + all captured video/audio + this dashboard's recording) to your computer over NDN as one archive.">Download mission data</button>
-  <button class="cds-btn cds-btn--ghost" id="importBtn"
+  <button class="cds-btn cds-btn--ghost" id="importBtn" style="display:none"
           title="Load a downloaded mission archive and replay the whole mission in sim mode (artifacts resolve from the bundle).">Import mission</button>
   <input type="file" id="importFile" accept=".gz,.tgz,.tar" style="display:none">
+  <button class="cds-btn cds-btn--ghost" id="recBtn" style="display:none"
+    title="Arm/stop a recording session. Recording also arms automatically at mission start and finalizes at mission end / RTL-all. Recordings are UI replay artifacts; the vehicle journals remain the durable record.">● Record</button>
   <button class="cds-btn cds-btn--ghost" id="replayBtn">Replay</button>
-  <button class="cds-btn cds-btn--ghost" id="sensorsBtn"
-          title="Sensor coverage from each vehicle's advertised sensor_meta: nadir cameras show the ground footprint quad, forward cameras a FoV cone with D/R/I bands, microphones their omni reach circle (+ beamforming lobes when advertised).">Sensors on</button>
+  <button class="cds-btn cds-btn--ghost" id="legendBtn"
+    title="Toggle the map legend (explains the symbology of the layers currently on)">Legend</button>
   <button class="cds-btn cds-btn--ghost" id="dataBtn">Data on</button>
   <button class="cds-btn cds-btn--ghost" id="eventsBtn">Events on</button>
+  <button class="cds-btn cds-btn--ghost" id="sensorsBtn"
+    title="Sensor coverage from each vehicle's advertised sensor_meta: nadir cameras show the ground footprint quad, forward cameras a FoV cone with shaded D/R/I bands, microphones their reach">Sensors on</button>
+  <button class="cds-btn cds-btn--ghost" id="netBtn"
+    title="Fabric truth as a MEDIUM: per-node coverage/activity fields + attributable emission pulses (1 Hz from the deployment); point-to-point lines survive only on the off-by-default overlay-bearers sub-layer">Network off</button>
   <button class="cds-btn cds-btn--ghost" id="imageryBtn">Imagery on</button>
-  <button class="cds-btn cds-btn--ghost" id="cmdModeBtn"
+  <button class="cds-btn cds-btn--ghost" id="cmdModeBtn" style="display:none"
           title="Command routing (live, no redeploy): targeted = NDNSF fast path straight to the known provider; two-phase = full discovery/ACK handshake. metric.latency is tagged with the mode, so flipping this mid-run gives the targeted-vs-two-phase A/B.">Cmd: targeted</button>
-  <button class="cds-btn cds-btn--ghost" id="legendBtn"
-          title="Toggle the map legend (explains the symbology of the layers currently on)">Legend</button>
   <span class="cds-tag cds-tag--red" id="conn">offline</span>
 </header>
 
@@ -521,41 +748,54 @@ opportunistic: fire whenever the vehicle happens to pass within range.">
     <button class="cds-btn cds-btn--tertiary" id="capPick">Pick point</button>
   </div>
 
-  <h3>Simulation</h3>
-  <div class="grid-2">
-    <div class="field"><label for="akind">Target type</label>
-      <select id="akind"
-        title="visual: a ground blob the WUAS camera finds during its raster (drives the detect→localize→dispatch flow). audio: a sound source for the mic airframe.">
-        <option value="visual">visual (camera)</option>
-        <option value="audio">audio (mic)</option>
-      </select></div>
-    <div class="field"><label for="asig">Signature</label>
-      <select id="asig">
-        <option value="red">red</option>
-        <option value="orange">orange</option>
-        <option value="blue">blue</option>
-        <option value="magenta">magenta</option>
-        <option value="yellow">yellow</option>
-      </select></div>
+  <div id="simPanel" style="display:none">
+    <h3>Simulation</h3>
+    <div class="grid-2">
+      <div class="field"><label for="akind">Anomaly type</label>
+        <select id="akind">
+          <option value="visual">visual</option>
+          <option value="audio">audio</option>
+        </select></div>
+      <div class="field"><label for="asig">Signature</label>
+        <select id="asig"></select></div>
+      <div class="field" id="asizeF"><label for="asize">Size (m)</label>
+        <input id="asize" type="number" step="0.5" value="4"></div>
+      <div class="field" id="aloudF" style="display:none"><label for="aloud">Loudness (dB)</label>
+        <input id="aloud" type="number" step="1" value="80"></div>
+    </div>
+    <div class="btnrow">
+      <button class="cds-btn cds-btn--tertiary" id="aplace"
+        title="Click the map to drop this anomaly into the running simulation (via the deployment control endpoint)">Place on map</button>
+      <button class="cds-btn cds-btn--danger-tertiary" id="aclear">Clear all</button>
+    </div>
+    <div class="field"><label>Active anomalies (click a ground-truth marker
+      to select; ✕ removes just that one)</label>
+      <div id="alist"></div></div>
   </div>
-  <div class="btnrow">
-    <button class="cds-btn cds-btn--tertiary" id="aplace"
-      title="Click the map to drop this target into the running sim ground truth; the synthetic detector then finds it when the WUAS rasters over it.">Place on map</button>
-    <button class="cds-btn cds-btn--danger-tertiary" id="aclear">Clear all</button>
-  </div>
-  <div class="field"><label>Active targets (ground truth)</label>
-    <div id="anomlist"></div></div>
 
   <h3>Detection</h3>
   <div class="cds-tile" id="detCard">none yet</div>
   <img id="thumb" alt="trigger frame">
 
   <h3>Event log</h3>
+  <div id="logfilter">
+    <div id="logchips"></div>
+    <div class="rowf">
+      <select id="logvid" title="show only this vehicle's events (intersects with the category chips)">
+        <option value="">all vehicles</option>
+      </select>
+      <input id="logtext" type="text" placeholder="filter text…"
+        title="substring match on the rendered line (intersects with chips + vehicle)">
+      <button id="logclear" class="xabort" style="visibility:hidden"
+        title="clear all event-log filters">✕</button>
+    </div>
+  </div>
   <div id="log"></div>
 </div>
 
 <div id="mapwrap">
   <canvas id="map"></canvas>
+  <div id="manualBanner">⚑ MANUAL</div>
   <div id="mission-banner">
     <span><span class="k">frames</span><b id="mframes">0</b></span>
     <span><span class="k">leg</span><b id="mleg">–</b></span>
@@ -563,9 +803,10 @@ opportunistic: fire whenever the vehicle happens to pass within range.">
     <span><span class="k">targets</span><b id="mtargets">0</b></span>
   </div>
   <div class="pickhint" id="pickhint">click the map…</div>
+  <div class="taskpop" id="taskpop"></div>
   <div id="mapctl">
     <div class="mapctl-row" id="followSeg" role="group" aria-label="map follow mode">
-      <button data-fm="free" class="on" title="Free — pan and zoom by hand">
+      <button data-fm="free" title="Free — pan and zoom by hand">
         <span class="pic">✥</span>Free</button>
       <button data-fm="fixed" title="Fixed — lock the map to an anchor point">
         <span class="pic">◎</span>Fixed</button>
@@ -578,7 +819,7 @@ opportunistic: fire whenever the vehicle happens to pass within range.">
     </div>
     <div class="mapctl-row" id="orientSeg" role="group" aria-label="map orientation">
       <button data-or="north" class="on" title="North-up">N↑</button>
-      <button data-or="heading" id="hdgBtn" disabled
+      <button data-or="heading" id="hdgBtn"
         title="Heading-up — rotate the map to the followed vehicle's heading">➤↑</button>
     </div>
     <div id="fixedPanel">
@@ -604,13 +845,49 @@ opportunistic: fire whenever the vehicle happens to pass within range.">
 <div id="right">
   <h3>Vehicles</h3>
   <div id="cards"></div>
-  <h3>Commands</h3>
-  <div id="cmdlog"></div>
+  <h3>Pilot <span id="pilotUnavail" class="cds-tag cds-tag--gray"
+    style="display:none" title="No vehicle was configured with --rc-target, so no aircraft is RC-reachable from this dashboard.">no RC targets</span></h3>
+  <div id="pilotPanel">
+    <div class="prow">
+      <select id="pilotVid" title="Target one vehicle, or Broadcast to every RC-reachable vehicle"></select>
+      <button class="cds-btn cds-btn--primary" id="pilotEngage">Engage</button>
+    </div>
+    <div class="prow" style="gap:12px">
+      <label style="display:flex;gap:6px;align-items:center;cursor:pointer;font-size:11px">
+        <input type="radio" name="pilotSrc" value="gamepad" checked> gamepad</label>
+      <label style="display:flex;gap:6px;align-items:center;cursor:pointer;font-size:11px"
+        title="Bench fallback — no gamepad required">
+        <input type="radio" name="pilotSrc" value="keyboard"> keyboard</label>
+      <span id="pilotGp" class="cds-tag cds-tag--gray" style="font-size:10px">no gamepad</span>
+    </div>
+    <div class="pilot-sticks">
+      <div class="stickbox" id="stickL"><div class="dot"></div>
+        <div class="lbl">yaw · thr</div></div>
+      <div class="stickbox" id="stickR"><div class="dot"></div>
+        <div class="lbl">roll · pitch</div></div>
+    </div>
+    <div class="chbars" id="pilotBars"></div>
+    <button id="pilotEstop" disabled>E-STOP</button>
+    <div id="pilotHint">
+      Hold <kbd>Space</kbd> to arm-gesture, <kbd>X</kbd> for e-stop.
+      Keyboard: <kbd>W</kbd>/<kbd>S</kbd> throttle, <kbd>A</kbd>/<kbd>D</kbd> yaw,
+      arrows pitch/roll. A live MANUAL banner shows on the map while engaged;
+      RTL/Land/Hold supersede RC.
+    </div>
+  </div>
   <h3>Video</h3>
   <div id="videos"></div>
+  <h3>Commands</h3>
+  <div id="cmdlog"></div>
+  <h3>Network</h3>
+  <div id="netPanel"></div>
+  <h3>Display</h3>
+  <div id="dispPanel"></div>
+  <h3>Catalog</h3>
+  <div id="catalogPanel"></div>
 </div>
 
-<!-- panel resize grips + collapse edge tabs (ported from v3) -->
+<!-- panel resize grips + collapse edge tabs -->
 <div class="grip" id="sideGrip" title="drag to resize — the tab collapses"></div>
 <div class="grip" id="rightGrip" title="drag to resize — the tab collapses"></div>
 <button class="edgetab" id="sideTab" title="collapse/expand the left panel">◂</button>
@@ -652,6 +929,12 @@ opportunistic: fire whenever the vehicle happens to pass within range.">
   </div>
 </div>
 
+<!-- task-queue chip details popover (queue strip; taskpop pattern, panel-side) -->
+<div id="qpop"></div>
+
+<!-- catalog entry detail popover (manifest-powered help seed) -->
+<div id="catpop"></div>
+
 <script>
 "use strict";
 const M_PER_DEG_LAT = 111111;
@@ -661,7 +944,43 @@ const PALETTE = ["#78a9ff", "#be95ff", "#08bdba", "#ff7eb6"];
 const COLORS = {};
 let VEHICLES = ["wuas-01","iuas-01"];
 
+// ---------- display (viz) config: persisted rendering knobs ----------
+// Per-layer opacity, imagery veil (background dimming), icon size and line
+// weight multipliers. Defaults reproduce the classic look; everything is
+// operator-tunable from the right panel's Display section.
+const DISP_KEY = "muas3.display";
+const DISP = {
+  veil: 0.35,        // imagery dimming veil alpha
+  iconMul: 1,        // icon size multiplier (markers/glyphs)
+  lineMul: 1,        // line weight multiplier
+  op: { sensors: 1, net: 1, events: 0.9, data: 1, trails: 1,
+        plan: 1, coverage: 0.4 },
+};
+(function loadDisp(){
+  try {
+    const s = JSON.parse(localStorage.getItem(DISP_KEY) || "{}");
+    for (const k of ["veil","iconMul","lineMul"])
+      if (typeof s[k] === "number") DISP[k] = s[k];
+    if (s.op) for (const k of Object.keys(DISP.op))
+      if (typeof s.op[k] === "number") DISP.op[k] = s.op[k];
+  } catch (e) {}
+})();
+function saveDisp(){
+  try { localStorage.setItem(DISP_KEY, JSON.stringify(DISP)); } catch (e) {}
+}
+// line weight / icon sizing helpers: icons scale with zoom as a nominal
+// ground size in metres, clamped to a legible pixel range (no more
+// fixed-px icons floating over a zoomed-out world)
+const lw = x => x * DISP.lineMul;
+const iconPx = (m, lo, hi) =>
+  Math.max(lo, Math.min(hi, m / view.mppx)) * DISP.iconMul;
+
 // ---------- websocket ----------
+// The last hello, kept whole: backend capability gates (hello.bundle,
+// hello.video_transport, hello.command_mode, "recording" in hello,
+// hello.preview_http) hang off it so ONE file serves both the v2 (python)
+// and v3 (rust) backends — absent flag = feature hidden/legacy path.
+let HELLO = null;
 let ws, wsOK = false;
 function connect() {
   ws = new WebSocket(`ws://${location.host}/ws`);
@@ -686,9 +1005,17 @@ function dispatch(m){
   else if (m.type === "raster_preview") onPreview(m);
   else if (m.type === "event") onEvent(m);
   else if (m.type === "capabilities") onCaps(m);
-  else if (m.type === "sim_anomalies") onSimAnoms(m);
   else if (m.type === "sensor_data") pushSensorData(m.item);
+  else if (m.type === "task_queue") onTaskQueue(m);
+  else if (m.type === "rc") onRc(m);
   else if (m.type === "video_stats") onVideoStats(m);
+  else if (m.type === "net"){ NETPREV = NET; NET = m; renderNetPanel(); }
+  else if (m.type === "sim_anomalies"){
+    // payload-key reconciliation: v3 sends `items`, v2 sends `anomalies`
+    simAnoms = m.items || m.anomalies || [];
+    if (selAnom && !simAnoms.some(a => a.id === selAnom)) selAnom = null;
+    renderAnomList();
+  }
 }
 const send = obj => {
   if (REPLAY.active){
@@ -725,26 +1052,26 @@ function cmdTakeoff(vid){
 const cv = document.getElementById("map"), ctx = cv.getContext("2d");
 // view.rot is the map rotation in radians: the world bearing that points
 // screen-up. North-up is rot=0; heading-up eases rot toward the followed
-// vehicle's smoothed heading (ported from v3). Everything projects through
-// toPx/toLL so a single rotation term covers vectors, hit-tests and picks.
+// vehicle's smoothed heading. The preconfigured lat/lon is only the
+// pre-telemetry placeholder — the first fix auto-frames the fleet.
 let view = { lat: 35.1208, lon: -89.9347, mppx: 0.18, rot: 0 };
 let plan = null;
 let drones = {};
 let targets = [];   // mission targets: {index, object_id, confidence, lat,
                     //  lon, frame, status, artifacts}
 let UNCONF = [];    // end-of-raster unconfirmed candidates: {index,
-                    //  object_id, confidence, lat, lon, frame, hits, need,
+                    //  object_id, hits, need, confidence, lat, lon, frame,
                     //  status: unconfirmed|promoted|dismissed}
+let ucandSel = null;  // index of the unconfirmed marker whose popover is open
 let picking = null;
 
 function resize(){ const r = cv.parentElement.getBoundingClientRect();
   cv.width = r.width; cv.height = r.height; }
 window.addEventListener("resize", resize);
 // One world→screen transform: local ENU about the view center, scaled by
-// mppx, then rotated by view.rot in screen space. toPxBase is the unrotated
-// projection (used to draw the axis-aligned satellite tiles inside a ctx
-// rotated by -view.rot, which is the same map by identity). North-up keeps
-// rot=0, so toPx/toLL collapse to the original no-rotation path unchanged.
+// mppx, then rotated by view.rot in screen space. Everything (vectors,
+// hit-tests, picks) goes through toPx/toLL; tiles draw through toPxBase
+// inside a ctx rotated by -view.rot, which is the same map by identity.
 function toPxBase(lat, lon){
   return [ cv.width/2 + (lon - view.lon) * mPerDegLon(view.lat) / view.mppx,
            cv.height/2 - (lat - view.lat) * M_PER_DEG_LAT / view.mppx ]; }
@@ -763,13 +1090,16 @@ function toLL(x, y){
   return [ view.lat - (y - cv.height/2) * view.mppx / M_PER_DEG_LAT,
            view.lon + (x - cv.width/2) * view.mppx / mPerDegLon(view.lat) ]; }
 
-// ---------- follow / framing / orientation modes (ported from v3) ----------
-// free   — manual pan/zoom (plus pre-interaction auto-framing of the fleet)
+// ---------- follow / framing / orientation modes ----------
+// free   — manual pan/zoom (plus pre-interaction auto-framing, below)
 // fixed  — ease the center to a user-set anchor
 // follow — ease the center onto one vehicle; heading-up allowed here only
-// fleet  — continuous centroid centering + dynamic zoom keeping the selected
-//          vehicles framed with ~15 % edge padding
-const MAPCTL_KEY = "muas2.mapctl";
+// fleet  — continuous centroid centering + dynamic zoom that keeps the
+//          selected vehicles in frame with ~15 % edge padding
+// MAP.auto is the first-fix behavior: until the user touches the map or
+// picks a mode, the fleet is kept framed automatically, so a SITL far
+// from the preconfigured center shows up on screen by itself.
+const MAPCTL_KEY = "muas3.mapctl";
 const MAP = { mode:"free", followVid:null, selected:new Set(),
               orient:"north", anchor:null, paused:false, auto:true,
               tmppx:null };
@@ -804,7 +1134,8 @@ function fleetVids(){
   return pool.filter(v => hasFix(drones[v]));
 }
 // centroid + the mppx that keeps every vid in frame with 15 % padding per
-// edge (70 % usable viewport), clamped to the wheel's zoom range
+// edge (70 % usable viewport), fitted about the centroid so the farthest
+// vehicle still clears the border; clamped to the wheel's zoom range
 function fleetFrame(vids){
   let la = 0, lo = 0, laMin = 90, laMax = -90, loMin = 180, loMax = -180;
   for (const v of vids){
@@ -967,190 +1298,101 @@ let showData = true;
 let sensorData = [];          // {vehicle,sensor,kind,name,lat,lon,t,source,label}
 let CAPS = {};                // vid -> ["camera","audio"]
 const SENSOR_COLOR = { camera:"#78a9ff", audio:"#ff832b" };
-
-// ---------- sensor coverage layer + sim ground-truth targets ----------
-// Coverage renders from each vehicle's ADVERTISED sensor_meta (capability
-// profile, additive key) — nothing airframe-specific lives here. Targets are
-// operator-placed ground truth: click "Place on map", the sim serves them to
-// the synthetic detector, which finds one when the WUAS rasters over it.
+// ---------- active sensor taskings (watchpoints + override detours) ------
+// Tracked from the sensor.request → sensor.result lifecycle so a tasking
+// can be inspected AND cancelled from its own map glyph: clicking it opens
+// a popover whose Cancel routes exactly like the mini-log ✕ —
+// task_abort `sensor-override` for a detour, `watchpoint:<id>` for an
+// armed watchpoint (the id rides the accept ack detail).
+let TASKINGS = [];  // {req,vehicle,sensor,mode,label,lat,lon,radius_m,t0,expires_s,state}
+let taskSel = null;           // req of the tasking whose popover is open
+let lastEvtT = 0;             // newest event time seen (replay-safe clock)
+function taskingLifecycle(m){
+  lastEvtT = Math.max(lastEvtT, m.t || 0);
+  if (m.kind === "sensor.request" &&
+      typeof m.lat === "number" && typeof m.lon === "number"){
+    // a targeted tasking (override detour / watchpoint arm) was sent;
+    // "now (here)" captures carry no target and never pin a glyph
+    TASKINGS.push({ req:m.request, vehicle:m.vehicle, sensor:m.sensor,
+      mode:m.mode, label:m.mode === "override" ? "sensor-override" : null,
+      lat:m.lat, lon:m.lon, radius_m:6, t0:m.t, expires_s:600,
+      state:"sent" });
+    if (TASKINGS.length > 24) TASKINGS.shift();
+  } else if (m.kind === "sensor.result"){
+    const i = TASKINGS.findIndex(x => x.req === m.request);
+    if (m.status === "accepted"){
+      if (i < 0) return;
+      const tk = TASKINGS[i];
+      tk.state = "active";
+      const msg = m.message || "";
+      const wp = msg.match(/\bwp-\d+\b/);
+      if (wp) tk.label = `watchpoint:${wp[0]}`;
+      else if (!tk.label) tk.label = "sensor-override";
+      const r = msg.match(/within (\d+(?:\.\d+)?) m/);
+      if (r) tk.radius_m = +r[1];
+      const ex = msg.match(/expires in (\d+(?:\.\d+)?) s/);
+      if (ex) tk.expires_s = +ex[1];
+      else if (!wp) tk.expires_s = null;   // a detour has no arm window
+    } else {
+      // captured / expired / rejected / failed: the tasking is over.
+      // Delayed watchpoint outcomes arrive under an agent-minted request
+      // id, so fall back to the oldest tasking of that vehicle+sensor.
+      let j = i >= 0 ? i : TASKINGS.findIndex(x =>
+        x.vehicle === m.vehicle && x.sensor === m.sensor);
+      if (j >= 0) dropTasking(TASKINGS[j].req);
+    }
+  } else if ((m.kind === "sensor.timeout" || m.kind === "sensor.failed") &&
+             m.request){
+    dropTasking(m.request);
+  } else if (m.kind === "command.result" && m.ok === true &&
+             /^abort /.test(m.command || "")){
+    // the scoped cancel was ACCEPTED (map popover, mini-log ✕, task chip)
+    const label = m.command.slice(6);
+    const j = TASKINGS.findIndex(x =>
+      x.vehicle === m.vehicle && x.label === label);
+    if (j >= 0) dropTasking(TASKINGS[j].req);
+  }
+}
+function dropTasking(req){
+  TASKINGS = TASKINGS.filter(x => x.req !== req);
+  if (taskSel === req) closeTaskPop();
+}
+// ---------- sensor viz layer: ground quads / FoV cones + audio reach ----------
+// Rendered from each vehicle's ADVERTISED sensor_meta (capability profile,
+// additive key) — sensors are dynamic; nothing airframe-specific lives here.
 let showSensors = true;
-let SMETA = {};               // vid -> sensor_meta {camera?, audio?}
-let simAnoms = [];            // ground-truth targets [{id,kind,lat_deg,lon_deg,...}]
-let selAnom = null;           // hovered/selected target id
-const ANOM_COL = { visual:"#fa4d56", audio:"#ff832b" };
-const mToPxr = m => m / view.mppx;
-// world bearing (deg cw from north) -> canvas arc angle (rad, +x axis,
-// clockwise because y is down). view.rot accounts for map rotation so
-// sensor cones/lobes stay world-anchored when the map is heading-up.
-const bearingToCanvas = deg => (deg - 90) * Math.PI / 180 - view.rot;
-// D/R/I ranges near→far with band labels (identify is the shortest).
-function driBands(cam){
-  const rr = (cam.dri_m || []).filter(x => x > 0).slice(0, 3).sort((a, b) => a - b);
-  const names = rr.length === 3 ? ["I","R","D"]
-    : rr.length === 2 ? ["R","D"] : rr.length === 1 ? ["D"] : [];
-  return rr.map((r, i) => [r, names[i]]);
+let SMETA = {};               // vid -> sensor_meta object (or null)
+// ---------- network layer (Revision 2a): draw the medium, not the link ----------
+// NET is the deployment's 1 Hz snapshot: per-link ndn-sim face counters,
+// the active link profile, and (when the deployment taps its bridges)
+// per-prefix rates for the namespace lens. Rendering doctrine
+// (docs/v3/NETWORK-VIZ.md Revision 2): broadcast media render as FIELDS
+// (coverage/activity per node, contention = overlap), emissions as brief
+// attributable pulses; the phase-1 per-pair lines survive verbatim on the
+// toggleable, off-by-default "overlay bearers" sub-layer — a line is an
+// overlay/unicast bearer, never the medium.
+let showNet = false;
+let NET = null;
+let NETPREV = null;           // previous snapshot (data-rate deltas)
+let NETNS = "all";            // namespace lens selection ("all" | a prefix)
+const NETPULSES = {};         // node -> {next, rings:[bornS]} pulse state
+const NETSUB_KEY = "muas3.netsub";
+const NETSUB = { fields: true, pulses: true, overlay: false };
+(function loadNetSub(){
+  try {
+    const s = JSON.parse(localStorage.getItem(NETSUB_KEY) || "{}");
+    for (const k of Object.keys(NETSUB))
+      if (typeof s[k] === "boolean") NETSUB[k] = s[k];
+  } catch (e) {}
+})();
+function saveNetSub(){
+  try { localStorage.setItem(NETSUB_KEY, JSON.stringify(NETSUB)); } catch (e) {}
 }
-function drawForwardCone(d, cam, col){
-  const p = toPx(d.lat, d.lon);
-  const half = Math.min(cam.hfov_deg, 350) * Math.PI / 360;
-  const c = bearingToCanvas(d.heading || 0);
-  let bands = driBands(cam);
-  if (!bands.length) bands = [[25, ""]];   // uncharacterized: plain sector
-  const maxR = bands[bands.length - 1][0];
-  const alphas = ["4d", "33", "1f"];       // strongest fill nearest (identify)
-  let inner = 0;
-  bands.forEach(([rng, label], i) => {
-    const r0 = mToPxr(inner), r1 = mToPxr(rng);
-    if (r1 < 2 || r1 > 6000){ inner = rng; return; }
-    ctx.fillStyle = col + (alphas[i] || "1f");
-    ctx.beginPath();
-    ctx.arc(p[0], p[1], r1, c - half, c + half);
-    if (r0 > 0) ctx.arc(p[0], p[1], r0, c + half, c - half, true);
-    else ctx.lineTo(p[0], p[1]);
-    ctx.closePath(); ctx.fill();
-    ctx.strokeStyle = col + "88"; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.arc(p[0], p[1], r1, c - half, c + half); ctx.stroke();
-    if (label){
-      const rm = (r0 + r1) / 2;
-      ctx.fillStyle = "#f4f4f4"; ctx.font = "10px 'IBM Plex Mono', monospace";
-      ctx.fillText(label, p[0] + Math.cos(c)*rm - 3, p[1] + Math.sin(c)*rm + 3);
-    }
-    inner = rng;
-  });
-  const rp = mToPxr(maxR);                  // cone edge rays
-  if (rp >= 2 && rp <= 6000){
-    ctx.strokeStyle = col; ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    ctx.moveTo(p[0] + Math.cos(c - half)*rp, p[1] + Math.sin(c - half)*rp);
-    ctx.lineTo(p[0], p[1]);
-    ctx.lineTo(p[0] + Math.cos(c + half)*rp, p[1] + Math.sin(c + half)*rp);
-    ctx.stroke();
-  }
-}
-function drawGroundQuad(d, cam, col){
-  // nadir footprint: heading-only rectangle (attitude isn't in the v2 sample)
-  const wpxN = cam.width_px || 320, hpxN = cam.height_px || 240;
-  const tanH = Math.tan(cam.hfov_deg * Math.PI / 360);
-  const yaw = (d.heading || 0) * Math.PI / 180;
-  const wm = 2 * d.agl * tanH, hm = wm * hpxN / wpxN;
-  const f = [Math.cos(yaw), Math.sin(yaw)], r = [-Math.sin(yaw), Math.cos(yaw)];
-  const corners = [[hm/2, wm/2], [hm/2, -wm/2], [-hm/2, -wm/2], [-hm/2, wm/2]]
-    .map(c => [f[0]*c[0] + r[0]*c[1], f[1]*c[0] + r[1]*c[1]]);
-  ctx.fillStyle = col + "1a";
-  ctx.strokeStyle = col; ctx.lineWidth = 1.2; ctx.setLineDash([4,3]);
-  ctx.beginPath();
-  corners.forEach((c, i) => {
-    const q = toPx(d.lat + c[0] / M_PER_DEG_LAT, d.lon + c[1] / mPerDegLon(d.lat));
-    i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]);
-  });
-  ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.setLineDash([]);
-}
-function drawSensors(){
-  if (!showSensors) return;
-  ctx.save();
-  for (const [vid, d] of Object.entries(drones)){
-    if (d.lat === undefined || d.stale) continue;
-    const meta = SMETA[vid];
-    if (!meta) continue;                    // nothing advertised: draw nothing
-    const col = COLORS[vid] || "#f4f4f4";
-    const cam = meta.camera;
-    if (cam && cam.hfov_deg > 0 && d.agl > 0.5){
-      if (cam.facing === "forward") drawForwardCone(d, cam, col);
-      else drawGroundQuad(d, cam, col);
-    }
-    const aud = meta.audio;
-    if (aud){
-      const p = toPx(d.lat, d.lon);
-      ctx.strokeStyle = "#ff832b"; ctx.lineWidth = 1.2;
-      if (aud.lobes && aud.lobes.length){
-        // beamforming lobes: filled wedges relative to the vehicle nose
-        ctx.fillStyle = "#ff832b22";
-        for (const lobe of aud.lobes){
-          const rp = mToPxr(lobe.range_m || 0);
-          if (!(rp > 2) || rp > 4000) continue;
-          const c = bearingToCanvas((d.heading || 0) + (lobe.bearing_deg || 0));
-          const half = (lobe.width_deg || 30) * Math.PI / 360;
-          ctx.beginPath(); ctx.moveTo(p[0], p[1]);
-          ctx.arc(p[0], p[1], rp, c - half, c + half);
-          ctx.closePath(); ctx.fill(); ctx.stroke();
-        }
-      } else if (aud.omni_range_m > 0){
-        // omnidirectional confidence circle (no lobes advertised)
-        const rp = mToPxr(aud.omni_range_m);
-        if (rp >= 6 && rp <= 4000){
-          ctx.setLineDash([6,4]);
-          ctx.beginPath(); ctx.arc(p[0], p[1], rp, 0, 7); ctx.stroke();
-          ctx.setLineDash([]);
-        }
-      }
-    }
-  }
-  ctx.restore();
-}
-function drawAnoms(){
-  // ground-truth targets: crosshair rings (distinct from the detection
-  // diamonds), coloured by kind; the selected one is emphasized
-  for (const a of simAnoms){
-    const p = toPx(a.lat_deg, a.lon_deg);
-    if (p[0] < -20 || p[0] > cv.width+20 || p[1] < -20 || p[1] > cv.height+20)
-      continue;
-    const col = ANOM_COL[a.kind] || "#fa4d56";
-    const sel = a.id === selAnom;
-    ctx.strokeStyle = col; ctx.lineWidth = sel ? 2.5 : 1.5;
-    ctx.beginPath(); ctx.arc(p[0], p[1], 6, 0, 7); ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(p[0]-9, p[1]); ctx.lineTo(p[0]+9, p[1]);
-    ctx.moveTo(p[0], p[1]-9); ctx.lineTo(p[0], p[1]+9); ctx.stroke();
-    ctx.fillStyle = col; ctx.font = "11px 'IBM Plex Mono', monospace";
-    ctx.fillText(`⌖ ${a.kind}${a.signature ? " "+a.signature : ""}`, p[0]+11, p[1]-6);
-  }
-}
-// ---------- unconfirmed candidates (end-of-raster disposition) ----------
-// Hollow amber dashed markers, visually distinct from the FILLED amber
-// queued-target dot. Disposition lives on the sidebar cards (Detection
-// section): "Investigate anyway" promotes through the normal job path
-// (reopening a completed mission); "Dismiss" is terminal. Both route
-// through the mission machine — the UI reflects target.promoted /
-// target.dismissed events that come back. (Ported from v3.)
-function promoteUnconfirmed(i){ send({cmd:"candidate_promote", index:i}); }
-function dismissUnconfirmed(i){ send({cmd:"candidate_dismiss", index:i}); }
-function drawUnconfirmed(){
-  for (const u of UNCONF){
-    if (u.status !== "unconfirmed") continue;
-    const p = toPx(u.lat, u.lon);
-    if (p[0] < -40 || p[0] > cv.width+40 || p[1] < -40 || p[1] > cv.height+40)
-      continue;
-    ctx.save();
-    ctx.strokeStyle = "#f1c21b"; ctx.lineWidth = 1.8; ctx.setLineDash([3,2]);
-    ctx.beginPath(); ctx.arc(p[0], p[1], 7, 0, 7); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle = "#f1c21b"; ctx.font = "12px 'IBM Plex Sans', sans-serif";
-    ctx.fillText(`u#${u.index} ${u.object_id} ${u.hits}/${u.need}`,
-                 p[0]+14, p[1]-8);
-    ctx.restore();
-  }
-}
-function renderAnomList(){
-  const el = document.getElementById("anomlist");
-  if (!el) return;
-  el.innerHTML = simAnoms.length
-    ? simAnoms.map(a => `
-      <div style="display:flex;justify-content:space-between;align-items:center;
-                  padding:3px 0;font-size:12px" class="mono">
-        <span style="color:${ANOM_COL[a.kind] || '#fa4d56'}">⌖ ${a.kind}${
-          a.signature ? " · " + a.signature : ""} · ${a.lat_deg.toFixed(5)}, ${
-          a.lon_deg.toFixed(5)}</span>
-        <a href="#" title="remove this target" style="color:#fa4d56;padding-left:8px"
-           onclick="removeAnom('${a.id}');return false">✕</a>
-      </div>`).join("")
-    : "<span style='color:#6f6f6f;font-size:12px'>none placed</span>";
-}
-function removeAnom(id){ send({cmd:"sim", op:"remove_anomaly", params:{id}}); }
-function onSimAnoms(m){
-  simAnoms = m.anomalies || [];
-  if (selAnom && !simAnoms.some(a => a.id === selAnom)) selAnom = null;
-  renderAnomList();
-}
+let GCS = null;               // hello.gcs {lat,lon,source:"manual"} (--gcs)
+// ---------- simulation plane (virtual deployments only) ----------
+let SIM = null;               // hello.sim capability object
+let simAnoms = [];            // ground-truth anomalies (drawn while sim)
+let selAnom = null;           // selected ground-truth anomaly id (delete flow)
 function pushSensorData(item){
   if (!item || sensorData.some(d => d.name === item.name)) return;
   sensorData.push(item);
@@ -1194,39 +1436,80 @@ const fmtClock = s => {
 function resetUIState(){
   drones = {}; targets = []; UNCONF = []; mapEvents = []; sensorData = [];
   hoverEvt = null; plan = null;
-  SMETA = {}; simAnoms = []; selAnom = null;
-  log.innerHTML = "";
-  CMDS.list = []; CMDS.byId = {};
+  TASKINGS = []; lastEvtT = 0; closeTaskPop();
+  SMETA = {}; NET = null; NETPREV = null; GCS = null;
+  simAnoms = []; selAnom = null;
+  for (const k of Object.keys(NETPULSES)) delete NETPULSES[k];
+  renderNetPanel();
+  covTrack = []; gcsHome = null;
+  QSTATUS = {}; QOPT = {}; MISSION_ID = "";
+  qpop.style.display = "none";
+  VEHICLES.forEach(v => renderQueue(v));
+  renderAnomList();
+  CMDS.list = []; CMDS.byId = {}; renderCmdLog();
+  // the log buffer resets but the ACTIVE FILTERS survive replay
+  // enter/exit (LOGF is localStorage-backed state, not buffer state)
+  log.innerHTML = ""; applyLogFilter();
   mframes.textContent = "0"; mleg.textContent = "–";
   mdet.textContent = "0/0"; mtargets.textContent = "0";
-  renderTargets(); renderAnomList(); renderCmdLog();
+  renderTargets();
+}
+// Session names are `<run>-<mission>-<t>.jsonl` (recordings arm at mission
+// start / Record and finalize at mission end); the picker groups by run.
+// Pre-round-3 `dash-<t>.jsonl` recordings still load, under "earlier".
+function parseRecName(name){
+  const m = name.match(/^(.+?)-((?:mission-\d+)|manual)-(\d{8})-(\d{6})(-\d+)?\.jsonl$/);
+  if (m) return {
+    run: m[1],
+    label: `${m[2] === "manual" ? "manual record" : m[2]} · ` +
+      `${m[3].slice(0,4)}-${m[3].slice(4,6)}-${m[3].slice(6)} ` +
+      `${m[4].slice(0,2)}:${m[4].slice(2,4)}:${m[4].slice(4)}${m[5] || ""}`,
+  };
+  return { run: "earlier recordings", label: name.replace(/\.jsonl$/, "") };
 }
 function openReplayPicker(){
   fetch("/replays").then(r => r.json()).then(j => {
-    const rows = (j.replays || []).map(r => `
-      <div style="display:flex;justify-content:space-between;align-items:center;
-                  margin-bottom:8px">
-        <a href="#" onclick="loadReplay('${r.name}');return false"
-           class="mono">${r.name}</a>
-        <span style="color:#a8a8a8;font-size:12px">
-          ${(r.bytes/1024).toFixed(0)} kB
-          ${r.recording ? ' · <b style="color:#8a3ffc">recording now</b>' : ""}
-        </span>
+    const groups = new Map();      // run -> rows[] (server order = newest first)
+    for (const r of (j.replays || [])){
+      const p = parseRecName(r.name);
+      if (!groups.has(p.run)) groups.set(p.run, []);
+      groups.get(p.run).push(`
+        <div style="display:flex;justify-content:space-between;align-items:center;
+                    margin:0 0 8px 12px">
+          <a href="#" onclick="loadReplay('${r.name}');return false"
+             class="mono" title="${r.name}">${p.label}</a>
+          <span style="color:#a8a8a8;font-size:12px">
+            ${(r.bytes/1024).toFixed(0)} kB
+            ${r.recording ? ' · <b style="color:#8a3ffc">recording now</b>' : ""}
+          </span>
+        </div>`);
+    }
+    const rows = [...groups.entries()].map(([run, items]) => `
+      <div style="margin-bottom:12px">
+        <div style="font-size:12px;color:#c6c6c6;border-bottom:1px solid #393939;
+                    padding-bottom:4px;margin-bottom:8px"><b>${run}</b>
+          <span style="color:#6f6f6f"> · ${items.length} recording${items.length > 1 ? "s" : ""}</span>
+        </div>${items.join("")}
       </div>`).join("");
     openModalHTML("Mission replays",
-      rows || "<span style='color:#a8a8a8'>no recordings yet — the GCS " +
-              "records every session to --record-dir</span>");
+      rows || "<span style='color:#a8a8a8'>no recordings yet — a recording " +
+              "starts at mission start (or ● Record) and ends at mission " +
+              "end/RTL-all; idle sessions record nothing</span>");
   }).catch(() => openModalHTML("Mission replays",
     "<span style='color:#fa4d56'>could not list recordings</span>"));
 }
 // Feed a recorded broadcast stream (JSONL text) through the transport bar.
-// Shared by live-recording replay and imported-mission-bundle replay.
+// Shared by live-recording replay and imported-mission-bundle replay; pure
+// (no fetching) so the bundle-import path can hand it text directly.
 function startReplay(name, text){
   const msgs = [];
   for (const line of (text || "").split("\n")){
     if (!line.trim()) continue;
     try { const o = JSON.parse(line);
-          if (o && o.ts && o.m) msgs.push(o); } catch (e) {}
+          // v3 recordings are uas-console RecordedEvent lines
+          // ({t_ns, event}); v2's {ts, m} lines still load.
+          if (o && o.t_ns && o.event) msgs.push({ts: o.t_ns / 1e9, m: o.event});
+          else if (o && o.ts && o.m) msgs.push(o); } catch (e) {}
   }
   if (!msgs.length) return false;
   closeModal();
@@ -1236,6 +1519,12 @@ function startReplay(name, text){
   REPLAY.i = 0; REPLAY.cur = 0;
   REPLAY.active = true; REPLAY.playing = true;
   resetUIState();
+  // follow/framing/orientation run identically on replayed telemetry;
+  // a recording is a fresh context, so re-arm first-fix auto-framing
+  // (recordings are usually nowhere near the preconfigured center)
+  MAP.paused = false; MAP.tmppx = null;
+  MAP.auto = MAP.mode === "free";
+  syncMapCtl();
   rname.textContent = name;
   rslider.max = REPLAY.dur; rslider.value = 0;
   rplay.textContent = "⏸";
@@ -1255,6 +1544,7 @@ function loadReplay(name){
   });
 }
 // ---------- mission data bundle: download over NDN / import into sim mode ----
+// (v2-only for now — the buttons render only when hello.bundle is set)
 function downloadMission(){
   // GET streams a .tar.gz attachment (server runs the NDN fetch-sweep); the
   // browser saves it. No session -> server uses the current mission id.
@@ -1269,13 +1559,11 @@ function importMission(file){
     .then(r => r.ok ? r.json() : r.text().then(t => Promise.reject(t)))
     .then(j => {
       const started = startReplay(`imported · ${j.session}`, j.jsonl || "");
-      if (!started){
-        const m = j.manifest || {};
+      if (!started)
         openModalHTML("Import mission",
           "<span style='color:#f1c21b'>bundle loaded (" +
           `${j.artifacts} artifacts) but carries no dashboard recording to ` +
           "replay. Artifacts still resolve from the bundle.</span>");
-      }
     })
     .catch(err => openModalHTML("Import mission",
       `<span style='color:#fa4d56'>import failed: ${err}</span>`));
@@ -1294,12 +1582,11 @@ function replayTick(){
   }
 }
 function replaySeek(t){
-  // deterministic seek: rebuild state by fast-dispatching from the start.
-  // REPLAY.seeking silences command toasts while replaying the whole history.
+  // deterministic seek: rebuild state by fast-dispatching from the start
   REPLAY.cur = Math.max(0, Math.min(t, REPLAY.dur));
   resetUIState();
   REPLAY.i = 0;
-  REPLAY.seeking = true;
+  REPLAY.seeking = true;    // suppress transient toasts while re-dispatching
   while (REPLAY.i < REPLAY.msgs.length &&
          REPLAY.msgs[REPLAY.i].ts - REPLAY.t0 <= REPLAY.cur){
     dispatch(REPLAY.msgs[REPLAY.i].m); REPLAY.i++;
@@ -1355,9 +1642,9 @@ function drawTiles(){
   let drew = false;
   ctx.save();
   if (view.rot){
-    // tiles are axis-aligned bitmaps: draw them through the unrotated base
-    // projection inside a ctx rotated by -view.rot about the canvas center —
-    // identical to pushing every corner through toPx
+    // tiles are axis-aligned bitmaps: draw them through the unrotated
+    // base projection inside a ctx rotated by -view.rot about the canvas
+    // center — identical to pushing every corner through toPx
     ctx.translate(cv.width/2, cv.height/2);
     ctx.rotate(-view.rot);
     ctx.translate(-cv.width/2, -cv.height/2);
@@ -1376,19 +1663,742 @@ function drawTiles(){
     }
   }
   ctx.restore();
-  if (drew){
+  if (drew && DISP.veil > 0){
     // translucent veil keeps the Carbon vectors and labels readable
-    ctx.fillStyle = "rgba(13,17,23,0.35)";
+    // (strength operator-tunable: Display → background dim)
+    ctx.fillStyle = `rgba(13,17,23,${DISP.veil})`;
     ctx.fillRect(0, 0, cv.width, cv.height);
   }
   return drew;
+}
+
+// ---------- coverage layer: planned + live sensor ground footprint ----------
+// Planned: the searcher's nadir footprint swept along the preview legs at
+// the planned AGL (from the WUAS's advertised hfov). Live: the same
+// footprint swept along the actual telemetry track while the raster runs;
+// cleared at each mission start; drawn on its own layer.
+let covTrack = [];            // searcher track during the running raster
+function wuasCam(){ return (SMETA[VEHICLES[0]] || {}).camera || null; }
+function footprintM(){
+  const cam = wuasCam();
+  if (!cam || !(cam.hfov_deg > 0)) return 0;
+  return 2 * (+agl.value || 0) * Math.tan(cam.hfov_deg * Math.PI / 360);
+}
+function drawCoverage(){
+  if (DISP.op.coverage <= 0) return;
+  const fw = footprintM();
+  if (!(fw > 0)) return;
+  const wpx = Math.max(fw / view.mppx, 1);
+  ctx.save();
+  ctx.lineWidth = wpx; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  if (plan && DISP.op.plan > 0){
+    // planned coverage: what the sweep WOULD see
+    ctx.globalAlpha = DISP.op.coverage * 0.45;
+    ctx.strokeStyle = "#4589ff";
+    for (const leg of plan.legs){
+      const a = toPx(leg[0].lat, leg[0].lon), b = toPx(leg[1].lat, leg[1].lon);
+      ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+    }
+  }
+  if (covTrack.length > 1){
+    // live coverage: what the raster HAS seen so far
+    ctx.globalAlpha = DISP.op.coverage;
+    ctx.strokeStyle = "#42be65";
+    ctx.beginPath();
+    covTrack.forEach((t, i) => {
+      const p = toPx(t[0], t[1]);
+      i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]);
+    });
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ---------- layer renderers: sensors / network / sim ground truth ----------
+// All three draw through the SAME world→screen transform as trails and the
+// plan (toPx per vertex), so they rotate/zoom correctly in heading-up and
+// fleet-framing modes. Radii in ground metres become px via view.mppx.
+const mToPxr = m => m / view.mppx;
+// world bearing (deg cw from north) -> canvas arc angle (rad, +x axis,
+// clockwise because y is down), honoring the map rotation
+const bearingToCanvas = deg => (deg - 90) * Math.PI / 180 - view.rot;
+// Round-3 sensor semantics (ROUND-3.md §1):
+//  · forward-facing vision → a CONE/SECTOR from the vehicle (top-down
+//    projection of the FoV volume) with shaded D/R/I bands INSIDE it;
+//  · ground-facing (nadir) vision → the ground QUAD only: a rectangle when
+//    level, skewing to a trapezoid with roll/pitch/yaw. Attitude is not in
+//    TelemetrySample yet (agent wave); until roll_deg/pitch_deg ride the
+//    sample this renders the heading-only COARSE projection — the fine
+//    per-corner ray path below is live and gates purely on field presence.
+//  · the freestanding D/R/I rings are GONE (they read as duplicate range
+//    claims against the quad).
+// Extended sensor_meta consumption (all optional, degrade to today's
+// synthetic feed: down-facing, centered, fixed mount):
+//  · camera.facing        "forward" | "down"          (default "down")
+//  · camera.mount_offset_m  [fwd_m, right_m] or {forward_m, right_m}
+//  · camera.gimbal        "fixed" | "single_axis" | "multi_axis" —
+//                         multi_axis stabilizes the footprint (level quad
+//                         even with attitude), single_axis cancels roll
+//  · camera.pose (or meta.pose)  "coarse" | "fine" pose fidelity — coarse
+//                         forces the heading-only projection
+function mountOffsetNE(cam, hd){
+  // mount position relative to drone center, rotated into world N/E metres
+  let fwd = 0, right = 0;
+  const mo = cam.mount_offset_m;
+  if (Array.isArray(mo)){ fwd = +mo[0] || 0; right = +mo[1] || 0; }
+  else if (mo && typeof mo === "object"){
+    fwd = +mo.forward_m || 0; right = +mo.right_m || 0;
+  }
+  return [ Math.cos(hd)*fwd - Math.sin(hd)*right,
+           Math.sin(hd)*fwd + Math.cos(hd)*right ];
+}
+// D/R/I ranges near→far with their band labels (identify is the shortest).
+function driBands(cam){
+  const rr = (cam.dri_m || []).filter(x => x > 0).slice(0, 3)
+    .sort((a, b) => a - b);
+  const names = rr.length === 3 ? ["I","R","D"]
+    : rr.length === 2 ? ["R","D"] : rr.length === 1 ? ["D"] : [];
+  return rr.map((r, i) => [r, names[i]]);
+}
+function drawForwardCone(d, cam, oLat, oLon, col){
+  const p = toPx(oLat, oLon);
+  const half = Math.min(cam.hfov_deg, 350) * Math.PI / 360;
+  const c = bearingToCanvas(d.heading || 0);
+  let bands = driBands(cam);
+  if (!bands.length) bands = [[25, ""]];   // uncharacterized: plain sector
+  const maxR = bands[bands.length - 1][0];
+  // shaded, legible D/R/I bands: strongest fill nearest (identify), each
+  // band an annular sector inside the cone; edges + labels on top
+  const alphas = ["4d", "33", "1f"];
+  let inner = 0;
+  bands.forEach(([rng, label], i) => {
+    const r0 = mToPxr(inner), r1 = mToPxr(rng);
+    if (r1 < 2 || r1 > 6000){ inner = rng; return; }
+    ctx.fillStyle = col + (alphas[i] || "1f");
+    ctx.beginPath();
+    ctx.arc(p[0], p[1], r1, c - half, c + half);
+    if (r0 > 0) ctx.arc(p[0], p[1], r0, c + half, c - half, true);
+    else ctx.lineTo(p[0], p[1]);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = col + "88"; ctx.lineWidth = lw(1);
+    ctx.beginPath(); ctx.arc(p[0], p[1], r1, c - half, c + half); ctx.stroke();
+    if (label){
+      const rm = (r0 + r1) / 2;
+      ctx.fillStyle = "#f4f4f4"; ctx.font = "10px 'IBM Plex Mono', monospace";
+      ctx.fillText(label, p[0] + Math.cos(c)*rm - 3, p[1] + Math.sin(c)*rm + 3);
+    }
+    inner = rng;
+  });
+  // cone edge rays
+  const rp = mToPxr(maxR);
+  if (rp >= 2 && rp <= 6000){
+    ctx.strokeStyle = col; ctx.lineWidth = lw(1.2);
+    ctx.beginPath();
+    ctx.moveTo(p[0] + Math.cos(c - half)*rp, p[1] + Math.sin(c - half)*rp);
+    ctx.lineTo(p[0], p[1]);
+    ctx.lineTo(p[0] + Math.cos(c + half)*rp, p[1] + Math.sin(c + half)*rp);
+    ctx.stroke();
+  }
+}
+function drawGroundQuad(d, cam, oLat, oLon, col, metaPose){
+  const wpxN = cam.width_px || 320, hpxN = cam.height_px || 240;
+  const tanH = Math.tan(cam.hfov_deg * Math.PI / 360);
+  const tanV = tanH * hpxN / wpxN;
+  const yaw = (d.heading || 0) * Math.PI / 180;
+  const pose = cam.pose || metaPose || "";
+  const gimbal = cam.gimbal || "fixed";
+  // FINE path: gated on attitude presence in the telemetry sample (the
+  // agent wave adds roll_deg/pitch_deg; nothing to change here when it
+  // lands). A multi-axis gimbal stabilizes the footprint level; a
+  // single-axis gimbal cancels roll only.
+  const haveAtt = d.roll !== undefined && d.pitch !== undefined;
+  const fine = haveAtt && pose !== "coarse" && gimbal !== "multi_axis";
+  let corners = null;                       // [dN, dE] per corner, metres
+  if (fine){
+    const roll = (gimbal === "single_axis" ? 0 : d.roll) * Math.PI / 180;
+    const pitch = d.pitch * Math.PI / 180;
+    const cr = Math.cos(roll), sr = Math.sin(roll);
+    const cp = Math.cos(pitch), sp = Math.sin(pitch);
+    const cy = Math.cos(yaw), sy = Math.sin(yaw);
+    corners = [];
+    // corner rays of the nadir frustum (body: x fwd, y right, z down;
+    // image width spans y via hfov), rotated body→NED by Rz(yaw)Ry(pitch)
+    // Rx(roll), intersected with the ground plane at AGL — the trapezoid
+    for (const [sv, sh] of [[1,1],[1,-1],[-1,-1],[-1,1]]){
+      const bx = sv*tanV, by = sh*tanH, bz = 1;
+      const n = cy*cp*bx + (cy*sp*sr - sy*cr)*by + (cy*sp*cr + sy*sr)*bz;
+      const e = sy*cp*bx + (sy*sp*sr + cy*cr)*by + (sy*sp*cr - cy*sr)*bz;
+      const dn = -sp*bx + cp*sr*by + cp*cr*bz;
+      if (dn < 0.05){ corners = null; break; }  // ray near-horizontal
+      corners.push([n*d.agl/dn, e*d.agl/dn]);
+    }
+  }
+  if (!corners){
+    // COARSE: heading-only nadir rectangle
+    const wm = 2 * d.agl * tanH, hm = wm * hpxN / wpxN;
+    const f = [Math.cos(yaw), Math.sin(yaw)], r = [-Math.sin(yaw), Math.cos(yaw)];
+    corners = [[hm/2, wm/2], [hm/2, -wm/2], [-hm/2, -wm/2], [-hm/2, wm/2]]
+      .map(c => [f[0]*c[0] + r[0]*c[1], f[1]*c[0] + r[1]*c[1]]);
+  }
+  ctx.fillStyle = col + "1a";
+  ctx.strokeStyle = col; ctx.lineWidth = lw(1.2); ctx.setLineDash([4,3]);
+  ctx.beginPath();
+  corners.forEach((c, i) => {
+    const q = toPx(oLat + c[0] / M_PER_DEG_LAT,
+                   oLon + c[1] / mPerDegLon(oLat));
+    i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]);
+  });
+  ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.setLineDash([]);
+}
+function drawSensors(){
+  if (!showSensors || DISP.op.sensors <= 0) return;
+  ctx.save(); ctx.globalAlpha = DISP.op.sensors;
+  for (const [vid, d] of Object.entries(drones)){
+    if (!hasFix(d) || d.lat === undefined) continue;
+    const meta = SMETA[vid];
+    if (!meta) continue;                    // nothing advertised: draw nothing
+    const col = COLORS[vid] || "#f4f4f4";
+    const p = toPx(d.lat, d.lon);
+    const cam = meta.camera;
+    if (cam && cam.hfov_deg > 0 && d.agl > 0.5){
+      const hd = (d.heading || 0) * Math.PI / 180;
+      const [moN, moE] = mountOffsetNE(cam, hd);
+      const oLat = d.lat + moN / M_PER_DEG_LAT;
+      const oLon = d.lon + moE / mPerDegLon(d.lat);
+      if (cam.facing === "forward") drawForwardCone(d, cam, oLat, oLon, col);
+      else drawGroundQuad(d, cam, oLat, oLon, col, meta.pose);
+    }
+    const aud = meta.audio;
+    if (aud){
+      ctx.strokeStyle = "#ff832b"; ctx.lineWidth = lw(1.2);
+      if (aud.lobes && aud.lobes.length){
+        // beamforming lobes: filled wedges relative to the vehicle nose
+        ctx.fillStyle = "#ff832b22";
+        for (const lobe of aud.lobes){
+          const rp = mToPxr(lobe.range_m || 0);
+          if (!(rp > 2) || rp > 4000) continue;
+          const c = bearingToCanvas((d.heading || 0) + (lobe.bearing_deg || 0));
+          const half = (lobe.width_deg || 30) * Math.PI / 360;
+          ctx.beginPath(); ctx.moveTo(p[0], p[1]);
+          ctx.arc(p[0], p[1], rp, c - half, c + half);
+          ctx.closePath(); ctx.fill(); ctx.stroke();
+        }
+      } else if (aud.omni_range_m > 0){
+        // omnidirectional confidence circle (no lobes advertised)
+        const rp = mToPxr(aud.omni_range_m);
+        if (rp >= 6 && rp <= 4000){
+          ctx.setLineDash([6,4]);
+          ctx.beginPath(); ctx.arc(p[0], p[1], rp, 0, 7); ctx.stroke();
+          ctx.setLineDash([]);
+        }
+      }
+    }
+  }
+  ctx.restore();
+}
+// telemetry link age for a network node ("gcs" = this process = fresh)
+const ageOf = id => {
+  if (id === "gcs") return 0;
+  const d = drones[id];
+  if (!d || d.stale || !d.seen) return null;
+  return (Date.now() - d.seen) / 1000;
+};
+// GCS world anchor (round-3 fix: the GCS node used to be screen-anchored
+// and "moved" whenever the map panned — it must pan/zoom/rotate with the
+// world like every other geo entity). Position source, in preference
+// order: the surveyed hello.gcs (--gcs manual entry), then the
+// deployment's NET.gcs export, else the first good telemetry fix seen
+// (the fleet launches beside the GCS, so home ≈ the GCS position).
+let gcsHome = null;
+const llOf = o => (o && typeof o.lat === "number" && typeof o.lon === "number")
+  ? [o.lat, o.lon] : null;
+const gcsLL = () =>
+  llOf(GCS) || llOf(NET && NET.gcs) || gcsHome;
+// ---- net field pure model (extracted by dash_net_test.js) ----
+// Everything between these markers is pure math over the NET snapshots —
+// the scratchpad harness extracts and unit-tests it under node (the
+// dash_geom/dash_filter/dash_queue harness pattern).
+// Namespace palette: Carbon categoricals, deliberately DISJOINT from the
+// vehicle PALETTE so a lensed field never impersonates a vehicle color.
+const NS_PALETTE = ["#33b1ff", "#ff7eb6", "#6fdc8c", "#f1c21b",
+                    "#a56eff", "#08bdba", "#ff832b", "#d4bbff"];
+// deterministic prefix → color (stable across snapshots and sessions)
+function nsColor(prefix){
+  let h = 0;
+  for (let i = 0; i < prefix.length; i++)
+    h = (h * 31 + prefix.charCodeAt(i)) >>> 0;
+  return NS_PALETTE[h % NS_PALETTE.length];
+}
+// short operator-facing label for a measured prefix
+const nsLabel = prefix =>
+  prefix.startsWith("/muas/v3/") ? prefix.slice("/muas/v3/".length) : prefix;
+// Per-node activity from the DIRECTED links array: bps = traffic the node
+// sent + traffic sent toward it (what its patch of medium carries);
+// emitHz = interests/s (exported rate) + data/s (delta of the cumulative
+// out_data counter against the previous snapshot, dtS apart).
+function nodeActivity(links, prevLinks, dtS){
+  const prev = {};
+  for (const l of (prevLinks || [])) prev[`${l.from}|${l.to}`] = l;
+  const act = {};
+  const at = id => act[id] = act[id] || { bps: 0, emitHz: 0 };
+  for (const l of (links || [])){
+    const out = l.rate_out_bps || 0;
+    at(l.from).bps += out;
+    at(l.to).bps += out;
+    let dataHz = 0;
+    const p = prev[`${l.from}|${l.to}`];
+    if (p && dtS > 0 && (l.out_data || 0) >= (p.out_data || 0))
+      dataHz = ((l.out_data || 0) - (p.out_data || 0)) / dtS;
+    at(l.from).emitHz += (l.rate_out_interests_hz || 0) + dataHz;
+  }
+  return act;
+}
+// Namespace lens: the same per-node shape, restricted to ONE exported
+// prefix (the deployment's per-prefix rate table).
+function prefixActivity(prefixes, ns){
+  const act = {};
+  for (const e of (prefixes || [])){
+    if (e.prefix !== ns) continue;
+    const a = act[e.node] = act[e.node] || { bps: 0, emitHz: 0 };
+    a.bps += (e.rate_out_bps || 0) + (e.rate_in_bps || 0);
+    a.emitHz += (e.rate_out_interests_hz || 0) + (e.rate_out_data_hz || 0);
+  }
+  return act;
+}
+// Chip ranking: prefixes by current traffic, cumulative bytes tie-break
+// (so chips stay stable while a namespace idles).
+function topPrefixes(prefixes, k){
+  const by = {};
+  for (const e of (prefixes || [])){
+    const b = by[e.prefix] = by[e.prefix] || { prefix: e.prefix, bps: 0, bytes: 0 };
+    b.bps += (e.rate_out_bps || 0) + (e.rate_in_bps || 0);
+    b.bytes += (e.out_bytes || 0) + (e.in_bytes || 0);
+  }
+  return Object.values(by)
+    .sort((a, b) => (b.bps - a.bps) || (b.bytes - a.bytes) ||
+                    (a.prefix < b.prefix ? -1 : 1))
+    .slice(0, k);
+}
+// Field geometry: radius/alpha grow with the LOG of recent traffic,
+// clamped — an idle node keeps a small presence disc (the medium exists
+// even when quiet), a busy one a wide bright glow, and no volume of
+// traffic can white out the map.
+function fieldRadiusM(bps){
+  return Math.max(10, Math.min(55, 10 + 9 * Math.log10(1 + bps / 1000)));
+}
+function fieldAlpha(bps){
+  return Math.min(0.34, 0.10 + 0.08 * Math.log10(1 + bps / 1000));
+}
+// Emissions: attributable pulses up to PULSE_MAX_HZ per node; above that
+// per-event rendering is visual static (WATERLINE-INPUT ripple guidance:
+// render coverage steady-state, aggregate high-rate emissions), so the
+// excess folds into steady field intensity instead.
+const PULSE_MAX_HZ = 3;
+function pulseCadenceHz(emitHz){
+  return emitHz > 0 ? Math.min(emitHz, PULSE_MAX_HZ) : 0;
+}
+function aggregateBoost(emitHz){
+  if (emitHz <= PULSE_MAX_HZ) return 0;
+  return Math.min(0.25, 0.06 * Math.log2(emitHz / PULSE_MAX_HZ + 1));
+}
+// ---- end net pure model ----
+const rgba = (hex, a) => {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${
+    Math.max(0, Math.min(1, a))})`;
+};
+// staleness hue for a node's field (same semantics phase 1 gave lines:
+// counters say volume, telemetry freshness says whether the node's patch
+// of fabric is alive — a silent node with fresh telemetry is healthy-idle)
+function netHealthColor(id){
+  const age = ageOf(id);
+  return age === null ? "#6f6f6f"
+    : age < 4 ? "#42be65" : age < 10 ? "#f1c21b" : "#fa4d56";
+}
+// shared per-frame inputs for both net passes (medium + overlays)
+function netFrame(){
+  if (!showNet || !NET || DISP.op.net <= 0) return null;
+  const gll = gcsLL();
+  const posOf = id => {
+    if (id === "gcs") return gll ? toPx(gll[0], gll[1]) : null;
+    const d = drones[id];
+    return (d && hasFix(d) && d.lat !== undefined) ? toPx(d.lat, d.lon) : null;
+  };
+  const usingNs = NETNS !== "all" && (NET.prefixes || []).length > 0;
+  const act = usingNs
+    ? prefixActivity(NET.prefixes, NETNS)
+    : nodeActivity(NET.links, NETPREV && NETPREV.links,
+        NETPREV ? Math.max((NET.t || 0) - (NETPREV.t || 0), 0.2) : 0);
+  return { act, posOf, usingNs, gll };
+}
+// PASS 1 — the medium, under every other layer: soft coverage/activity
+// fields, additively composited so overlap (contention) blends brighter.
+function drawNetMedium(){
+  const f = netFrame();
+  if (!f || !NETSUB.fields) return;
+  ctx.save();
+  ctx.globalAlpha = DISP.op.net;
+  ctx.globalCompositeOperation = "lighter";
+  for (const [id, a] of Object.entries(f.act)){
+    const p = f.posOf(id);
+    if (!p) continue;
+    const rp = mToPxr(fieldRadiusM(a.bps));
+    if (rp < 4 || rp > 5000) continue;
+    const col = f.usingNs ? nsColor(NETNS) : netHealthColor(id);
+    const alpha = fieldAlpha(a.bps) + aggregateBoost(a.emitHz);
+    const g = ctx.createRadialGradient(p[0], p[1], 0, p[0], p[1], rp);
+    g.addColorStop(0, rgba(col, alpha));
+    g.addColorStop(0.65, rgba(col, alpha * 0.5));
+    g.addColorStop(1, rgba(col, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(p[0], p[1], rp, 0, 7); ctx.fill();
+  }
+  ctx.restore();
+}
+const PULSE_LIFE_S = 1.1;      // ring expansion lifetime
+// PASS 2 — above the entity layers: emission pulses, the (off-by-default)
+// overlay bearers, per-node rate labels, the GCS marker, the profile chip.
+function drawNetOver(){
+  const f = netFrame();
+  if (!f) return;
+  ctx.save(); ctx.globalAlpha = DISP.op.net;
+  ctx.font = "10px 'IBM Plex Mono', monospace";
+  if (NETSUB.overlay) drawNetOverlay(f);
+  if (NETSUB.pulses) drawNetPulses(f);
+  if (NETSUB.fields){
+    // per-node throughput label under the field's owner
+    for (const [id, a] of Object.entries(f.act)){
+      const p = f.posOf(id);
+      if (!p) continue;
+      const kb = a.bps >= 1000 ? (a.bps / 1000).toFixed(0) + " kb/s"
+        : a.bps.toFixed(0) + " b/s";
+      ctx.fillStyle = "#c6c6c6";
+      ctx.fillText(`${kb} · ${a.emitHz.toFixed(0)}/s`, p[0] + 8, p[1] + 22);
+    }
+  }
+  // GCS node marker, world-anchored (zoom-scaled like every icon)
+  if (f.gll){
+    const g = toPx(f.gll[0], f.gll[1]);
+    const s = iconPx(1.2, 5, 16);
+    ctx.fillStyle = "#78a9ff";
+    ctx.fillRect(g[0] - s/2, g[1] - s/2, s, s);
+    ctx.strokeStyle = "#161616"; ctx.lineWidth = 1;
+    ctx.strokeRect(g[0] - s/2, g[1] - s/2, s, s);
+    ctx.fillStyle = "#f4f4f4";
+    ctx.fillText("GCS", g[0] + s/2 + 3, g[1] + 3);
+  }
+  // ACTIVE link profile legend (screen chrome, not a geo entity)
+  const pr = NET.profile || {};
+  if (pr.name){
+    const lens = NETNS !== "all" ? ` · lens ${nsLabel(NETNS)}` : "";
+    const text = `link ${pr.name} · ${pr.delay_ms} ms ±${pr.jitter_ms}` +
+      ` · loss ${(pr.loss_rate * 100).toFixed(1)}%` +
+      ` · ${(pr.bandwidth_bps / 1e6).toFixed(0)} Mb/s${lens}`;
+    const w = ctx.measureText(text).width;
+    ctx.fillStyle = "rgba(22,22,22,0.85)";
+    ctx.fillRect(12, cv.height - 40, w + 12, 18);
+    ctx.strokeStyle = "#393939"; ctx.lineWidth = 1;
+    ctx.strokeRect(12, cv.height - 40, w + 12, 18);
+    ctx.fillStyle = "#c6c6c6";
+    ctx.fillText(text, 18, cv.height - 27);
+  }
+  ctx.restore();
+}
+// Emission pulses: expanding rings born at the EMITTER (attributable),
+// cadence = the measured emission rate clamped to PULSE_MAX_HZ. The rings
+// visualize measured per-second rates from the 1 Hz export, not
+// individual packets — the legend says so.
+function drawNetPulses(f){
+  const now = performance.now() / 1000;
+  for (const [id, a] of Object.entries(f.act)){
+    const cad = pulseCadenceHz(a.emitHz);
+    const st = NETPULSES[id] = NETPULSES[id] || { next: now, rings: [] };
+    if (cad > 0){
+      if (now >= st.next){
+        st.rings.push(now);
+        if (st.rings.length > 6) st.rings.shift();
+        // schedule forward from now (never burst a backlog after a stall)
+        st.next = Math.max(st.next + 1 / cad, now + 0.25 / cad);
+      }
+    } else {
+      st.next = now;
+    }
+    st.rings = st.rings.filter(b => now - b < PULSE_LIFE_S);
+    const p = f.posOf(id);
+    if (!p){ st.rings = []; continue; }
+    const col = f.usingNs ? nsColor(NETNS) : (COLORS[id] || "#78a9ff");
+    const R = Math.max(mToPxr(fieldRadiusM(a.bps)), 14);
+    for (const b of st.rings){
+      const t = (now - b) / PULSE_LIFE_S;   // 0..1
+      ctx.strokeStyle = rgba(col, (1 - t) * 0.8);
+      ctx.lineWidth = lw(1.5);
+      ctx.beginPath(); ctx.arc(p[0], p[1], 4 + t * R, 0, 7); ctx.stroke();
+    }
+  }
+}
+// Overlay bearers — the DEMOTED phase-1 per-pair lines, verbatim except:
+// thin fixed width, squared (butt) ends, and they live behind an
+// off-by-default toggle. A line here means the deployment's UDP-face
+// bearer between two engines — an overlay artifact, never the medium.
+function drawNetOverlay(f){
+  const pairs = {};
+  for (const l of (NET.links || [])){
+    const key = [l.from, l.to].sort().join("|");
+    const e = pairs[key] = pairs[key] ||
+      { a: l.from, b: l.to, bps: 0, ihz: 0, drops: 0 };
+    e.bps += l.rate_out_bps || 0;
+    e.ihz += l.rate_out_interests_hz || 0;
+    e.drops += l.out_drops || 0;
+  }
+  ctx.save();
+  ctx.lineCap = "butt";
+  for (const e of Object.values(pairs)){
+    const pa = f.posOf(e.a), pb = f.posOf(e.b);
+    if (!pa || !pb) continue;
+    const ageA = ageOf(e.a), ageB = ageOf(e.b);
+    const age = (ageA === null || ageB === null) ? null : Math.max(ageA, ageB);
+    const col = age === null ? "#6f6f6f"
+      : age < 4 ? "#42be65" : age < 10 ? "#f1c21b" : "#fa4d56";
+    ctx.strokeStyle = col + "99";
+    ctx.lineWidth = lw(1);
+    if (e.bps > 200){
+      // data-trace: dashes march along the bearer while traffic flows
+      ctx.setLineDash([7,5]);
+      ctx.lineDashOffset = -((Date.now() / 40) % 12);
+    }
+    ctx.beginPath(); ctx.moveTo(pa[0], pa[1]); ctx.lineTo(pb[0], pb[1]); ctx.stroke();
+    ctx.setLineDash([]); ctx.lineDashOffset = 0;
+    const kb = e.bps >= 1000 ? (e.bps / 1000).toFixed(0) + " kb/s"
+      : e.bps.toFixed(0) + " b/s";
+    ctx.fillStyle = "#c6c6c6";
+    ctx.fillText(`${kb} · ${e.ihz.toFixed(0)} i/s${e.drops ? ` · ${e.drops} drop` : ""}`,
+      (pa[0] + pb[0]) / 2 + 5, (pa[1] + pb[1]) / 2 - 5);
+  }
+  ctx.restore();
+}
+const SIG_COLOR = { red:"#fa4d56", orange:"#ff832b", blue:"#4589ff",
+                    yellow:"#f1c21b", magenta:"#ee5396" };
+function drawSimAnoms(){
+  if (!simAnoms.length) return;
+  ctx.font = "10px 'IBM Plex Mono', monospace";
+  for (const a of simAnoms){
+    const p = toPx(a.lat_deg, a.lon_deg);
+    if (p[0] < -40 || p[0] > cv.width + 40 || p[1] < -40 || p[1] > cv.height + 40)
+      continue;
+    if (a.kind === "visual"){
+      const col = SIG_COLOR[a.signature] || "#fa4d56";
+      const rp = Math.max(3, mToPxr((a.size_m || 1) / 2));
+      const xs = iconPx(0.4, 2.5, 8);
+      ctx.strokeStyle = col; ctx.lineWidth = lw(1.5);
+      ctx.beginPath(); ctx.arc(p[0], p[1], rp, 0, 7); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(p[0] - xs, p[1] - xs); ctx.lineTo(p[0] + xs, p[1] + xs);
+      ctx.moveTo(p[0] + xs, p[1] - xs); ctx.lineTo(p[0] - xs, p[1] + xs);
+      ctx.stroke();
+      ctx.fillStyle = col;
+    } else {
+      // audio: sound-wave arcs
+      ctx.strokeStyle = "#ff832b"; ctx.lineWidth = 1.5;
+      for (const r of [4, 8, 12]){
+        ctx.beginPath(); ctx.arc(p[0], p[1], r, -0.7, 0.7); ctx.stroke();
+        ctx.beginPath(); ctx.arc(p[0], p[1], r, Math.PI - 0.7, Math.PI + 0.7);
+        ctx.stroke();
+      }
+      ctx.fillStyle = "#ff832b";
+    }
+    if (a.id && a.id === selAnom){
+      // selected for deletion: a second click (or the list ✕) removes it
+      ctx.strokeStyle = "#f4f4f4"; ctx.lineWidth = 1.5; ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.arc(p[0], p[1], 16, 0, 7); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.fillText(`sim ${a.kind}${a.id ? " " + a.id : ""}`, p[0] + 8, p[1] + 14);
+  }
+}
+
+// ---------- sensor-tasking glyphs + their cancel popover ----------
+// Watchpoints draw as a dashed arm-radius ring around a bullseye pin,
+// override detours as the bullseye alone; both counter the map transform
+// through toPx so they hold position in rotated/follow modes. Clicking a
+// glyph opens the popover (built in openTaskPop, repositioned every frame
+// here so it rides pans/rotation); Cancel routes like the list ✕.
+function drawTaskings(){
+  if (TASKINGS.length){
+    // local expiry sweep on event time (works in replay too): a watchpoint
+    // whose arm window has passed is gone even if its result got lost
+    const dead = TASKINGS.filter(t =>
+      t.expires_s != null && lastEvtT > t.t0 + t.expires_s + 2);
+    dead.forEach(t => dropTasking(t.req));
+  }
+  const rr = iconPx(0.7, 5, 11);
+  for (const tk of TASKINGS){
+    const p = toPx(tk.lat, tk.lon);
+    if (p[0] < -40 || p[0] > cv.width+40 || p[1] < -40 || p[1] > cv.height+40)
+      continue;
+    const col = SENSOR_COLOR[tk.sensor] || "#f4f4f4";
+    ctx.save();
+    ctx.globalAlpha = tk.state === "sent" ? 0.5 : 1;
+    if (tk.mode === "opportunistic"){
+      // watchpoint: dashed ring at the arm radius ("fires within N m")
+      const rp = mToPxr(tk.radius_m);
+      if (rp >= rr && rp <= 4000){
+        ctx.strokeStyle = col; ctx.lineWidth = lw(1.2); ctx.setLineDash([5,4]);
+        ctx.beginPath(); ctx.arc(p[0], p[1], rp, 0, 7); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+    // bullseye pin (shared by both modes — the clickable glyph)
+    ctx.strokeStyle = col; ctx.lineWidth = lw(1.5);
+    ctx.beginPath(); ctx.arc(p[0], p[1], rr, 0, 7); ctx.stroke();
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(p[0], p[1], rr * 0.35, 0, 7); ctx.fill();
+    if (tk.req === taskSel){
+      ctx.strokeStyle = "#f4f4f4"; ctx.lineWidth = 1.5; ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.arc(p[0], p[1], rr + 5, 0, 7); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.fillStyle = col; ctx.font = "11px 'IBM Plex Mono', monospace";
+    const wp = (tk.label || "").match(/wp-\d+/);
+    ctx.fillText(`${wp ? wp[0] : tk.mode} ${tk.sensor}`, p[0] + rr + 4, p[1] + 4);
+    ctx.restore();
+  }
+  // the open popover tracks its glyph through pan/zoom/rotate/follow
+  if (taskSel){
+    const tk = TASKINGS.find(t => t.req === taskSel);
+    if (!tk) closeTaskPop(); else positionTaskPop(tk);
+  }
+}
+function taskWhat(tk){
+  const wp = (tk.label || "").match(/wp-\d+/);
+  return wp ? `watchpoint ${wp[0]}`
+    : tk.mode === "opportunistic" ? "watchpoint (arming…)"
+    : "override capture";
+}
+function taskAgeText(tk){
+  if (tk.expires_s != null && tk.state === "active")
+    return `expires in ${Math.max(0, tk.t0 + tk.expires_s - lastEvtT).toFixed(0)} s`;
+  return `${tk.state === "sent" ? "sent" : "active"} ` +
+    `${Math.max(0, lastEvtT - tk.t0).toFixed(0)} s ago`;
+}
+function openTaskPop(tk){
+  taskSel = tk.req;
+  taskpop.innerHTML = `
+    <div class="row"><b>${taskWhat(tk)}</b></div>
+    <div class="row">${tk.sensor} · ${tk.vehicle}</div>
+    <div class="row" data-age>${taskAgeText(tk)}</div>
+    <div class="row">${tk.lat.toFixed(6)}, ${tk.lon.toFixed(6)}</div>
+    ${tk.label
+      ? `<button class="cds-btn cds-btn--danger" data-vid="${tk.vehicle}"
+           data-label="${tk.label}"
+           title="Cancel ${tk.label} on ${tk.vehicle} (scoped abort — no RTL)">
+           Cancel tasking</button>`
+      : `<div class="row">awaiting ack — cancel from the Commands log
+           once armed</div>`}`;
+  positionTaskPop(tk);
+}
+function closeTaskPop(){
+  taskSel = null;
+  ucandSel = null;   // the popover element is shared with unconfirmed cards
+  taskpop.style.display = "none";
+  taskpop.innerHTML = "";
+}
+function positionTaskPop(tk){
+  const p = toPx(tk.lat, tk.lon);
+  taskpop.style.display = "block";
+  taskpop.style.left =
+    `${Math.min(Math.max(8, p[0] + 16), cv.width - 210)}px`;
+  taskpop.style.top =
+    `${Math.min(Math.max(8, p[1] - 12), cv.height - 130)}px`;
+  const age = taskpop.querySelector("[data-age]");
+  if (age) age.textContent = taskAgeText(tk);
+}
+// one delegated handler survives the innerHTML rebuilds (cmdlog pattern);
+// the cancel routes EXACTLY like the mini-log ✕
+taskpop.addEventListener("click", e => {
+  const b = e.target.closest("button[data-label]");
+  if (b){
+    send({cmd:"task_abort", vehicle:b.dataset.vid, label:b.dataset.label});
+    closeTaskPop();
+    return;
+  }
+  // unconfirmed-candidate popover actions (same shared element)
+  const u = e.target.closest("button[data-uc]");
+  if (u){
+    (u.dataset.uc === "promote" ? promoteUnconfirmed
+                                : dismissUnconfirmed)(+u.dataset.uidx);
+    closeTaskPop();
+  }
+});
+// outside clicks anywhere in the page dismiss the popover (canvas clicks
+// are resolved by the map's own hit-test below)
+document.addEventListener("click", e => {
+  if ((taskSel || ucandSel != null) && e.target !== cv &&
+      !taskpop.contains(e.target))
+    closeTaskPop();
+});
+
+// ---------- unconfirmed candidates (end-of-raster disposition) ----------
+// Hollow amber dashed markers, visually distinct from the FILLED amber
+// queued-target dot; clicking one opens the shared tasking-popover with the
+// two dispositions. "Investigate anyway" promotes through the normal job
+// queue/dispatch path (reopening a completed mission); "Dismiss" is
+// terminal. Both route through the mission machine — the UI only reflects
+// the target.promoted / target.dismissed events that come back.
+function promoteUnconfirmed(i){ send({cmd:"candidate_promote", index:i}); }
+function dismissUnconfirmed(i){ send({cmd:"candidate_dismiss", index:i}); }
+function openUncPop(u){
+  closeTaskPop();
+  ucandSel = u.index;
+  taskpop.innerHTML = `
+    <div class="row"><b>unconfirmed candidate u#${u.index}</b></div>
+    <div class="row">${u.object_id} · ${(u.confidence*100).toFixed(0)}% ·
+      ${u.hits}/${u.need} hits</div>
+    <div class="row">${u.lat.toFixed(6)}, ${u.lon.toFixed(6)}</div>
+    <button class="cds-btn cds-btn--primary" data-uc="promote"
+      data-uidx="${u.index}" style="padding-right:16px"
+      title="Queue the normal investigation jobs for this candidate
+(reopens the mission if it had completed)">Investigate anyway</button>
+    <button class="cds-btn cds-btn--secondary" data-uc="dismiss"
+      data-uidx="${u.index}" style="margin-left:6px"
+      title="Discard this candidate (terminal)">Dismiss</button>`;
+  positionTaskPop(u);
+}
+function drawUnconfirmed(){
+  const live = UNCONF.filter(u => u.status === "unconfirmed");
+  if (ucandSel != null && !live.some(u => u.index === ucandSel))
+    closeTaskPop();          // promoted/dismissed under an open popover
+  const ur = iconPx(0.7, 3, 11);
+  for (const u of live){
+    const p = toPx(u.lat, u.lon);
+    if (p[0] < -40 || p[0] > cv.width+40 || p[1] < -40 || p[1] > cv.height+40)
+      continue;
+    ctx.save();
+    ctx.strokeStyle = "#f1c21b"; ctx.lineWidth = lw(1.8);
+    ctx.setLineDash([3,2]);
+    ctx.beginPath(); ctx.arc(p[0], p[1], ur, 0, 7); ctx.stroke();
+    ctx.setLineDash([]);
+    if (u.index === ucandSel){
+      ctx.strokeStyle = "#f4f4f4"; ctx.lineWidth = 1.5; ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.arc(p[0], p[1], ur + 5, 0, 7); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.fillStyle = "#f1c21b"; ctx.font = "12px 'IBM Plex Sans', sans-serif";
+    ctx.fillText(`u#${u.index} ${u.object_id} ${u.hits}/${u.need}`,
+                 p[0]+ur+8, p[1]-8);
+    ctx.restore();
+  }
+  // the open popover tracks its marker through pan/zoom/rotate/follow
+  if (ucandSel != null){
+    const u = live.find(x => x.index === ucandSel);
+    if (u) positionTaskPop(u);
+  }
 }
 
 function draw(){
   const now = performance.now();
   const dt = Math.min((now - (draw.last || now)) / 1000, 0.25);
   draw.last = now;
-  applyFollow(dt);          // ease center/zoom/rotation toward the active mode
+  applyFollow(dt);
   ctx.fillStyle = "#161616"; ctx.fillRect(0,0,cv.width,cv.height);
   const tiled = drawTiles();
   const grid = 10 / view.mppx;
@@ -1401,8 +2411,13 @@ function draw(){
     ctx.fillStyle = "#6f6f6f"; ctx.font = "11px 'IBM Plex Mono', monospace";
     ctx.fillText("grid 10 m", 12, cv.height - 12);
   }
-  if (plan){
-    ctx.strokeStyle = "#f1c21b99"; ctx.lineWidth = 1.5; ctx.beginPath();
+  drawCoverage();
+  // the network MEDIUM renders under every entity layer: fields are the
+  // ground the vehicles/marks sit on, not chrome over them
+  drawNetMedium();
+  if (plan && DISP.op.plan > 0){
+    ctx.save(); ctx.globalAlpha = DISP.op.plan;
+    ctx.strokeStyle = "#f1c21b99"; ctx.lineWidth = lw(1.5); ctx.beginPath();
     plan.corners.forEach((c,i) => { const p = toPx(c.lat, c.lon);
       i ? ctx.lineTo(p[0],p[1]) : ctx.moveTo(p[0],p[1]); });
     ctx.closePath(); ctx.stroke();
@@ -1414,43 +2429,49 @@ function draw(){
       ctx.lineTo(b[0],b[1]); prev = b; });
     ctx.stroke();
     ctx.fillStyle = "#78a9ff";
+    const cs = iconPx(0.3, 1.5, 5);
     plan.captures.forEach(c => { const p = toPx(c.lat, c.lon);
-      ctx.fillRect(p[0]-1.5, p[1]-1.5, 3, 3); });
+      ctx.fillRect(p[0]-cs/2, p[1]-cs/2, cs, cs); });
+    ctx.restore();
   }
-  if (showData){
+  if (showData && DISP.op.data > 0){
     // captured data: squares = camera frames, circles = audio clips;
     // hollow = mission evidence, filled = operator-tasked
+    ctx.save(); ctx.globalAlpha = DISP.op.data;
+    const ds = iconPx(0.9, 4, 13);
     for (const d of sensorData){
       const p = toPx(d.lat, d.lon);
       if (p[0] < -20 || p[0] > cv.width+20 || p[1] < -20 || p[1] > cv.height+20)
         continue;
       const col = SENSOR_COLOR[d.sensor] || "#a8a8a8";
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = lw(1.5);
       if (d.sensor === "audio"){
-        ctx.beginPath(); ctx.arc(p[0], p[1], 4, 0, 7);
+        ctx.beginPath(); ctx.arc(p[0], p[1], ds * 0.55, 0, 7);
         if (d.source === "tasked"){ ctx.fillStyle = col; ctx.fill(); }
         else { ctx.strokeStyle = col; ctx.stroke(); }
       } else {
         if (d.source === "tasked"){ ctx.fillStyle = col;
-          ctx.fillRect(p[0]-3.5, p[1]-3.5, 7, 7); }
+          ctx.fillRect(p[0]-ds/2, p[1]-ds/2, ds, ds); }
         else { ctx.strokeStyle = col;
-          ctx.strokeRect(p[0]-3.5, p[1]-3.5, 7, 7); }
+          ctx.strokeRect(p[0]-ds/2, p[1]-ds/2, ds, ds); }
       }
     }
+    ctx.restore();
   }
-  if (showEvents){
+  if (showEvents && DISP.op.events > 0){
     // diamonds, oldest faintest — a spatial replay of the event log
     const tNow = Date.now()/1000;
+    const es = iconPx(0.55, 2.5, 9);
     for (const e of mapEvents){
       const p = toPx(e.lat, e.lon);
       if (p[0] < -20 || p[0] > cv.width+20 || p[1] < -20 || p[1] > cv.height+20)
         continue;
       const age = Math.min((tNow - e.t) / 600, 1);   // fades over 10 min
-      ctx.globalAlpha = 0.9 - 0.55 * age;
-      ctx.strokeStyle = EVT_STYLE(e.kind); ctx.lineWidth = 1.5;
+      ctx.globalAlpha = (0.9 - 0.55 * age) * DISP.op.events;
+      ctx.strokeStyle = EVT_STYLE(e.kind); ctx.lineWidth = lw(1.5);
       ctx.beginPath();
-      ctx.moveTo(p[0], p[1]-4); ctx.lineTo(p[0]+4, p[1]);
-      ctx.lineTo(p[0], p[1]+4); ctx.lineTo(p[0]-4, p[1]);
+      ctx.moveTo(p[0], p[1]-es); ctx.lineTo(p[0]+es, p[1]);
+      ctx.lineTo(p[0], p[1]+es); ctx.lineTo(p[0]-es, p[1]);
       ctx.closePath(); ctx.stroke();
       ctx.globalAlpha = 1;
     }
@@ -1477,27 +2498,29 @@ function draw(){
       ctx.fillText(text, bx, by+2);
     }
   }
-  // targets: yellow=queued, pulsing blue=investigating, green=done, red=failed
+  // targets: yellow=queued, pulsing blue=investigating, green=done,
+  // red=failed, gray=cancelled
   const TGT = { queued:"#f1c21b", investigating:"#4589ff",
-                done:"#42be65", failed:"#fa4d56" };
+                done:"#42be65", failed:"#fa4d56", cancelled:"#6f6f6f" };
+  const tr = iconPx(0.7, 3, 11);
   for (const t of targets){
     const p = toPx(t.lat, t.lon);
     const col = TGT[t.status] || "#f4f4f4";
     if (t.status === "investigating"){
-      const pulse = 8 + 4*Math.sin(Date.now()/300);
-      ctx.strokeStyle = col; ctx.lineWidth = 2;
+      const pulse = tr * 2 + tr * Math.sin(Date.now()/300);
+      ctx.strokeStyle = col; ctx.lineWidth = lw(2);
       ctx.beginPath(); ctx.arc(p[0],p[1],pulse,0,7); ctx.stroke();
     }
     ctx.fillStyle = col;
-    ctx.beginPath(); ctx.arc(p[0],p[1],4,0,7); ctx.fill();
+    ctx.beginPath(); ctx.arc(p[0],p[1],tr,0,7); ctx.fill();
     ctx.font = "12px 'IBM Plex Sans', sans-serif";
     ctx.fillText(`#${t.index} ${t.object_id} ${(t.confidence*100).toFixed(0)}%`,
-                 p[0]+12, p[1]-8);
+                 p[0]+tr+8, p[1]-8);
   }
   // ease each marker toward its latest telemetry fix: samples arrive at
   // ~3-4 Hz, frames at 60 — exponential smoothing (τ≈0.25 s) turns the
   // stepwise fixes into continuous motion without lying about position
-  // by more than one sample interval (dt computed at the top of draw())
+  // by more than one sample interval
   const k = 1 - Math.exp(-dt / 0.25);
   for (const d of Object.values(drones)){
     if (d.tlat === undefined) continue;
@@ -1509,37 +2532,48 @@ function draw(){
       else d.heading += (((d.thead - d.heading + 540) % 360) - 180) * k;
     }
   }
-  // sensor coverage (advertised sensor_meta) + sim ground-truth targets,
-  // under the vehicle markers, above the plan/track layers
+  // overlay layers between smoothing and markers: markers stay on top
+  drawSimAnoms();
   drawSensors();
-  drawAnoms();
+  drawTaskings();
   drawUnconfirmed();
+  drawNetOver();
+  // vehicle markers scale with zoom between legible clamps (~1.5 m body)
+  const vs = iconPx(1.5, 6, 24);
   for (const [vid, d] of Object.entries(drones)){
     const col = COLORS[vid] || "#f4f4f4";
     if (d.lat === undefined) continue;
-    if (d.trail && d.trail.length > 1){
-      ctx.strokeStyle = col + "55"; ctx.lineWidth = 1.5; ctx.beginPath();
+    if (d.trail && d.trail.length > 1 && DISP.op.trails > 0){
+      ctx.save(); ctx.globalAlpha = DISP.op.trails;
+      ctx.strokeStyle = col + "55"; ctx.lineWidth = lw(1.5); ctx.beginPath();
       d.trail.forEach((t,i) => { const p = toPx(t[0],t[1]);
         i ? ctx.lineTo(p[0],p[1]) : ctx.moveTo(p[0],p[1]); });
-      ctx.stroke();
+      ctx.stroke(); ctx.restore();
     }
-    // markers counter-rotate against the map so the triangle keeps showing
-    // true heading on a rotated (heading-up) world
+    // markers counter-rotate against the map so the triangle keeps
+    // showing true heading on a rotated (heading-up) world
     const p = toPx(d.lat, d.lon), hd = (d.heading||0) * Math.PI/180 - view.rot;
     ctx.save(); ctx.translate(p[0],p[1]); ctx.rotate(hd);
     ctx.fillStyle = d.stale ? "#525252" : col;
-    ctx.beginPath(); ctx.moveTo(0,-9); ctx.lineTo(6,7); ctx.lineTo(-6,7);
+    ctx.beginPath(); ctx.moveTo(0,-vs); ctx.lineTo(vs*0.67,vs*0.78);
+    ctx.lineTo(-vs*0.67,vs*0.78);
     ctx.closePath(); ctx.fill(); ctx.restore();
     if (MAP.selected.has(vid)){
       // fleet-framing membership ring (toggled by tile checkbox/shift-click)
       ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.setLineDash([3,3]);
-      ctx.beginPath(); ctx.arc(p[0], p[1], 13, 0, 7); ctx.stroke();
+      ctx.beginPath(); ctx.arc(p[0], p[1], vs + 4, 0, 7); ctx.stroke();
       ctx.setLineDash([]);
+    }
+    if (RCMAN.has(vid)){
+      // manual-control ring (RC-CONTROL R2): a solid red halo marks a vehicle
+      // a pilot is flying by hand, driven by rc/status engaged
+      ctx.strokeStyle = "#fa4d56"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(p[0], p[1], vs + 8, 0, 7); ctx.stroke();
     }
     ctx.fillStyle = d.stale ? "#525252" : col;
     ctx.font = "12px 'IBM Plex Mono', monospace";
     ctx.fillText(`${vid} ${d.agl?.toFixed(1)??"–"}m${d.stale?" (stale)":""}`,
-                 p[0]+10, p[1]+4);
+                 p[0]+vs+3, p[1]+4);
   }
   if (view.rot){
     // compass: which way is north while the map is heading-up
@@ -1563,14 +2597,6 @@ cv.addEventListener("mousemove", e => {
   if (!drag){
     // hit-test the event + data layers for the hover tooltip
     hoverEvt = null;
-    selAnom = null;
-    // emphasize the ground-truth target under the cursor (delete affordance)
-    let bestA = 144;
-    for (const a of simAnoms){
-      const p = toPx(a.lat_deg, a.lon_deg);
-      const dd = (p[0]-e.offsetX)**2 + (p[1]-e.offsetY)**2;
-      if (dd < bestA){ bestA = dd; selAnom = a.id; }
-    }
     let best = 121;  // 11 px pick radius, squared
     if (showEvents){
       for (const ev of mapEvents){
@@ -1601,8 +2627,8 @@ cv.addEventListener("mousemove", e => {
 window.addEventListener("mouseup", () => drag = null);
 cv.addEventListener("wheel", e => {
   e.preventDefault();
-  MAP.auto = false;                        // manual zoom = map interaction
-  if (MAP.mode === "fleet") pauseFollow();  // fleet framing owns the zoom
+  MAP.auto = false;                       // manual zoom = map interaction
+  if (MAP.mode === "fleet") pauseFollow(); // fleet framing owns the zoom
   view.mppx = Math.min(4, Math.max(0.02, view.mppx * (e.deltaY>0 ? 1.15 : 0.87)));
 }, {passive:false});
 cv.addEventListener("click", e => {
@@ -1618,6 +2644,56 @@ cv.addEventListener("click", e => {
     if (hit) toggleFleetSel(hit, !MAP.selected.has(hit));
     return;
   }
+  if (!picking && SIM && simAnoms.length){
+    // ground-truth markers are clickable while the sim tools are up:
+    // first click selects (map ring + list highlight), clicking the
+    // selected marker again deletes it — the same control-endpoint door
+    // as the list's ✕.
+    let bestA = 225, hitA = null;   // 15 px pick radius, squared
+    for (const a of simAnoms){
+      const p = toPx(a.lat_deg, a.lon_deg);
+      const d = (p[0]-e.offsetX)**2 + (p[1]-e.offsetY)**2;
+      if (d < bestA){ bestA = d; hitA = a; }
+    }
+    if (hitA){
+      if (selAnom === hitA.id) removeAnom(hitA.id);
+      else selectAnom(hitA.id);
+      return;
+    }
+  }
+  if (!picking && TASKINGS.length){
+    // sensor-tasking glyphs are clickable: open the inspect/cancel popover
+    // (same toPx hit-test pattern as the shift-click markers above)
+    let bestT = 225, hitT = null;   // 15 px pick radius, squared
+    for (const tk of TASKINGS){
+      const p = toPx(tk.lat, tk.lon);
+      const d = (p[0]-e.offsetX)**2 + (p[1]-e.offsetY)**2;
+      if (d < bestT){ bestT = d; hitT = tk; }
+    }
+    if (hitT){
+      if (taskSel === hitT.req) closeTaskPop();  // toggle off on re-click
+      else openTaskPop(hitT);
+      return;
+    }
+    if (taskSel){ closeTaskPop(); return; }  // outside click dismisses
+  }
+  if (!picking){
+    // unconfirmed-candidate markers: click opens the promote/dismiss
+    // popover (same toPx hit-test pattern as the tasking glyphs above)
+    let bestU = 225, hitU = null;   // 15 px pick radius, squared
+    for (const u of UNCONF){
+      if (u.status !== "unconfirmed") continue;
+      const p = toPx(u.lat, u.lon);
+      const d = (p[0]-e.offsetX)**2 + (p[1]-e.offsetY)**2;
+      if (d < bestU){ bestU = d; hitU = u; }
+    }
+    if (hitU){
+      if (ucandSel === hitU.index) closeTaskPop();  // toggle off on re-click
+      else openUncPop(hitU);
+      return;
+    }
+    if (ucandSel != null){ closeTaskPop(); return; }  // outside click dismisses
+  }
   if (!picking){
     // clicking a sensor-data point opens its playback/details modal
     if (!showData) return;
@@ -1631,22 +2707,26 @@ cv.addEventListener("click", e => {
     return;
   }
   const [lat, lon] = toLL(e.offsetX, e.offsetY);
-  if (picking === "anomaly"){
-    // drop a ground-truth target into the running sim: click → WS sim op →
-    // dashboard AnomalyField; the updated truth returns via sim_anomalies.
-    const params = { kind: akind.value, lat, lon };
-    if (akind.value === "audio") params.loudness_db = 80;
-    else { params.size_m = 4; params.signature = asig.value; }
-    send({cmd:"sim", op:"place_anomaly", params});
-    picking = null; pickhint.style.display = "none";
-    return;
-  }
   if (picking === "capture"){
     // "now" is a here-capture; a picked point implies flying there
     const mode = tmode.value === "now" ? "override" : tmode.value;
     send({cmd:"sensor", vehicle:tvid.value, params:{
       sensor:tsensor.value, mode, duration_s:+tdur.value,
       target:{lat, lon}, radius_m:6, expires_s:600}});
+    picking = null; pickhint.style.display = "none";
+    return;
+  }
+  if (picking === "anomaly"){
+    // drop a ground-truth anomaly into the running simulation:
+    // click → WS sim op → deployment control endpoint → AnomalyField.
+    // The updated truth comes back via the sim_anomalies broadcast.
+    // both position spellings ride along: the v3 deployment endpoint reads
+    // lat_deg/lon_deg, the v2 backend reads lat/lon — one file, two backends
+    const params = { kind: akind.value, signature: asig.value,
+                     lat_deg: lat, lon_deg: lon, lat, lon };
+    if (akind.value === "visual") params.size_m = +asize.value || 4;
+    else params.loudness_db = +aloud.value || 80;
+    send({cmd:"sim", op:"place_anomaly", params});
     picking = null; pickhint.style.display = "none";
     return;
   }
@@ -1665,18 +2745,6 @@ imageryBtn.onclick = () => {
   imagery = !imagery;
   imageryBtn.textContent = imagery ? "Imagery on" : "Imagery off";
 };
-sensorsBtn.onclick = () => {
-  showSensors = !showSensors;
-  sensorsBtn.textContent = showSensors ? "Sensors on" : "Sensors off";
-  renderLegend();
-};
-// signature is meaningful only for a visual (camera-found) target
-akind.onchange = () => { asig.disabled = akind.value === "audio"; };
-aplace.onclick = () => pick("anomaly", `a ${akind.value} target`);
-aclear.onclick = () => {
-  if (!simAnoms.length || confirm(`Remove all ${simAnoms.length} placed targets?`))
-    send({cmd:"sim", op:"clear_anomalies", params:{}});
-};
 eventsBtn.onclick = () => {
   showEvents = !showEvents;
   if (!showEvents) hoverEvt = null;
@@ -1689,6 +2757,21 @@ dataBtn.onclick = () => {
   dataBtn.textContent = showData ? "Data on" : "Data off";
   renderLegend();
 };
+sensorsBtn.onclick = () => {
+  showSensors = !showSensors;
+  sensorsBtn.textContent = showSensors ? "Sensors on" : "Sensors off";
+  renderLegend();
+};
+netBtn.onclick = () => {
+  showNet = !showNet;
+  netBtn.textContent = showNet ? "Network on" : "Network off";
+  renderLegend();
+  renderNetPanel();
+};
+// ---------- command-routing toggle (targeted vs two-phase) ----------
+// Rendered only when the backend advertises hello.command_mode. NOTE the
+// envelope: BOTH backends dispatch on the "cmd" key (the old v2 file sent
+// {kind:"command_mode"} — a silent no-op; fixed here in the converged file).
 let cmdMode = "targeted";
 const applyCmdMode = m => {
   cmdMode = m;
@@ -1697,9 +2780,45 @@ const applyCmdMode = m => {
 };
 cmdModeBtn.onclick = () => {
   const next = cmdMode === "targeted" ? "two-phase" : "targeted";
-  send({ kind: "command_mode", mode: next });
-  applyCmdMode(next);  // optimistic; server confirms via dash.command_mode event
+  send({ cmd: "command_mode", mode: next });
+  applyCmdMode(next);  // optimistic; server confirms via the command_mode event
 };
+// simulation panel: signature choices follow the anomaly kind, and the
+// size/loudness field swaps with it
+const SIGS = { visual: ["red", "orange", "blue", "yellow", "magenta"],
+               audio:  ["siren", "voice", "engine"] };
+function syncSimForm(){
+  asig.innerHTML = SIGS[akind.value]
+    .map(s => `<option value="${s}">${s}</option>`).join("");
+  asizeF.style.display = akind.value === "visual" ? "" : "none";
+  aloudF.style.display = akind.value === "audio" ? "" : "none";
+}
+akind.onchange = syncSimForm;
+syncSimForm();
+aplace.onclick = () => pick("anomaly",
+  `the ${akind.value} anomaly's location`);
+aclear.onclick = () => send({cmd:"sim", op:"clear_anomalies", params:{}});
+// Active-anomaly list: one row per ground-truth anomaly with a ✕ that
+// removes JUST that one (WS sim op → DELETE /anomalies/{id}); the updated
+// truth returns via the sim_anomalies broadcast, which re-renders this.
+function renderAnomList(){
+  if (!SIM){ alist.innerHTML = ""; return; }
+  alist.innerHTML = simAnoms.length ? simAnoms.map(a => `
+    <div class="arow${a.id === selAnom ? " sel" : ""}">
+      <span class="mono" style="cursor:pointer"
+        onclick="selectAnom('${a.id}')"
+        title="select (its marker highlights on the map)">${a.id} · ${a.kind}${
+          a.signature ? " · " + a.signature : ""}</span>
+      <button class="xabort" title="remove ${a.id} from the simulation"
+        onclick="removeAnom('${a.id}')">✕</button>
+    </div>`).join("")
+    : "<span style='color:#6f6f6f;font-size:12px'>none placed</span>";
+}
+function selectAnom(id){ selAnom = selAnom === id ? null : id; renderAnomList(); }
+function removeAnom(id){
+  if (selAnom === id) selAnom = null;
+  send({cmd:"sim", op:"remove_anomaly", params:{id}});
+}
 modalClose.onclick = closeModal;
 modal.onclick = e => { if (e.target === modal) closeModal(); };
 window.addEventListener("keydown", e => {
@@ -1776,24 +2895,62 @@ function preview(){
   if (a.mode==="corners" && (!a.corner_a || a.corner_a.length<2 ||
       !a.corner_b || a.corner_b.length<2 ||
       a.corner_a.some(isNaN) || a.corner_b.some(isNaN))) return;
-  send({ cmd:"preview_raster", area:a, leg_spacing_m:+spacing.value,
-         capture_every_m:+capm.value, speed_m_s:+speed.value });
+  if (REPLAY.active) return;
+  // transport-adaptive: hello.preview_http advertises the HTTP endpoint
+  // (v3 shares uas-flight's raster geometry there — what you preview is
+  // what flies); absent, the WS command asks the backend and the same
+  // raster_preview doc returns on the socket. Either way it lands in
+  // dispatch(), so onPreview never knows the difference.
+  const body = { area:a, leg_spacing_m:+spacing.value,
+                 capture_every_m:+capm.value, speed_m_s:+speed.value };
+  if (HELLO && HELLO.preview_http)
+    fetch("/preview", { method:"POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify(body) })
+      .then(r => r.json()).then(m => dispatch(m)).catch(() => {});
+  else
+    send(Object.assign({cmd:"preview_raster"}, body));
 }
-["clat","clon","wm","hm","ca","cb","spacing","capm","speed"].forEach(id =>
+// agl rides the list: the coverage footprint + GSD stats depend on it
+["clat","clon","wm","hm","ca","cb","agl","spacing","capm","speed"].forEach(id =>
   document.getElementById(id).addEventListener("change", preview));
 previewBtn.onclick = preview;
+// Derived sweep-quality stats from the searcher's advertised sensor_meta
+// (hfov + resolution) at the planned AGL: ground footprint, GSD, leg
+// overlap, expected frames, coverage vs the requested area.
+function planStats(m){
+  const cam = wuasCam();
+  if (!cam || !(cam.hfov_deg > 0)) return "";
+  const fw = footprintM();
+  if (!(fw > 0)) return "";
+  const gsdCm = fw / (cam.width_px || 320) * 100;
+  const sp = +spacing.value || 0;
+  const overlap = fw > 0 ? (1 - sp / fw) * 100 : 0;
+  const ovTxt = overlap >= 0
+    ? `overlap ${overlap.toFixed(0)}%`
+    : `<b style="color:var(--cds-support-warning)">gap ${(sp - fw).toFixed(1)} m between legs</b>`;
+  const area = m.plan.width_m * m.plan.height_m;
+  const legLen = Math.max(m.plan.width_m, m.plan.height_m);
+  const covered = Math.min(m.plan.legs.length * legLen * fw, area);
+  const pct = area > 0 ? covered / area * 100 : 0;
+  return `<span class="statline">footprint ${fw.toFixed(1)} m · ` +
+    `GSD ${gsdCm.toFixed(1)} cm/px · ${ovTxt}</span>` +
+    `<span class="statline">~${m.plan.captures.length} frames · ` +
+    `coverage ~${Math.min(100, pct).toFixed(0)}% of ` +
+    `${area.toFixed(0)} m²</span>`;
+}
 function onPreview(m){
   plan = m.plan;
-  estimate.textContent =
-    `${m.plan.legs.length} legs · ${m.plan.captures.length} captures · ~${Math.round(m.estimate_s)} s`;
-  // centering on the previewed area is a deliberate "look here": stop the
-  // free-mode auto-framing, but don't yank the view out of an armed follow
-  // mode (follow/fixed/fleet keep their own center).
-  MAP.auto = false;
-  if (MAP.mode === "free"){
+  estimate.innerHTML =
+    `<span class="statline">${m.plan.legs.length} legs · ` +
+    `${m.plan.captures.length} captures · ~${Math.round(m.estimate_s)} s</span>` +
+    planStats(m);
+  // recenter on the plan only when nothing owns the camera: never yank a
+  // followed/fixed/fleet view, and let first-fix auto-framing win once
+  // telemetry is flowing
+  if (MAP.mode === "free" && !(MAP.auto && fleetVids().length)){
     view.lat = m.plan.center.lat; view.lon = m.plan.center.lon;
   }
-  renderLegend();       // the plan layer is now available to the legend
 }
 
 // the only confirmation in the UI, per spec
@@ -1809,7 +2966,17 @@ holdAll.onclick = () => send({cmd:"all", command:"hold"});
 
 // ---------- vehicle tiles + video panels ----------
 function onHello(m){
+  HELLO = m;
+  // ---------- backend capability gates (one file, both backends) ----------
+  // v2-only surfaces render only when the hello advertises them; the record
+  // button needs a backend that handles cmd:"record" (v3 sets
+  // hello.recording; a backend without session recording keeps it hidden,
+  // not broken).
+  downloadBtn.style.display = importBtn.style.display = m.bundle ? "" : "none";
+  cmdModeBtn.style.display = m.command_mode ? "" : "none";
+  recBtn.style.display = ("recording" in m) ? "" : "none";
   VEHICLES = m.vehicles;
+  VEHICLES.forEach(noteLogVehicle);
   if (m.mission){
     targets = m.mission.targets || [];
     UNCONF = m.mission.unconfirmed || [];
@@ -1817,6 +2984,24 @@ function onHello(m){
     renderTargets();
   }
   (m.sensor_data || []).forEach(pushSensorData);
+  SMETA = m.sensor_meta || {};
+  // surveyed GCS position (--gcs): anchors the network layer's GCS node
+  GCS = m.gcs || null;
+  // sim tools appear ONLY when a virtual deployment advertised itself
+  SIM = m.sim || null;
+  simPanel.style.display = SIM ? "" : "none";
+  if (!SIM){ simAnoms = []; NET = null; NETPREV = null; selAnom = null; }
+  // v2 backends carry the current sim ground truth on the hello itself, so
+  // a page refresh re-renders the placed anomalies immediately
+  if (Array.isArray(m.anomalies) && m.anomalies.length){
+    simAnoms = m.anomalies;
+    selAnom = null;
+  }
+  renderAnomList();
+  renderNetPanel();
+  // the surface's own catalog (ROUND-3 §3½): fetch from wherever the
+  // hello advertises it (falls back to the boot-time fetch)
+  if (m.catalog_url) loadCatalog(m.catalog_url);
   VEHICLES.forEach((v,i) => COLORS[v] = PALETTE[i % PALETTE.length]);
   tvid.innerHTML = VEHICLES.map(v => `<option value="${v}">${v}</option>`).join("");
   cards.innerHTML = ""; videos.innerHTML = "";
@@ -1872,7 +3057,9 @@ function onHello(m){
         <button class="cds-btn cds-btn--ghost" style="font-size:12px"
           title="clean sync + poweroff of the companion computer; refused while armed or mid-task"
           onclick="cmdShutdown('${vid}')">⏻ Power off companion</button>
-      </div>`;
+      </div>
+      <div class="rcstrip rc-gray" id="rc-${vid}" style="display:none"></div>
+      <div class="qstrip" id="queue-${vid}" style="display:none"></div>`;
     cards.appendChild(tile);
     // enable toggle
     const en = document.getElementById(`en-${vid}`);
@@ -1885,8 +3072,8 @@ function onHello(m){
     };
     en.onclick = flipEnabled;
     en.onkeydown = e => { if (e.key===" "||e.key==="Enter"){ e.preventDefault(); flipEnabled(); } };
-    // map controls: crosshair arms single-follow, checkbox edits the
-    // fleet-framing selection (state survives tile re-renders/replay)
+    // map controls: crosshair snaps + arms single-follow, checkbox edits
+    // the fleet-framing selection (state survives tile re-renders/replay)
     document.getElementById(`follow-${vid}`).onclick = () => followVehicle(vid);
     const fs = document.getElementById(`fsel-${vid}`);
     fs.checked = MAP.selected.has(vid);
@@ -1894,12 +3081,16 @@ function onHello(m){
 
     const vp = document.createElement("div");
     vp.className = "cds-tile vidpanel";
-    vp.innerHTML = `
-      <div class="head"><b style="color:${COLORS[vid]}">${vid}</b>
+    // per-vehicle transport selector (segmented poll vs NDNSF stream) only
+    // where the backend advertises hello.video_transport; without it the
+    // video command carries no transport field (legacy behavior)
+    const xportSel = m.video_transport ? `
         <select id="vxport-${vid}" class="vxport" title="video transport">
           <option value="segmented">poll</option>
           <option value="stream">stream</option>
-        </select>
+        </select>` : "";
+    vp.innerHTML = `
+      <div class="head"><b style="color:${COLORS[vid]}">${vid}</b>${xportSel}
         <span class="cds-toggle" id="vtog-${vid}" role="switch" aria-checked="false"
               tabindex="0"><span class="lbl">camera</span><span class="track"></span></span>
       </div>
@@ -1913,31 +3104,62 @@ function onHello(m){
       on = !on;
       tog.classList.toggle("on", on);
       tog.setAttribute("aria-checked", on);
-      // Lock the transport selector while a feed is live — the vehicle mints
-      // its stream session on enable, so transport can only change off->on.
-      xport.disabled = on;
       document.getElementById(`vimg-${vid}`).style.display = on ? "" : "none";
-      send({cmd:"video", vehicle:vid,
-            params:{enable:on, width:320, height:240, fps:8, quality:40,
-                    transport:xport.value}});
+      const params = {enable:on, width:320, height:240, fps:8, quality:40};
+      if (xport){
+        // Lock the transport selector while a feed is live — the vehicle
+        // mints its stream session on enable, so transport only changes
+        // across an off->on edge.
+        xport.disabled = on;
+        params.transport = xport.value;
+      }
+      send({cmd:"video", vehicle:vid, params});
     };
     tog.onclick = flip;
     tog.onkeydown = e => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); flip(); } };
   });
-  const metas = m.sensor_meta || {};
+  // queue-strip snapshot: the freshest tasks/queue copy per vehicle rides
+  // hello so a page refresh renders the strips immediately
+  QSTATUS = m.task_queues || {};
+  QOPT = {};
+  VEHICLES.forEach(v => renderQueue(v));
   if (m.capabilities)
     Object.entries(m.capabilities).forEach(([v, sensors]) =>
-      onCaps({vehicle:v, sensors, sensor_meta:metas[v]}));
-  simAnoms = m.anomalies || [];
-  selAnom = null;
-  renderAnomList();
-  syncMapCtl();          // restore follow/fleet button state onto fresh tiles
+      onCaps({vehicle:v, sensors, sensor_meta: SMETA[v]}));
+  setRecUI(!!m.recording);
+  // RC pilot surface (RC-CONTROL R2): which vehicles are RC-reachable, plus
+  // the rc/status snapshot so the tile strips + map ring render immediately.
+  RCTARGETS = m.rc_targets || [];
+  initPilot();
+  RCSTAT = m.rc || {};
+  Object.entries(RCSTAT).forEach(([v, st]) => renderRcStrip(v, st));
+  refreshManualSet();
+  renderLegend();
+  syncMapCtl();
 }
 function onTelemetry(m){
   const s = m.sample, vid = m.vehicle;
   const d = drones[vid] = drones[vid] || {trail:[]};
   Object.assign(d, { tlat:s.lat_deg, tlon:s.lon_deg, agl:s.agl_m,
-    thead:s.heading_deg, stale:false });
+    thead:s.heading_deg, stale:false, seen:Date.now() });
+  // Attitude for the FINE ground-quad projection. TelemetrySample does not
+  // carry roll/pitch yet (agent wave); the moment roll_deg/pitch_deg ride
+  // the sample, the trapezoid skew lights up with no change here.
+  d.roll = typeof s.roll_deg === "number" ? s.roll_deg : undefined;
+  d.pitch = typeof s.pitch_deg === "number" ? s.pitch_deg : undefined;
+  const goodFix = !(Math.abs(s.lat_deg) < 0.5 && Math.abs(s.lon_deg) < 0.5);
+  // first good fix ≈ launch site ≈ the GCS position (network-layer anchor)
+  if (goodFix && !gcsHome) gcsHome = [s.lat_deg, s.lon_deg];
+  // live coverage sweep: the searcher's track while the raster runs
+  if (goodFix && vid === VEHICLES[0] && mstate.textContent === "searching"){
+    const lastc = covTrack[covTrack.length-1];
+    if (!lastc ||
+        Math.hypot((s.lat_deg-lastc[0]) * M_PER_DEG_LAT,
+                   (s.lon_deg-lastc[1]) * mPerDegLon(s.lat_deg)) > 0.4){
+      covTrack.push([s.lat_deg, s.lon_deg]);
+      if (covTrack.length > 6000) covTrack.shift();
+    }
+  }
   const tail = d.trail[d.trail.length-1];
   if (!tail || tail[0] !== s.lat_deg || tail[1] !== s.lon_deg){
     d.trail.push([s.lat_deg, s.lon_deg]);
@@ -1954,7 +3176,25 @@ function onTelemetry(m){
   const aglEl = document.getElementById(`agl-${vid}`);
   if (aglEl) aglEl.style.color = s.agl_alarm ? "var(--cds-support-error)" : "";
   set(`armed-${vid}`, s.armed ? "yes" : "no");
-  set(`busy-${vid}`, s.busy || "idle");
+  // Task chip with a scoped-cancel ✕: aborts ONLY the named task via
+  // task_abort (the vehicle idles under its idle policy — no RTL; the
+  // RTL/Land/Hold ladder stays the blanket stop).
+  const busyEl = document.getElementById(`busy-${vid}`);
+  if (busyEl){
+    const label = s.busy || "";
+    if (!label){ busyEl.textContent = "idle"; }
+    else if (busyEl.dataset.label !== label){
+      busyEl.textContent = "";
+      busyEl.append(label);
+      const x = document.createElement("button");
+      x.className = "xabort";
+      x.textContent = "✕";
+      x.title = `Cancel '${label}' on ${vid} (scoped abort — vehicle idles, no RTL)`;
+      x.onclick = () => send({cmd:"task_abort", vehicle:vid, label});
+      busyEl.appendChild(x);
+    }
+    busyEl.dataset.label = label;
+  }
   set(`src-${vid}`, s.source);
   const batt = document.getElementById(`batt-${vid}`);
   if (batt){
@@ -2005,7 +3245,7 @@ function onVideoFrame(buf){
 const SENSOR_ICON = { camera:"📷", audio:"🎙" };
 function onCaps(m){
   CAPS[m.vehicle] = m.sensors || [];
-  if (m.sensor_meta !== undefined) SMETA[m.vehicle] = m.sensor_meta || {};
+  if (m.sensor_meta !== undefined) SMETA[m.vehicle] = m.sensor_meta;
   const el = document.getElementById(`caps-${m.vehicle}`);
   if (!el) return;
   el.textContent = (m.sensors || []).map(s => SENSOR_ICON[s] || s).join(" ")
@@ -2017,11 +3257,815 @@ function onCaps(m){
   el.onclick = () =>
     openModal(`${m.vehicle} captured data`,
       sensorData.filter(d => d.vehicle === m.vehicle).slice().reverse());
+  renderLegend();     // symbology can change with advertised sensors
 }
 function onVideoStats(m){
   const el = document.getElementById(`vstats-${m.vehicle}`);
   if (el) el.textContent = `${m.fps} fps · ${m.kbps} kbps · #${m.seq}`;
 }
+
+// ---------- per-vehicle task-queue strip ----------
+// Rendered under each vehicle tile from its `tasks/queue` snapshot
+// (TaskQueueStatus): active-task bar (progress % + eta, scoped ✕), pending
+// chips in run order (drag to reorder, click for details, ✕ removes), split
+// continuations visually parented (↳ + badge), the finished tail collapsed
+// behind a count. Empty queue = strip hidden. Reorders send queue_reorder
+// with the FULL id order and render optimistically; a refusal reverts to
+// server truth (toast rides the normal command lifecycle). The helpers
+// between the markers are pure — scratchpad/dash_queue_test.js extracts
+// and unit-tests them (the dash_geom/dash_filter harness pattern).
+// ---- queue pure model (extracted by dash_queue_test.js) ----
+const QKIND_ICON = { "raster-search":"▤", "investigate":"◎",
+                     "sensor-override":"⌖" };
+const qFinished = t => ["done","aborted","failed"].includes(t.state);
+function fmtDur(s){
+  if (!(isFinite(s) && s >= 0)) return "–";
+  s = Math.round(s);
+  return s < 60 ? `${s}s`
+    : `${Math.floor(s/60)}m${String(s%60).padStart(2,"0")}s`;
+}
+// TaskQueueStatus → strip model: the active task, pending in run order,
+// the finished tail (collapsed to a count when rendered), and whether the
+// strip shows at all (no active AND no pending = hidden — the strip only
+// exists for active nodes).
+function queueModel(status){
+  const tasks = (status && status.tasks) || [];
+  const active = tasks.find(t => t.state === "active") || null;
+  const pending = tasks.filter(t => t.state === "pending");
+  const finished = tasks.filter(qFinished);
+  return { active, pending, finished, show: !!active || pending.length > 0 };
+}
+// Drag drop → the FULL ordered id list queue_reorder wants. Slots span the
+// whole queue: slot 0 sits AHEAD of the active task — dropping there
+// displaces it, and the agent SPLITS it (remainder resumes after the
+// prioritized task); pending chips occupy slots (active ? 1 : 0)…
+function buildReorder(activeId, pendingIds, fromId, toSlot){
+  const rest = pendingIds.filter(id => id !== fromId);
+  const displacesActive = !!activeId && toSlot === 0;
+  if (displacesActive)
+    return { ids: [fromId, activeId, ...rest], displacesActive };
+  const at = Math.max(0, Math.min(rest.length, toSlot - (activeId ? 1 : 0)));
+  rest.splice(at, 0, fromId);
+  return { ids: activeId ? [activeId, ...rest] : rest, displacesActive };
+}
+// Optimistic view: live (active+pending) tasks re-sorted to the sent id
+// order; ids the server hasn't published drop out, tasks it added keep
+// their place after the ordered ones; the finished tail stays put.
+function applyOrderedIds(tasks, ids){
+  const live = tasks.filter(t => !qFinished(t));
+  const byId = new Map(live.map(t => [t.task_id, t]));
+  const ordered = ids.map(id => byId.get(id)).filter(Boolean);
+  const extras = live.filter(t => !ids.includes(t.task_id));
+  return ordered.concat(extras, tasks.filter(qFinished));
+}
+// Has the server caught up with an optimistic order? Compare the live
+// queue order against the sent order over their COMMON ids — a split
+// rename (old active → done + a fresh continuation id) still matches.
+function queueOrderMatches(tasks, ids){
+  const live = tasks.filter(t => !qFinished(t)).map(t => t.task_id);
+  const a = live.filter(id => ids.includes(id));
+  const b = ids.filter(id => live.includes(id));
+  return a.length === b.length && a.every((id, i) => id === b[i]);
+}
+// Optimistic-state reducer on a fresh server snapshot: clear once the
+// server order matches (or the optimism expired — server truth wins after
+// 4 s); otherwise keep riding the optimistic order.
+function queueApplyServer(q, tasks, nowMs){
+  if (q && q.optimistic &&
+      (queueOrderMatches(tasks, q.optimistic) || nowMs - q.since > 4000))
+    return { optimistic: null, since: 0 };
+  return q || { optimistic: null, since: 0 };
+}
+// ---- end queue pure model ----
+
+// ========================= RC pilot surface (R2) ============================
+// ---- rc pure model (extracted by dash_rc_test.js) ----
+// Everything between these markers is pure (no DOM) — the scratchpad harness
+// extracts and unit-tests it under node (the dash_geom/dash_queue pattern).
+// AETR channel indices into the 8-wide RC_CHANNELS_OVERRIDE array, PINNED to
+// the uas-rc RcFrame wire layout: ch1..4 ride wire offsets 10/12/14/16, and
+// this is the order the backend RcHost forwards untouched (see rc.rs).
+const RC_CH = { roll: 0, pitch: 1, throttle: 2, yaw: 3 };
+const RC_CENTER = 1500, RC_MIN = 1000, RC_MAX = 2000, RC_IGNORE = 65535;
+// Centered flight axes; channels 5..8 left on the "ignore" sentinel.
+function rcCenterChannels(){
+  const ch = new Array(8).fill(RC_IGNORE);
+  ch[RC_CH.roll] = RC_CENTER; ch[RC_CH.pitch] = RC_CENTER;
+  ch[RC_CH.throttle] = RC_CENTER; ch[RC_CH.yaw] = RC_CENTER;
+  return ch;
+}
+// One stick axis in [-1,1] → PWM µs, with a symmetric deadzone rescaled so
+// the first movement past the zone starts just off center (no jump). invert
+// flips the sign (screen-down axes read as +pitch/+throttle when pushed up).
+function axisToUs(v, dead, invert){
+  dead = dead || 0;
+  if (invert) v = -v;
+  if (Math.abs(v) <= dead) v = 0;
+  else v = (v - Math.sign(v) * dead) / (1 - dead);
+  v = Math.max(-1, Math.min(1, v));
+  return Math.round(RC_CENTER + v * 500);
+}
+// Gamepad "standard" axes → AETR channels. Standard layout: axes[0]=left-x,
+// axes[1]=left-y, axes[2]=right-x, axes[3]=right-y. AETR: right-x→roll,
+// right-y→pitch, left-y→throttle, left-x→yaw (sticks-up = more).
+function gamepadToChannels(axes, dead){
+  dead = (dead == null) ? 0.06 : dead;
+  const a = axes || [];
+  const ch = rcCenterChannels();
+  ch[RC_CH.roll]     = axisToUs(a[2] || 0, dead, false);
+  ch[RC_CH.pitch]    = axisToUs(a[3] || 0, dead, true);
+  ch[RC_CH.throttle] = axisToUs(a[1] || 0, dead, true);
+  ch[RC_CH.yaw]      = axisToUs(a[0] || 0, dead, false);
+  return ch;
+}
+// Keyboard fallback → AETR channels. keys is a Set of held key names
+// (lower-cased letters + raw arrow codes). Full deflection while held.
+function keysToChannels(keys){
+  const ch = rcCenterChannels();
+  const h = k => keys.has(k);
+  const axis = (neg, pos) => (h(pos) ? 1 : 0) - (h(neg) ? 1 : 0);
+  ch[RC_CH.roll]     = RC_CENTER + axis("ArrowLeft", "ArrowRight") * 500;
+  ch[RC_CH.pitch]    = RC_CENTER + axis("ArrowDown", "ArrowUp") * 500;
+  ch[RC_CH.throttle] = RC_CENTER + axis("s", "w") * 500;
+  ch[RC_CH.yaw]      = RC_CENTER + axis("a", "d") * 500;
+  return ch;
+}
+// A Broadcast selector fans to every RC-reachable vehicle; any other value
+// targets that single id (mirrors uas-rc RcTarget selector semantics).
+function rcBroadcastTargets(sel, roster){
+  return sel === "broadcast" ? (roster || []).slice() : [sel];
+}
+// Failsafe state → strip color class: manual green, hold amber,
+// rtl/e-stop red, everything else grey.
+function rcStateClass(state){
+  if (state === "manual") return "rc-green";
+  if (state === "hold") return "rc-amber";
+  if (state === "rtl" || state === "emergency-stop") return "rc-red";
+  return "rc-gray";
+}
+// ---- end rc pure model ----
+
+let RCTARGETS = [];   // RC-reachable vehicle ids (from hello.rc_targets)
+let RCSTAT = {};      // vid -> latest RcStatus
+let RCMAN = new Set(); // vids the map draws a manual ring around (engaged)
+const PILOT = {        // local pilot-surface state
+  engaged: false, target: null, source: "gamepad", estop: false,
+  arm: false, keys: new Set(), timer: null,
+};
+
+// engaged set = every vehicle rc/status reports engaged (authoritative, from
+// the agent) unioned with our just-engaged local target (optimistic, so the
+// ring shows before the first status sample returns)
+function refreshManualSet(){
+  const set = new Set();
+  for (const [v, st] of Object.entries(RCSTAT)) if (st && st.engaged) set.add(v);
+  if (PILOT.engaged && PILOT.target)
+    for (const v of rcBroadcastTargets(PILOT.target, RCTARGETS)) set.add(v);
+  RCMAN = set;
+}
+
+function onRc(m){
+  RCSTAT[m.vehicle] = m.status;
+  renderRcStrip(m.vehicle, m.status);
+  refreshManualSet();
+}
+
+function renderRcStrip(vid, st){
+  const el = document.getElementById(`rc-${vid}`);
+  if (!el || !st) return;
+  const state = st.failsafe_state || "idle";
+  // idle + not engaged = nothing interesting; keep the strip hidden
+  if (!st.engaged && state === "idle"){ el.style.display = "none"; return; }
+  el.style.display = "";
+  el.className = "rcstrip " + rcStateClass(state);
+  const gap = (typeof st.seq_gap_pct === "number") ? st.seq_gap_pct.toFixed(1) : "–";
+  const age = (typeof st.age_ms === "number") ? `${st.age_ms}ms` : "–";
+  const src = st.source || "–";
+  el.innerHTML =
+    `<span class="rcdot"></span>` +
+    `<span class="rcstate">${qEsc(state)}</span>` +
+    `<span class="rck">${st.engaged ? "engaged" : "released"}</span>` +
+    `<span class="rck">gap</span>${gap}%` +
+    `<span class="rck">age</span>${age}` +
+    `<span class="rck">${qEsc(src)}</span>`;
+}
+
+// -- pilot surface controls --------------------------------------------------
+function initPilot(){
+  const sel = document.getElementById("pilotVid");
+  const unavail = document.getElementById("pilotUnavail");
+  const panel = document.getElementById("pilotPanel");
+  if (!sel) return;
+  if (!RCTARGETS.length){
+    unavail.style.display = "";
+    panel.style.opacity = ".5";
+    panel.style.pointerEvents = "none";
+    return;
+  }
+  unavail.style.display = "none";
+  panel.style.opacity = "";
+  panel.style.pointerEvents = "";
+  const opts = RCTARGETS.map(v => `<option value="${qEsc(v)}">${qEsc(v)}</option>`);
+  if (RCTARGETS.length > 1)
+    opts.unshift(`<option value="broadcast">Broadcast (all)</option>`);
+  sel.innerHTML = opts.join("");
+  renderPilotBars(rcCenterChannels());
+}
+
+function pilotHasGamepad(){
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  for (const p of pads) if (p && p.connected) return p;
+  return null;
+}
+
+function pilotSource(){
+  const r = document.querySelector('input[name="pilotSrc"]:checked');
+  return r ? r.value : "gamepad";
+}
+
+// one 50 Hz frame: read the active input, ship it, and mirror it live
+function pilotStep(){
+  if (!PILOT.engaged) return;
+  let channels, arm = false;
+  const src = pilotSource();
+  const pad = pilotHasGamepad();
+  document.getElementById("pilotGp").textContent =
+    pad ? `gamepad: ${pad.id.slice(0, 18)}` : "no gamepad";
+  if (src === "gamepad" && pad){
+    channels = gamepadToChannels(pad.axes);
+    arm = !!(pad.buttons[0] && pad.buttons[0].pressed);       // A = arm-hold
+    if (pad.buttons[1] && pad.buttons[1].pressed && !PILOT.estop) setEstop(true); // B = e-stop
+  } else {
+    channels = keysToChannels(PILOT.keys);
+    arm = PILOT.keys.has(" ");                                // Space = arm-hold
+  }
+  PILOT.arm = arm;
+  send({ cmd: "rc", op: "input", channels, arm, mode: 0 });
+  renderPilotSticks(channels);
+  renderPilotBars(channels);
+}
+
+function pilotEngage(){
+  const sel = document.getElementById("pilotVid");
+  if (!sel || !sel.value) return;
+  PILOT.engaged = true;
+  PILOT.target = sel.value;
+  PILOT.estop = false;
+  send({ cmd: "rc", op: "engage", target: sel.value });
+  document.getElementById("manualBanner").classList.add("on");
+  document.getElementById("pilotEngage").textContent = "Disengage";
+  document.getElementById("pilotEngage").classList.add("cds-btn--danger");
+  document.getElementById("pilotEstop").disabled = false;
+  sel.disabled = true;
+  refreshManualSet();
+  if (PILOT.timer) clearInterval(PILOT.timer);
+  PILOT.timer = setInterval(pilotStep, 20);   // 50 Hz browser stream
+}
+
+function pilotDisengage(){
+  if (!PILOT.engaged) return;
+  PILOT.engaged = false;
+  if (PILOT.timer){ clearInterval(PILOT.timer); PILOT.timer = null; }
+  send({ cmd: "rc", op: "disengage" });
+  setEstop(false);
+  PILOT.target = null;
+  document.getElementById("manualBanner").classList.remove("on");
+  const eng = document.getElementById("pilotEngage");
+  eng.textContent = "Engage"; eng.classList.remove("cds-btn--danger");
+  document.getElementById("pilotEstop").disabled = true;
+  document.getElementById("pilotVid").disabled = false;
+  renderPilotSticks(rcCenterChannels());
+  renderPilotBars(rcCenterChannels());
+  refreshManualSet();
+}
+
+function setEstop(on){
+  if (!PILOT.engaged) return;   // e-stop only means anything on an engaged session
+  PILOT.estop = on;
+  send({ cmd: "rc", op: "estop", on });
+  const b = document.getElementById("pilotEstop");
+  b.classList.toggle("latched", on);
+  b.textContent = on ? "CLEAR E-STOP" : "E-STOP";
+}
+
+function renderPilotSticks(ch){
+  const place = (id, xUs, yUs) => {
+    const box = document.getElementById(id);
+    if (!box) return;
+    const dot = box.querySelector(".dot");
+    const norm = us => us === RC_IGNORE ? 0 : (us - RC_CENTER) / 500;
+    const x = 50 + norm(xUs) * 42, y = 50 - norm(yUs) * 42;   // y up = +
+    dot.style.left = x + "%"; dot.style.top = y + "%";
+  };
+  place("stickL", ch[RC_CH.yaw], ch[RC_CH.throttle]);
+  place("stickR", ch[RC_CH.roll], ch[RC_CH.pitch]);
+}
+
+const PILOT_BARS = [["roll", RC_CH.roll], ["pitch", RC_CH.pitch],
+                    ["throttle", RC_CH.throttle], ["yaw", RC_CH.yaw]];
+function renderPilotBars(ch){
+  const host = document.getElementById("pilotBars");
+  if (!host) return;
+  host.innerHTML = PILOT_BARS.map(([name, idx]) => {
+    const us = ch[idx];
+    const n = us === RC_IGNORE ? 0 : (us - RC_CENTER) / 500;   // -1..1
+    const w = Math.abs(n) * 50, left = n >= 0 ? 50 : 50 - w;
+    return `<span class="cn">${name}</span>` +
+      `<span class="chbar"><i style="left:${left}%;width:${w}%"></i></span>` +
+      `<span class="cv">${us === RC_IGNORE ? "–" : us}</span>`;
+  }).join("");
+}
+
+// wire the pilot controls once the DOM exists
+(function wirePilot(){
+  const eng = document.getElementById("pilotEngage");
+  if (!eng) return;
+  eng.onclick = () => PILOT.engaged ? pilotDisengage() : pilotEngage();
+  document.getElementById("pilotEstop").onclick = () => setEstop(!PILOT.estop);
+  // switching target (or source) while engaged disengages first — no silent
+  // hand-off of manual authority between vehicles
+  document.getElementById("pilotVid").onchange = () => { if (PILOT.engaged) pilotDisengage(); };
+  document.querySelectorAll('input[name="pilotSrc"]').forEach(r =>
+    r.onchange = () => { PILOT.source = pilotSource(); });
+  // keyboard fallback: only while engaged AND not typing in a field
+  const typing = e => /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
+  window.addEventListener("keydown", e => {
+    if (!PILOT.engaged || typing(e)) return;
+    if (pilotSource() !== "keyboard" && e.key !== "x" && e.key !== "X") return;
+    if (e.key === "x" || e.key === "X"){ if (!PILOT.estop) setEstop(true); e.preventDefault(); return; }
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (["w","a","s","d"," ","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(k)){
+      PILOT.keys.add(k); e.preventDefault();
+    }
+  });
+  window.addEventListener("keyup", e => {
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    PILOT.keys.delete(k);
+  });
+  // closing the tab / losing the socket releases manual control (safety)
+  window.addEventListener("beforeunload", () => { if (PILOT.engaged) pilotDisengage(); });
+})();
+
+let QSTATUS = {};     // vid -> latest TaskQueueStatus (server truth)
+let QOPT = {};        // vid -> {optimistic: [ids]|null, since: ms}
+let MISSION_ID = "";  // current mission id (job → queue-task digest hint)
+const QDRAG = { vid: null, tid: null, slot: null };
+const qEsc = s => String(s == null ? "" : s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+function onTaskQueue(m){
+  QSTATUS[m.vehicle] = m.status;
+  QOPT[m.vehicle] = queueApplyServer(QOPT[m.vehicle],
+    (m.status && m.status.tasks) || [], Date.now());
+  renderQueue(m.vehicle);
+  renderTargets();      // investigating jobs may reveal their task id
+}
+function queueRevert(vid){
+  if (QOPT[vid] && QOPT[vid].optimistic){
+    QOPT[vid] = { optimistic: null, since: 0 };
+    renderQueue(vid);
+  }
+}
+// the strip status as rendered: server truth + any optimistic order
+function queueView(vid){
+  const server = QSTATUS[vid];
+  const q = QOPT[vid];
+  return server && q && q.optimistic
+    ? Object.assign({}, server,
+        { tasks: applyOrderedIds(server.tasks || [], q.optimistic) })
+    : server;
+}
+// collapse state persists per vehicle (the tool-section pattern)
+const QSEC_KEY = vid => `muas3.qsec.${vid}`;
+function qOpen(vid){
+  try { return localStorage.getItem(QSEC_KEY(vid)) !== "0"; }
+  catch (e) { return true; }
+}
+function renderQueue(vid){
+  const host = document.getElementById(`queue-${vid}`);
+  if (!host) return;
+  const model = queueModel(queueView(vid));
+  if (!model.show){ host.style.display = "none"; host.innerHTML = ""; return; }
+  host.style.display = "";
+  const open = qOpen(vid);
+  const parts = [`
+    <div class="qhead" data-qtoggle="${vid}"
+         title="this vehicle's task queue (from its tasks/queue stream)">
+      <span class="chev">${open ? "▾" : "▸"}</span>task queue
+      <span class="qcount">${model.pending.length} pending${
+        model.finished.length ? ` · ${model.finished.length} done` : ""}</span>
+    </div>`];
+  if (open){
+    const a = model.active;
+    if (a){
+      const pr = a.progress;
+      parts.push(`
+      <div class="qactive" data-slot="0"
+           title="${qEsc(a.params_digest)}${pr && pr.detail
+             ? " — " + qEsc(pr.detail) : ""}">
+        <span>${QKIND_ICON[a.kind] || "•"}</span>
+        <span class="qkind">${qEsc(a.kind)}</span>
+        ${pr ? `<span class="qbar"><span class="qfill" style="width:${
+            Math.max(0, Math.min(100, pr.pct)).toFixed(0)}%"></span></span>
+          <span class="qeta">${pr.pct.toFixed(0)}% · ${fmtDur(pr.eta_s)}</span>`
+          : `<span class="qbar"></span>`}
+        <span class="qsplitwarn">will split ▣</span>
+        <button class="xabort" data-qabort="${qEsc(a.kind)}" data-vid="${vid}"
+          title="Cancel '${qEsc(a.kind)}' on ${vid} (scoped abort — vehicle idles, no RTL)">✕</button>
+      </div>`);
+    }
+    const base = a ? 1 : 0;
+    parts.push(`<div class="qchips">${model.pending.map((t, i) => {
+      const meta = [
+        t.eta_to_start_s != null ? `in ${fmtDur(t.eta_to_start_s)}` : null,
+        t.est_duration_s > 0 ? `~${fmtDur(t.est_duration_s)}` : null,
+      ].filter(Boolean).join(" · ");
+      return `
+      <span class="qchip" draggable="true" data-tid="${qEsc(t.task_id)}"
+            data-vid="${vid}" data-slot="${base + i}"
+            title="${qEsc(t.params_digest)} — click for details, drag to reorder">
+        ${t.origin === "split" ? "↳ " : ""}${QKIND_ICON[t.kind] || "•"} ${qEsc(t.kind)}
+        ${meta ? `<span class="qmeta">${meta}</span>` : ""}
+        ${t.origin === "split" ? `<span class="qbadge"
+          title="continuation of ${qEsc(t.parent || "?")}">split</span>` : ""}
+        <button class="xabort" data-qabort="${qEsc(t.task_id)}" data-vid="${vid}"
+          title="Remove ${qEsc(t.task_id)} from the queue (never flies)">✕</button>
+      </span>`;
+    }).join("")}${model.finished.length ? `
+      <span class="qdone" title="${qEsc(model.finished
+        .map(t => `${t.task_id} ${t.state}`).join(" · "))}">+${
+        model.finished.length} done</span>` : ""}
+    </div>`);
+  }
+  host.innerHTML = parts.join("");
+}
+// Best-effort job → queue-task linkage (display only): an investigating
+// job shows its queue task id once the vehicle's tasks/queue snapshot
+// reveals a matching investigate task (vehicle + kind, narrowed by the
+// mission id when the params digest carries it). The authoritative job
+// lifecycle stays the mission machine's — this only annotates.
+function jobQueueTaskId(vehicle){
+  const st = QSTATUS[vehicle];
+  const live = ((st && st.tasks) || []).filter(t => t.kind === "investigate"
+    && (t.state === "active" || t.state === "pending"));
+  const narrowed = MISSION_ID
+    ? live.filter(t => (t.params_digest || "").includes(MISSION_ID)) : live;
+  const pool = narrowed.length ? narrowed : live;
+  if (pool.length === 1) return pool[0].task_id;
+  const act = pool.find(t => t.state === "active");
+  return act ? act.task_id : "";
+}
+// delegated handlers survive the strip innerHTML rebuilds (cmdlog pattern)
+cards.addEventListener("click", e => {
+  const tgl = e.target.closest("[data-qtoggle]");
+  if (tgl){
+    const vid = tgl.dataset.qtoggle;
+    try { localStorage.setItem(QSEC_KEY(vid), qOpen(vid) ? "0" : "1"); }
+    catch (err) {}
+    renderQueue(vid);
+    return;
+  }
+  const x = e.target.closest("button[data-qabort]");
+  if (x){
+    // active bar ✕ aborts by busy label (the kind); a pending chip ✕
+    // aborts by queue id (tsk-<n> removes just that entry)
+    send({cmd:"task_abort", vehicle:x.dataset.vid, label:x.dataset.qabort});
+    return;
+  }
+  const chip = e.target.closest(".qchip");
+  if (chip) openQPop(chip);
+});
+function openQPop(chip){
+  const st = QSTATUS[chip.dataset.vid];
+  const t = st && (st.tasks || []).find(x => x.task_id === chip.dataset.tid);
+  if (!t) return;
+  qpop.innerHTML = [
+    `<div class="row"><b>${qEsc(t.task_id)}</b> · ${qEsc(t.kind)}</div>`,
+    `<div class="row">${qEsc(t.params_digest)}</div>`,
+    `<div class="row">origin ${qEsc(t.origin)}${t.parent
+      ? ` · continues ${qEsc(t.parent)}` : ""}</div>`,
+    t.eta_to_start_s != null
+      ? `<div class="row">starts in ~${fmtDur(t.eta_to_start_s)}</div>` : "",
+    t.est_duration_s > 0
+      ? `<div class="row">est duration ${fmtDur(t.est_duration_s)}</div>` : "",
+  ].join("");
+  const r = chip.getBoundingClientRect();
+  qpop.style.display = "block";
+  qpop.style.left = `${Math.max(8, Math.min(r.left, innerWidth - 260))}px`;
+  qpop.style.top = `${Math.min(r.bottom + 6, innerHeight - 130)}px`;
+}
+document.addEventListener("click", e => {
+  if (qpop.style.display === "block" && !qpop.contains(e.target) &&
+      !e.target.closest(".qchip"))
+    qpop.style.display = "none";
+});
+function clearQDropMarks(vid){
+  const host = vid && document.getElementById(`queue-${vid}`);
+  if (!host) return;
+  host.querySelectorAll(".qdrop-before,.qdrop-after").forEach(el =>
+    el.classList.remove("qdrop-before", "qdrop-after"));
+  const a = host.querySelector(".qactive");
+  if (a) a.classList.remove("qsplit-target");
+}
+cards.addEventListener("dragstart", e => {
+  const chip = e.target.closest(".qchip");
+  if (!chip) return;
+  QDRAG.vid = chip.dataset.vid; QDRAG.tid = chip.dataset.tid; QDRAG.slot = null;
+  chip.classList.add("dragging");
+  e.dataTransfer.effectAllowed = "move";
+  try { e.dataTransfer.setData("text/plain", chip.dataset.tid); } catch (err) {}
+});
+cards.addEventListener("dragend", e => {
+  const chip = e.target.closest(".qchip");
+  if (chip) chip.classList.remove("dragging");
+  clearQDropMarks(QDRAG.vid);
+  QDRAG.vid = QDRAG.tid = QDRAG.slot = null;
+});
+cards.addEventListener("dragover", e => {
+  if (!QDRAG.tid) return;
+  const strip = e.target.closest(".qstrip");
+  if (!strip || strip.id !== `queue-${QDRAG.vid}`) return; // same vehicle only
+  const chip = e.target.closest(".qchip");
+  const activeBar = e.target.closest(".qactive");
+  if (!chip && !activeBar) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "move";
+  clearQDropMarks(QDRAG.vid);
+  if (activeBar){
+    // ahead of the active task: the drop would preempt it — surface the
+    // split consequence BEFORE it commits
+    QDRAG.slot = 0;
+    activeBar.classList.add("qsplit-target");
+    return;
+  }
+  const slot = +chip.dataset.slot;
+  const before = e.clientX < chip.getBoundingClientRect().left
+    + chip.getBoundingClientRect().width / 2;
+  QDRAG.slot = before ? slot : slot + 1;
+  chip.classList.add(before ? "qdrop-before" : "qdrop-after");
+});
+cards.addEventListener("drop", e => {
+  if (!QDRAG.tid || QDRAG.slot == null) return;
+  const strip = e.target.closest(".qstrip");
+  if (!strip || strip.id !== `queue-${QDRAG.vid}`) return;
+  e.preventDefault();
+  const vid = QDRAG.vid;
+  const model = queueModel(queueView(vid));
+  const { ids } = buildReorder(model.active ? model.active.task_id : null,
+    model.pending.map(t => t.task_id), QDRAG.tid, QDRAG.slot);
+  // optimistic: render the new order now; the queue_reorder lifecycle
+  // (sent → acked/refused toasts) rides the normal command path, and a
+  // refusal/timeout reverts to server truth in queueRevert
+  QOPT[vid] = { optimistic: ids, since: Date.now() };
+  clearQDropMarks(vid);
+  renderQueue(vid);
+  send({cmd:"queue_reorder", vehicle:vid, ordered_task_ids: ids});
+});
+
+// ---------- command lifecycle: toasts + the Commands mini-log ----------
+// Every operator command gets a visible lifecycle — sent → acked/refused
+// (with the provider's reason) → outcome — surfaced as transient toasts
+// and a compact per-command log, not just event-log lines.
+const CMDS = { list: [], byId: {} };   // newest first, capped
+function toast(text, cls){
+  if (REPLAY.seeking) return;          // seeks fast-dispatch history
+  const el = document.createElement("div");
+  el.className = "toast" + (cls ? " " + cls : "");
+  el.textContent = text;
+  toasts.appendChild(el);
+  while (toasts.children.length > 5) toasts.firstChild.remove();
+  setTimeout(() => { el.classList.add("out");
+    setTimeout(() => el.remove(), 350); }, 4000);
+}
+// Scoped-cancel label for an acked long-running entry (✕ in the mini-log):
+// takeoff/rtl map to their busy labels, an accepted override detour to
+// `sensor-override`, an armed watchpoint to `watchpoint:<id>` (the id
+// rides the ack detail: "watchpoint wp-3 armed: …"). Raster/investigate
+// long ops are mission-dispatched (no mini-log entry) — their ✕ lives on
+// the vehicle tile's task chip and the detection panel.
+function abortableOf(c){
+  if (c.state !== "acked" || !c.vehicle) return null;
+  if (c.command === "takeoff") return "takeoff";
+  if (c.command === "rtl") return "rtl";
+  if (/^sensor .*\boverride\b/.test(c.command)) return "sensor-override";
+  if (/^sensor /.test(c.command)){
+    const wp = (c.detail || "").match(/\bwp-\d+\b/);
+    if (wp) return `watchpoint:${wp[0]}`;
+  }
+  return null;
+}
+function renderCmdLog(){
+  cmdlog.innerHTML = CMDS.list.map(c => {
+    const cls = c.state === "refused" || c.state === "failed" ? "err"
+      : c.state === "timeout" ? "warn"
+      : c.state === "acked" || c.state === "done" ? "ok" : "";
+    const when = new Date(c.t * 1000).toLocaleTimeString();
+    const ab = abortableOf(c);
+    const x = ab ? `<button class="xabort" data-vid="${c.vehicle}"` +
+      ` data-label="${ab}" title="Cancel ${ab} on ${c.vehicle}` +
+      ` (scoped abort — no RTL)">✕</button>` : "";
+    return `<div class="n ${cls}">${x}<span class="t">${when}</span>` +
+      `${c.vehicle || ""} ${c.command} <span class="st">${c.state}</span>` +
+      `${c.detail ? " — " + c.detail : ""}</div>`;
+  }).join("") || "<span style='color:#6f6f6f;font-size:12px'>no commands yet</span>";
+}
+// One delegated handler survives the innerHTML rebuilds above.
+cmdlog.addEventListener("click", e => {
+  const b = e.target.closest(".xabort");
+  if (b) send({cmd:"task_abort", vehicle:b.dataset.vid, label:b.dataset.label});
+});
+function cmdUpsert(id, fields){
+  let c = CMDS.byId[id];
+  if (!c){
+    c = { id, vehicle: "", command: "", state: "sent", detail: "", t: 0 };
+    CMDS.byId[id] = c;
+    CMDS.list.unshift(c);
+    if (CMDS.list.length > 40){
+      const gone = CMDS.list.pop();
+      delete CMDS.byId[gone.id];
+    }
+  }
+  Object.assign(c, fields);
+  renderCmdLog();
+  return c;
+}
+// Lifecycle taps for command/sensor/system event kinds. `command.result`
+// semantics (round 3): ok=true is an ACK even when `detail` carries a note
+// like "smart rtl engaged (slot-layered)" — detail must NEVER render as an
+// error; `error` appears only on refusals/transport failures.
+function cmdLifecycle(m){
+  const idOf = () => m.id || m.request ||
+    `${m.vehicle || "?"}/${m.command || m.sensor || "?"}`;
+  switch (m.kind){
+    case "command.sent":
+      cmdUpsert(idOf(), { vehicle:m.vehicle, command:m.command,
+        state:"sent", t:m.t });
+      break;
+    case "command.result": {
+      const c = cmdUpsert(idOf(), { vehicle:m.vehicle, command:m.command,
+        state: m.ok ? "acked" : "refused", detail: m.detail || "", t:m.t });
+      toast(`${c.vehicle} ${c.command} ${m.ok ? "acked" : "refused"}` +
+        (c.detail ? ` — ${c.detail}` : ""), m.ok ? "ok" : "err");
+      break; }
+    case "command.timeout": {
+      const c = cmdUpsert(idOf(), { vehicle:m.vehicle, command:m.command,
+        state:"timeout", t:m.t });
+      toast(`${c.vehicle} ${c.command} timed out`, "warn");
+      break; }
+    case "command.rejected":
+      cmdUpsert(idOf(), { vehicle:m.vehicle, command:m.command,
+        state:"refused", detail:m.reason || "", t:m.t });
+      toast(`${m.vehicle} ${m.command} refused — ${m.reason || ""}`, "err");
+      break;
+    case "sensor.request":
+      cmdUpsert(idOf(), { vehicle:m.vehicle,
+        command:`sensor ${m.sensor || ""} ${m.mode || ""}`.trim(),
+        state:"sent", t:m.t });
+      break;
+    case "sensor.result": {
+      const st = m.status === "captured" ? "done"
+        : m.status === "accepted" ? "acked"
+        : m.status === "rejected" ? "refused" : (m.status || "done");
+      const fields = { vehicle:m.vehicle, state:st,
+        detail: m.message || "", t:m.t };
+      const existing = CMDS.byId[idOf()];
+      if (!existing || !existing.command)
+        fields.command = `sensor ${m.sensor || ""}`.trim();
+      const c = cmdUpsert(idOf(), fields);
+      toast(`${c.vehicle} ${c.command} ${st}` +
+        (c.detail ? ` — ${c.detail}` : ""),
+        st === "refused" ? "err" : "ok");
+      break; }
+    case "sensor.timeout":
+      cmdUpsert(idOf(), { vehicle:m.vehicle, state:"timeout", t:m.t });
+      toast(`${m.vehicle} sensor request timed out`, "warn");
+      break;
+    case "sensor.failed":
+    case "sensor.rejected":
+      cmdUpsert(idOf(), { vehicle:m.vehicle, state:"failed",
+        detail: m.error || m.reason || "", t:m.t });
+      toast(`${m.vehicle} sensor request failed — ${m.error || m.reason || ""}`, "err");
+      break;
+    case "system.shutdown_sent":
+      cmdUpsert(`sys/${m.vehicle}`, { vehicle:m.vehicle, command:"shutdown",
+        state:"sent", t:m.t });
+      break;
+    case "system.shutdown_result": {
+      const ok = m.status === "accepted";
+      cmdUpsert(`sys/${m.vehicle}`, { vehicle:m.vehicle, command:"shutdown",
+        state: ok ? "acked" : "refused", detail: m.message || "", t:m.t });
+      toast(`${m.vehicle} shutdown ${m.status}` +
+        (m.message ? ` — ${m.message}` : ""), ok ? "ok" : "err");
+      break; }
+    case "system.shutdown_timeout":
+    case "system.shutdown_failed":
+    case "system.rejected":
+      cmdUpsert(`sys/${m.vehicle}`, { vehicle:m.vehicle, command:"shutdown",
+        state: m.kind.endsWith("timeout") ? "timeout" : "failed",
+        detail: m.error || m.reason || "", t:m.t });
+      toast(`${m.vehicle} shutdown ${m.kind.split(".")[1]}`, "err");
+      break;
+  }
+}
+
+// ---------- event log filtering (display-only over the retained buffer) ----
+// Category chips (auto-derived from event-kind prefixes via THE one mapping
+// table inside evtCategory), a vehicle dropdown (any vehicle seen), and a
+// free-text substring box. Multiple chips = union; vehicle and text
+// intersect with the chip set (evtFilterPass is the pure predicate — the
+// scratchpad harness extracts and unit-tests both functions). Filtering
+// never mutates the buffer: nodes are only hidden, so click-to-locate and
+// the detect frame-order insertion logic keep working untouched. While any
+// filter is active retention grows to 1000 lines (so a narrow filter isn't
+// starved by the 250 cap) and at most 250 matches render. Active filters
+// persist (localStorage) and survive replay enter/exit.
+function evtCategory(kind){
+  // THE kind-prefix → chip-category table (chips, counters, and the
+  // predicate all derive from this one place)
+  const T = { mission:"mission", detect:"detect", target:"target",
+              command:"command", coord:"coord", sensor:"sensor",
+              record:"record", system:"system",
+              // secondary prefixes folded into the nearest chip
+              video:"sensor", vehicle:"command", sim:"system" };
+  return T[String(kind || "").split(".")[0]] || "system";
+}
+const LOG_CATS = ["mission","detect","target","command","coord",
+                  "sensor","record","system"];
+// Pure predicate over one log entry {cat, vehicle, text} and the filter
+// state {cats:[], vehicle:"", text:""}: chips = union, vehicle + text
+// intersect; empty filter fields pass everything.
+function evtFilterPass(entry, f){
+  if (f.cats && f.cats.length && !f.cats.includes(entry.cat)) return false;
+  if (f.vehicle && entry.vehicle !== f.vehicle) return false;
+  if (f.text &&
+      !String(entry.text || "").toLowerCase().includes(f.text.toLowerCase()))
+    return false;
+  return true;
+}
+const LOGF_KEY = "muas3.logfilter";
+const LOGF = { cats: [], vehicle: "", text: "" };
+(function loadLogF(){
+  try {
+    const s = JSON.parse(localStorage.getItem(LOGF_KEY) || "{}");
+    if (Array.isArray(s.cats))
+      LOGF.cats = s.cats.filter(c => LOG_CATS.includes(c));
+    if (typeof s.vehicle === "string") LOGF.vehicle = s.vehicle;
+    if (typeof s.text === "string") LOGF.text = s.text;
+  } catch (e) {}
+})();
+function saveLogF(){
+  try { localStorage.setItem(LOGF_KEY, JSON.stringify(LOGF)); } catch (e) {}
+}
+const logFilterActive = () =>
+  !!(LOGF.cats.length || LOGF.vehicle || LOGF.text);
+const LOG_VISIBLE = 250;                 // rendered lines, filtered or not
+const logRetention = () => logFilterActive() ? 1000 : 250;
+const LOGVIDS = new Set();               // every vehicle seen in events
+function noteLogVehicle(vid){
+  if (!vid || LOGVIDS.has(vid)) return;
+  LOGVIDS.add(vid); syncLogVids();
+}
+function syncLogVids(){
+  logvid.innerHTML = ['<option value="">all vehicles</option>']
+    .concat([...LOGVIDS].sort().map(v => `<option value="${v}">${v}</option>`))
+    .join("");
+  logvid.value = LOGVIDS.has(LOGF.vehicle) ? LOGF.vehicle : "";
+}
+function applyLogFilter(){
+  while (log.children.length > logRetention()) log.lastChild.remove();
+  const counts = {};
+  let visible = 0;
+  for (const el of log.children){
+    const cat = el.dataset.cat || "system";
+    counts[cat] = (counts[cat] || 0) + 1;
+    const pass = evtFilterPass(
+      { cat, vehicle: el.dataset.vid || "", text: el.textContent }, LOGF);
+    el.style.display = pass && visible < LOG_VISIBLE ? "" : "none";
+    if (pass) visible++;
+  }
+  logchips.innerHTML = LOG_CATS.map(c => `
+    <button class="logchip${LOGF.cats.includes(c) ? " on" : ""}" data-cat="${c}"
+      title="show only ${c} events (multiple chips = union; vehicle/text intersect)"
+      >${c}<span class="ct">${counts[c] || 0}</span></button>`).join("");
+  logclear.style.visibility = logFilterActive() ? "visible" : "hidden";
+}
+// delegated: survives the chip innerHTML rebuilds (cmdlog pattern)
+logchips.addEventListener("click", e => {
+  const b = e.target.closest(".logchip");
+  if (!b) return;
+  const c = b.dataset.cat;
+  LOGF.cats = LOGF.cats.includes(c)
+    ? LOGF.cats.filter(x => x !== c) : LOGF.cats.concat(c);
+  saveLogF(); applyLogFilter();
+});
+logvid.onchange = () => {
+  LOGF.vehicle = logvid.value; saveLogF(); applyLogFilter(); };
+logtext.value = LOGF.text;
+logtext.oninput = () => {
+  LOGF.text = logtext.value; saveLogF(); applyLogFilter(); };
+logclear.onclick = () => {
+  LOGF.cats = []; LOGF.vehicle = ""; LOGF.text = "";
+  logtext.value = ""; saveLogF(); syncLogVids(); applyLogFilter();
+};
 
 // ---------- events / mission state ----------
 const STATE_TAG = { idle:"cds-tag--gray", searching:"cds-tag--blue",
@@ -2033,12 +4077,26 @@ function setState(state){
 }
 // ---------- targets panel ----------
 const TGT_TAG = { queued:"cds-tag--yellow", investigating:"cds-tag--blue",
-                  done:"cds-tag--green", failed:"cds-tag--red" };
-// Unconfirmed cards (end-of-raster candidates below confirm_count): amber,
-// "1/2 hits", two dispositions — Investigate anyway (normal queue/dispatch;
-// reopens a completed mission) or Dismiss (terminal). Promoted/dismissed
-// entries leave the panel; a promotion's target card arrives via its own
-// mission.target_found. (Ported from v3.)
+                  done:"cds-tag--green", failed:"cds-tag--red",
+                  cancelled:"cds-tag--gray" };
+// Job ✕ in the detection panel: a QUEUED job is removed purely in the
+// mission machine (job_cancel → target.job_cancelled); an ACTIVE job is
+// aborted at its assigned vehicle (task_abort investigate) and completes
+// through the vehicle's busy→idle transition.
+function cancelJob(index, sensor){
+  const t = targets.find(x => x.index === index);
+  const j = t && (t.jobs || []).find(x => x.sensor === sensor);
+  if (!j) return;
+  if (j.status === "queued")
+    send({cmd:"job_cancel", index, sensor});
+  else if (j.status === "investigating" && j.vehicle)
+    send({cmd:"task_abort", vehicle:j.vehicle, label:"investigate"});
+}
+// Unconfirmed cards (end-of-raster candidates that fell short of
+// confirm_count): amber, "1/2 hits", two dispositions — Investigate anyway
+// (normal queue/dispatch; reopens a completed mission) or Dismiss
+// (terminal). Promoted/dismissed entries leave the panel; a promotion's
+// target card arrives via its own mission.target_found.
 function unconfCardsHTML(){
   return UNCONF.filter(u => u.status === "unconfirmed").map(u => `
     <div class="unconf" style="display:flex;justify-content:space-between;
@@ -2055,7 +4113,7 @@ function unconfCardsHTML(){
         </div>
       </span>
       <span class="cds-tag cds-tag--yellow"
-        title="seen on ${u.hits} of the ${u.need} frames confirmation needs — the search ended before another pass could see it">${u.hits}/${u.need} hits</span>
+        title="seen on ${u.hits} of the ${u.need} frames confirmation needs — the search ended before a second pass could see it">${u.hits}/${u.need} hits</span>
     </div>`).join("");
 }
 function renderTargets(){
@@ -2067,17 +4125,35 @@ function renderTargets(){
     thumb.style.display = "none";
     return;
   }
+  if (!targets.length){
+    detCard.innerHTML = unc;
+    thumb.style.display = "none";
+    return;
+  }
   detCard.innerHTML = unc + targets.map(t => `
     <div style="display:flex;justify-content:space-between;align-items:center;
                 margin-bottom:8px">
       <span><b>#${t.index} ${t.object_id}</b> · ${(t.confidence*100).toFixed(1)}%
         <div class="mono">${t.lat.toFixed(6)}, ${t.lon.toFixed(6)}</div>
-        <div>${(t.jobs || []).map(j => `
+        <div>${(t.jobs || []).map(j => {
+          // display-only queue linkage: the task id the vehicle's queue
+          // stream reveals for an investigating job (best-effort match)
+          const tid = j.status === "investigating" && j.vehicle
+            ? jobQueueTaskId(j.vehicle) : "";
+          return `
           <span class="cds-tag ${TGT_TAG[j.status]||'cds-tag--gray'}"
-                title="${j.vehicle || 'not assigned yet'}">${j.sensor} ${j.status}</span>
+                title="${j.vehicle || 'not assigned yet'}${tid
+                  ? ` · queue ${tid}` : ''}">${j.sensor} ${j.status}${tid
+                  ? ` <span style="font-family:var(--font-mono);font-size:10px">${tid}</span>` : ''}</span>
+          ${j.status === "queued" || j.status === "investigating"
+            ? `<button class="xabort" onclick="cancelJob(${t.index},'${j.sensor}')"
+                 title="${j.status === "queued"
+                   ? `remove this queued ${j.sensor} job (never dispatches)`
+                   : `abort ${j.vehicle}'s investigation (scoped — no RTL)`}">✕</button>`
+            : ""}
           ${(j.artifacts || []).map(a => `<a target="_blank"
             href="/artifact?name=${encodeURIComponent(a)}">${j.sensor === "audio"
-              ? "audio" : "capture"} ↗</a>`).join(" ")}`).join(" ")}
+              ? "audio" : "capture"} ↗</a>`).join(" ")}`; }).join(" ")}
         </div>
       </span>
       <span class="cds-tag ${TGT_TAG[t.status]||'cds-tag--gray'}">${t.status}</span>
@@ -2090,7 +4166,6 @@ function renderTargets(){
 }
 
 function onEvent(m){
-  if (m.kind === "command_mode" && m.mode) applyCmdMode(m.mode);
   const line = document.createElement("div");
   line.className = "n";
   const t = new Date(m.t*1000).toLocaleTimeString();
@@ -2103,20 +4178,44 @@ function onEvent(m){
   line.innerHTML = `<span class="t">${t}</span>${m.kind} ${tag}${extra}`;
   if (m.kind.includes("hit") || m.kind.includes("target_found") ||
       m.kind.includes("completed")) line.classList.add("hit");
-  if (m.kind.includes("fail") || m.kind.includes("timeout")) line.classList.add("err");
+  // ok=true NEVER renders as an error — an accepted ack's `detail` note
+  // (e.g. "smart rtl engaged (slot-layered)") shows neutrally; error
+  // styling is reserved for refusals, failures, and timeouts.
+  if (m.ok === true) line.classList.remove("err");
+  else if (m.kind.includes("fail") || m.kind.includes("timeout") ||
+           m.kind.includes("rejected") || m.ok === false)
+    line.classList.add("err");
+  cmdLifecycle(m);
+  taskingLifecycle(m);
+  // queue_reorder refusal/timeout: drop the strip's optimistic order (the
+  // toast already rode the command lifecycle like any other command)
+  if (m.command === "queue_reorder" &&
+      (m.kind === "command.timeout" ||
+       (m.kind === "command.result" && m.ok === false)))
+    queueRevert(m.vehicle);
   // detect responses complete out of capture order (each frame's round
-  // trip varies); slot each detect line above the first detect line with
-  // a LOWER frame number so the log reads in frame order
-  let anchor = null;
+  // trip varies): slot a late line below the LEADING run of higher-seq
+  // detect lines so the log still reads in frame order — but never below
+  // non-detect lines that arrived earlier. (Anchoring above "the first
+  // lower-seq line" buried every new detect line under the first
+  // candidate/dispatch block, so the visible top of the log froze there
+  // and the live detect stream read as stalled after dispatch #1 — while
+  // the recording showed frames still flowing.)
+  let anchor = log.firstChild;
   if (isDetect){
     line.dataset.seq = m.seq;
-    for (const child of log.children){
-      const s = child.dataset.seq;
-      if (s !== undefined && Number(s) < m.seq){ anchor = child; break; }
-    }
+    while (anchor && anchor.dataset.seq !== undefined &&
+           Number(anchor.dataset.seq) > m.seq)
+      anchor = anchor.nextSibling;
   }
-  if (anchor) log.insertBefore(line, anchor); else log.prepend(line);
-  while (log.children.length > 250) log.lastChild.remove();
+  if (anchor) log.insertBefore(line, anchor); else log.append(line);
+  // filter metadata rides the node (category from THE mapping table,
+  // vehicle for the dropdown); retention/visibility is applyLogFilter's
+  // job — it trims to 250 (1000 while any filter is active) and hides
+  // non-matching lines without ever reordering or dropping matches early
+  line.dataset.cat = evtCategory(m.kind);
+  if (m.vehicle){ line.dataset.vid = m.vehicle; noteLogVehicle(m.vehicle); }
+  applyLogFilter();
 
   // pin georeferenced events to the map, and let the log line locate
   // them: click pans the view to where (and shows when) it happened
@@ -2124,19 +4223,21 @@ function onEvent(m){
   if (typeof m.lat === "number" && typeof m.lon === "number"){
     line.style.cursor = "pointer";
     line.title = "click to locate on map";
-    line.onclick = () => gotoLL(m.lat, m.lon);
+    line.onclick = () => gotoLL(m.lat, m.lon);  // pauses follow, pill resumes
   }
-  cmdLifecycle(m);   // command/sensor/system kinds → toasts + mini-log
 
   const byIndex = i => targets.find(x => x.index === i);
   const jobOf = (tg, sensor) =>
     (tg.jobs || []).find(j => j.sensor === sensor);
   switch (m.kind){
     case "mission.started":
-      setState("searching"); targets = []; UNCONF = [];
-      mapEvents = []; hoverEvt = null;
+      setState("searching"); targets = []; UNCONF = []; mapEvents = [];
+      hoverEvt = null;
+      MISSION_ID = m.mission_id || "";   // job → queue-task digest hint
+      covTrack = [];             // live coverage shading restarts per mission
       renderTargets(); break;
     case "target.unconfirmed":
+      // end-of-raster leftover candidate: surfaced for disposition only
       if (!UNCONF.some(u => u.index === m.index))
         UNCONF.push({ index:m.index, object_id:m.object_id, hits:m.hits,
           need:m.need, confidence:m.confidence, lat:m.lat, lon:m.lon,
@@ -2144,16 +4245,30 @@ function onEvent(m){
       renderTargets(); break;
     case "target.promoted": {
       const u = UNCONF.find(x => x.index === m.index);
-      if (u) u.status = "promoted";     // its target card arrives via found
+      if (u) u.status = "promoted";
+      // a completed mission reopens for the promoted target's jobs; the
+      // machine already flipped done→investigating — mirror it here
+      if (mstate.textContent === "done") setState("investigating");
       renderTargets();
       toast(`candidate u#${m.index} promoted — investigating`, "ok");
       break; }
     case "target.dismissed": {
       const u = UNCONF.find(x => x.index === m.index);
-      if (u) u.status = "dismissed";    // terminal
+      if (u) u.status = "dismissed";     // terminal
       renderTargets();
       toast(`candidate u#${m.index} dismissed`, "ok");
       break; }
+    case "command_mode":
+      // server-confirmed routing mode (the v2 backend broadcasts this event
+      // on every toggle) — sync the header toggle's UI state on all clients
+      if (m.mode) applyCmdMode(m.mode);
+      break;
+    case "record.started":
+      setRecUI(true);
+      toast(`recording ${m.name || "session"} started`, "ok"); break;
+    case "record.stopped":
+      setRecUI(false);
+      toast(`recording ${m.name || "session"} saved`, "ok"); break;
     case "mission.target_found":
       targets.push({ index:m.index, object_id:m.object_id,
         confidence:m.confidence, lat:m.lat, lon:m.lon, frame:m.frame,
@@ -2172,6 +4287,19 @@ function onEvent(m){
                const j = jobOf(tg, m.sensor);
                if (j){ j.status = "investigating"; j.vehicle = m.vehicle; }
                renderTargets(); }
+      break; }
+    case "target.job_cancelled": {
+      const tg = byIndex(m.index);
+      if (tg){
+        const j = jobOf(tg, m.sensor);
+        if (j) j.status = "cancelled";
+        const done = s => ["done","failed","cancelled"].includes(s);
+        if ((tg.jobs || []).every(x => done(x.status)))
+          tg.status = tg.jobs.some(x => x.status === "failed") ? "failed"
+            : tg.jobs.some(x => x.status === "done") ? "done" : "cancelled";
+        renderTargets();
+      }
+      toast(`target #${m.index} ${m.sensor} job cancelled`, "ok");
       break; }
     case "target.job_completed":
     case "target.job_failed": {
@@ -2212,13 +4340,22 @@ function onEvent(m){
   }
 }
 
-// ---------- toggleable map legend (adapts to the layers that are ON) -------
-// Ported from v3, trimmed to v2's layers (vehicles / sensors / plan / data /
-// events / targets). Pure client-side; explains the on-map symbology.
-const LEGEND_KEY = "muas2.legend";
+// ---------- recording control (session-scoped; see Replay semantics) ----------
+let recOn = false;
+function setRecUI(on){
+  recOn = on;
+  recBtn.textContent = on ? "■ Recording" : "● Record";
+  recBtn.style.color = on ? "var(--cds-support-error)" : "";
+}
+recBtn.onclick = () =>
+  send({ cmd: "record", action: recOn ? "stop" : "start" });
+
+// ---------- toggleable map legend (adapts to the layers that are ON) ----------
+const LEGEND_KEY = "muas3.legend";
 let legendOn = false;
 try { legendOn = localStorage.getItem(LEGEND_KEY) === "1"; } catch (e) {}
-const sw = (style) => `<span class="sw" style="${style}"></span>`;
+const sw = (style, extra) =>
+  `<span class="sw" style="${style}${extra || ""}"></span>`;
 function renderLegend(){
   legendBtn.textContent = legendOn ? "Legend on" : "Legend";
   legend.style.display = legendOn ? "" : "none";
@@ -2228,31 +4365,72 @@ function renderLegend(){
     <div class="li">${sw("background:#78a9ff;clip-path:polygon(50% 0,100% 100%,0 100%)")}
       marker points true heading; label = id + AGL; gray = stale link</div>
     <div class="li">${sw("border:1px dashed #78a9ff")} dashed ring = in fleet framing</div>
-    <div class="li">${sw("background:#78a9ff22;border:1px solid #78a9ff55")} trail = recent track</div>`);
-  if (showSensors)
-    parts.push(`<h4>Sensors (advertised sensor_meta)</h4>
-      <div class="li">${sw("border:1px dashed #78a9ff;background:#78a9ff1a")}
-        camera: nadir footprint quad or forward D/R/I cone</div>
+    <div class="li">${sw("background:#78a9ff22;border:1px solid #78a9ff55")}
+      trail = recent track</div>`);
+  if (showSensors){
+    const anyForward = Object.values(SMETA).some(s =>
+      s && s.camera && s.camera.facing === "forward");
+    parts.push(`<h4>Sensors (advertised sensor_meta)</h4>` +
+      (anyForward ? `<div class="li">${sw("background:conic-gradient(from 45deg,#78a9ff88,#78a9ff22 90deg,transparent 90deg)")}
+        forward camera: FoV cone, shaded D/R/I bands (identify nearest/strongest)</div>` : "") +
+      `<div class="li">${sw("border:1px dashed #78a9ff;background:#78a9ff1a")}
+        nadir camera: ground footprint quad (skews with attitude when telemetry carries it)</div>
       <div class="li">${sw("border:1px dashed #ff832b;border-radius:50%")}
         audio reach: omni circle or beam lobes</div>`);
-  if (plan)
-    parts.push(`<h4>Search plan</h4>
-      <div class="li">${sw("border:1px solid #f1c21b99")} area boundary</div>
-      <div class="li">${sw("background:#4589ff66")} sweep legs · ${
-        sw("background:#78a9ff")} capture points</div>`);
-  if (showData)
-    parts.push(`<h4>Captured data</h4>
-      <div class="li">${sw("border:1px solid #78a9ff")} camera (hollow = evidence, filled = tasked)</div>
-      <div class="li">${sw("border:1px solid #ff832b;border-radius:50%")} audio clip</div>`);
-  if (showEvents)
-    parts.push(`<h4>Events</h4>
-      <div class="li">${sw("background:#42be65;transform:rotate(45deg)")} diamonds, oldest faintest (hit / candidate / found)</div>`);
+  }
+  if (showNet){
+    const nsCol = NETNS !== "all" ? nsColor(NETNS) : null;
+    parts.push(`<h4>Network — the medium</h4>` +
+      (NETSUB.fields ? `
+      <div class="li">${sw("background:radial-gradient(circle,#42be65cc,transparent 72%);border-radius:50%")}
+        coverage/activity field per fabric node — size &amp; brightness track
+        recent traffic (log-scaled, clamped)</div>
+      <div class="li">${sw("background:radial-gradient(circle at 35% 50%,#42be65aa,transparent 60%),radial-gradient(circle at 65% 50%,#f1c21baa,transparent 60%);border-radius:50%")}
+        overlapping fields blend brighter = shared medium (contention)</div>
+      <div class="li">${sw("background:#42be65")} node fresh &lt;4 s
+        ${sw("background:#f1c21b;margin-left:6px")} &lt;10 s
+        ${sw("background:#fa4d56;margin-left:6px")} stale — field hue =
+        telemetry freshness${nsCol ? "" : " (“all” lens)"}</div>` : "") +
+      (NETSUB.pulses ? `
+      <div class="li">${sw("border:1px solid #78a9ff;border-radius:50%")}
+        expanding ring = emission pulse at the emitter (measured rate,
+        ≤${PULSE_MAX_HZ}/s shown; busier nodes brighten the field instead)</div>` : "") +
+      (nsCol ? `
+      <div class="li">${sw(`background:${nsCol};border-radius:50%`)}
+        namespace lens: only <b>${nsLabel(NETNS)}</b> traffic, in its
+        namespace color</div>` : "") +
+      (NETSUB.overlay ? `
+      <h4>Network — overlay bearers (not the medium)</h4>
+      <div class="li">${sw("background:repeating-linear-gradient(90deg,#42be65 0 5px,transparent 5px 9px);height:2px")}
+        thin squared line = a point-to-point OVERLAY bearer (the
+        deployment's UDP faces); dashes march while traffic flows</div>` : "") + `
+      <div class="li">${sw("background:#78a9ff")} GCS node (world-anchored at the GCS position)</div>`);
+  }
+  if (showEvents) parts.push(`<h4>Events (diamonds fade with age)</h4>
+    <div class="li">${sw("background:#42be65")} detect.hit
+      ${sw("background:#f1c21b;margin-left:6px")} candidate
+      ${sw("background:#fa4d56;margin-left:6px")} target found
+      ${sw("background:#4589ff;margin-left:6px")} target.*</div>`);
+  if (showData) parts.push(`<h4>Captured data</h4>
+    <div class="li">${sw("background:#78a9ff")} square = camera frame ·
+      ${sw("border:1px solid #ff832b;border-radius:50%;margin-left:6px")}
+      circle = audio clip</div>
+    <div class="li">filled = operator-tasked · hollow = mission evidence · click to play</div>`);
+  parts.push(`<h4>Sensor taskings</h4>
+    <div class="li">${sw("border:1px solid #78a9ff;border-radius:50%")}
+      bullseye = active tasking (click to inspect / cancel) ·
+      ${sw("border:1px dashed #78a9ff;border-radius:50%;margin-left:6px")}
+      dashed ring = watchpoint arm radius</div>`);
   parts.push(`<h4>Targets</h4>
-    <div class="li">${sw("background:#f1c21b;border-radius:50%")} queued · ${
-      sw("background:#4589ff;border-radius:50%")} investigating · ${
-      sw("background:#42be65;border-radius:50%")} done · ${
-      sw("background:#fa4d56;border-radius:50%")} failed</div>
-    <div class="li">${sw("border:1px solid #fa4d56")} ⌖ = placed ground-truth target (sim)</div>`);
+    <div class="li">${sw("background:#f1c21b;border-radius:50%")} queued
+      ${sw("background:#4589ff;border-radius:50%;margin-left:6px")} investigating (pulses)
+      ${sw("background:#42be65;border-radius:50%;margin-left:6px")} done
+      ${sw("background:#fa4d56;border-radius:50%;margin-left:6px")} failed</div>
+    <div class="li">${sw("border:1px dashed #f1c21b;border-radius:50%")}
+      hollow = unconfirmed candidate (click to investigate anyway / dismiss)</div>`);
+  if (plan || covTrack.length) parts.push(`<h4>Coverage</h4>
+    <div class="li">${sw("background:#4589ff44")} planned sweep footprint (hfov @ planned AGL)</div>
+    <div class="li">${sw("background:#42be6566")} live footprint swept so far this mission</div>`);
   legend.innerHTML = parts.join("");
 }
 legendBtn.onclick = () => {
@@ -2260,101 +4438,283 @@ legendBtn.onclick = () => {
   try { localStorage.setItem(LEGEND_KEY, legendOn ? "1" : "0"); } catch (e) {}
   renderLegend();
 };
-// ---------- command lifecycle: toasts + the Commands mini-log ------------
-// Every operator command gets a visible lifecycle — sent → acked/refused
-// (with the provider's reason) → timeout — as transient toasts AND a
-// compact per-command log, not just event-log lines. The server already
-// emits command.sent / command.result{ok,error} / command.timeout /
-// command.rejected / sensor.rejected / system.rejected. (Ported from v3.)
-const CMDS = { list: [], byId: {} };   // newest first, capped
-function toast(text, cls){
-  if (REPLAY.active && REPLAY.seeking) return;   // seeks fast-dispatch history
-  const el = document.createElement("div");
-  el.className = "toast" + (cls ? " " + cls : "");
-  el.textContent = text;
-  toasts.appendChild(el);
-  while (toasts.children.length > 5) toasts.firstChild.remove();
-  setTimeout(() => { el.classList.add("out");
-    setTimeout(() => el.remove(), 350); }, 4000);
-}
-// A short-lived command that is still in flight can be halted (hold) — the
-// closest honest "stop this" v2 offers without an RTL.
-function abortableOf(c){
-  if (c.state !== "sent" || !c.vehicle) return null;
-  if (["takeoff", "rtl", "land", "hold"].includes(c.command)) return "halt";
-  return null;
-}
-function renderCmdLog(){
-  cmdlog.innerHTML = CMDS.list.map(c => {
-    const cls = c.state === "refused" || c.state === "failed" ? "err"
-      : c.state === "timeout" ? "warn"
-      : c.state === "acked" || c.state === "done" ? "ok" : "";
-    const when = new Date(c.t * 1000).toLocaleTimeString();
-    const ab = abortableOf(c);
-    const x = ab ? `<button class="xabort" data-vid="${c.vehicle}"` +
-      ` title="Halt ${c.vehicle} (hold — no RTL)">✕</button>` : "";
-    return `<div class="n ${cls}">${x}<span class="t">${when}</span>` +
-      `${c.vehicle || ""} ${c.command} <span class="st">${c.state}</span>` +
-      `${c.detail ? " — " + c.detail : ""}</div>`;
-  }).join("") || "<span style='color:#6f6f6f;font-size:12px'>no commands yet</span>";
-}
-cmdlog.addEventListener("click", e => {   // one delegated handler survives rebuilds
-  const b = e.target.closest(".xabort");
-  if (b) send({cmd:"task_abort", vehicle:b.dataset.vid, label:"halt"});
-});
-function cmdUpsert(id, fields){
-  let c = CMDS.byId[id];
-  if (!c){
-    c = { id, vehicle:"", command:"", state:"sent", detail:"", t:0 };
-    CMDS.byId[id] = c; CMDS.list.unshift(c);
-    if (CMDS.list.length > 40){ delete CMDS.byId[CMDS.list.pop().id]; }
-  }
-  Object.assign(c, fields);
-  renderCmdLog();
-  return c;
-}
-function cmdLifecycle(m){
-  const idOf = () => m.request ||
-    `${m.vehicle || "?"}/${m.command || m.sensor || "?"}`;
-  switch (m.kind){
-    case "command.sent":
-      cmdUpsert(idOf(), { vehicle:m.vehicle, command:m.command,
-        state:"sent", t:m.t }); break;
-    case "command.result": {
-      const c = cmdUpsert(idOf(), { vehicle:m.vehicle, command:m.command,
-        state: m.ok ? "acked" : "refused", detail: m.error || "", t:m.t });
-      toast(`${c.vehicle} ${c.command} ${m.ok ? "acked" : "refused"}` +
-        (c.detail ? ` — ${c.detail}` : ""), m.ok ? "ok" : "err");
-      break; }
-    case "command.timeout": {
-      const c = cmdUpsert(idOf(), { vehicle:m.vehicle, command:m.command,
-        state:"timeout", t:m.t });
-      toast(`${c.vehicle} ${c.command} timed out`, "warn"); break; }
-    case "command.rejected":
-      cmdUpsert(idOf(), { vehicle:m.vehicle, command:m.command,
-        state:"refused", detail:m.reason || "", t:m.t });
-      toast(`${m.vehicle} ${m.command} refused — ${m.reason || ""}`, "err");
-      break;
-    case "sensor.rejected":
-      cmdUpsert(`${m.vehicle}/sensor`, { vehicle:m.vehicle, command:"sensor",
-        state:"refused", detail:m.reason || "", t:m.t });
-      toast(`${m.vehicle} sensor refused — ${m.reason || ""}`, "err");
-      break;
-    case "system.rejected":
-      cmdUpsert(`sys/${m.vehicle}`, { vehicle:m.vehicle, command:"shutdown",
-        state:"refused", detail:m.reason || "", t:m.t });
-      toast(`${m.vehicle} shutdown refused — ${m.reason || ""}`, "err");
-      break;
-  }
-}
 
-// ---------- resizable / collapsible side panels (ported from v3) ---------
-const PANEL_KEY = "muas2.panels";
-const PANELS = { side: { w:336, open:true }, right: { w:288, open:true } };
+// ---------- Display panel: per-layer opacity, veil, icon/line scaling ----------
+(function buildDispPanel(){
+  const rows = [
+    ["Background dim", 0, 0.85, 0.05, () => DISP.veil, v => DISP.veil = v],
+    ["Icon size ×", 0.5, 2, 0.1, () => DISP.iconMul, v => DISP.iconMul = v],
+    ["Line weight ×", 0.5, 2.5, 0.1, () => DISP.lineMul, v => DISP.lineMul = v],
+    ["Sensors opacity", 0, 1, 0.05, () => DISP.op.sensors, v => DISP.op.sensors = v],
+    ["Network opacity", 0, 1, 0.05, () => DISP.op.net, v => DISP.op.net = v],
+    ["Events opacity", 0, 1, 0.05, () => DISP.op.events, v => DISP.op.events = v],
+    ["Data opacity", 0, 1, 0.05, () => DISP.op.data, v => DISP.op.data = v],
+    ["Trails opacity", 0, 1, 0.05, () => DISP.op.trails, v => DISP.op.trails = v],
+    ["Plan opacity", 0, 1, 0.05, () => DISP.op.plan, v => DISP.op.plan = v],
+    ["Coverage opacity", 0, 1, 0.05, () => DISP.op.coverage, v => DISP.op.coverage = v],
+  ];
+  const outs = [];
+  for (const [label, lo, hi, step, get, set] of rows){
+    const row = document.createElement("div");
+    row.className = "row";
+    const lab = document.createElement("label");
+    lab.textContent = label;
+    const inp = document.createElement("input");
+    inp.type = "range"; inp.min = lo; inp.max = hi; inp.step = step;
+    inp.value = get();
+    const out = document.createElement("output");
+    const show = () => { out.value = (+get()).toFixed(2).replace(/0$/, ""); };
+    show(); outs.push([inp, get, show]);
+    inp.oninput = () => { set(+inp.value); show(); saveDisp(); };
+    row.append(lab, inp, out);
+    dispPanel.appendChild(row);
+  }
+  // Network sub-layers (Revision 2a): fields + pulses ON by default;
+  // overlay bearers OFF by default — lines are earned, not default. The
+  // Network opacity slider above applies to all three.
+  const subRows = [
+    ["Net: coverage fields", "fields",
+     "soft per-node coverage/activity fields — the medium (R2a default)"],
+    ["Net: emission pulses", "pulses",
+     `attributable expanding rings at each emitter, ≤${PULSE_MAX_HZ}/s per node`],
+    ["Net: overlay bearers", "overlay",
+     "the demoted per-pair lines: real point-to-point UDP-face bearers, " +
+     "explicitly an overlay — never the medium (off by default)"],
+  ];
+  const subInputs = [];
+  for (const [label, key, tip] of subRows){
+    const row = document.createElement("div");
+    row.className = "row";
+    row.title = tip;
+    const lab = document.createElement("label");
+    lab.textContent = label;
+    const inp = document.createElement("input");
+    inp.type = "checkbox";
+    inp.checked = NETSUB[key];
+    const out = document.createElement("output");
+    const show = () => { out.value = NETSUB[key] ? "on" : "off"; };
+    show(); subInputs.push([inp, key, show]);
+    inp.onchange = () => {
+      NETSUB[key] = inp.checked; show(); saveNetSub(); renderLegend();
+    };
+    row.append(lab, inp, out);
+    dispPanel.appendChild(row);
+  }
+  const reset = document.createElement("button");
+  reset.className = "cds-btn cds-btn--ghost";
+  reset.style.cssText = "height:24px;padding:0 8px;font-size:12px";
+  reset.textContent = "Reset defaults";
+  reset.onclick = () => {
+    Object.assign(DISP, { veil: 0.35, iconMul: 1, lineMul: 1 });
+    Object.assign(DISP.op, { sensors: 1, net: 1, events: 0.9, data: 1,
+      trails: 1, plan: 1, coverage: 0.4 });
+    Object.assign(NETSUB, { fields: true, pulses: true, overlay: false });
+    for (const [inp, get, show] of outs){ inp.value = get(); show(); }
+    for (const [inp, key, show] of subInputs){ inp.checked = NETSUB[key]; show(); }
+    saveDisp(); saveNetSub(); renderLegend();
+  };
+  dispPanel.appendChild(reset);
+})();
+
+// ---------- Network panel: the namespace lens ----------
+// Chips over the prefixes the deployment MEASURED (top-K by traffic from
+// its bridge taps). Selecting one colors the fields/pulses by that
+// namespace and sizes them by its traffic alone; "all" restores
+// health-colored total-traffic fields. If a deployment exports no
+// per-prefix counters the lens says so and disables itself — the fields
+// still render from the per-face totals (the split that IS real).
+const fmtBps = bps => bps >= 1000
+  ? (bps / 1000).toFixed(bps >= 10000 ? 0 : 1) + " kb/s"
+  : bps.toFixed(0) + " b/s";
+function renderNetPanel(){
+  const px = (NET && NET.prefixes) || [];
+  const chips = topPrefixes(px, 8);
+  // a selected namespace that fell out of the top-K stays selectable
+  if (NETNS !== "all" && !chips.some(c => c.prefix === NETNS))
+    chips.push({ prefix: NETNS, bps: 0, bytes: 0 });
+  const chipHTML = c => `
+    <button class="nschip${NETNS === c.prefix ? " on" : ""}"
+      data-ns="${qEsc(c.prefix)}"
+      title="${qEsc(c.prefix)} — color network fields/pulses by this namespace only">
+      <span class="dot" style="background:${nsColor(c.prefix)}"></span>
+      <span class="pfx">${qEsc(nsLabel(c.prefix))}</span>
+      <span class="rate">${fmtBps(c.bps)}</span>
+    </button>`;
+  let note;
+  if (!NET)
+    note = "no network snapshot yet — this panel feeds from the " +
+      "deployment's 1 Hz net export";
+  else if (!px.length)
+    note = "this deployment exports no per-prefix counters — the lens is " +
+      "disabled; fields show per-face totals (the split that is real)";
+  else
+    note = `top ${Math.min(chips.length, 8)} prefixes by measured traffic ` +
+      `(source: ${qEsc(NET.prefix_source || "deployment export")})`;
+  if (!showNet) note += " · Network layer is OFF (header button)";
+  netPanel.innerHTML = (px.length ? `<div id="nschips">
+    <button class="nschip${NETNS === "all" ? " on" : ""}" data-ns="all"
+      title="no lens: fields colored by node health, sized by total traffic">all</button>
+    ${chips.map(chipHTML).join("")}</div>` : "") +
+    `<div id="netnote">${note}</div>`;
+}
+netPanel.addEventListener("click", e => {
+  const b = e.target.closest(".nschip");
+  if (!b) return;
+  NETNS = b.dataset.ns;
+  renderNetPanel();
+  renderLegend();
+});
+
+// ---------- Catalog: the surface's own shelf (ROUND-3 §3½) ----------
+// A read-only browser over /catalog.json — the manifested self-
+// description this dashboard serves about ITSELF: native widgets,
+// understood WS kinds, and the uas-console render contracts it binds
+// through. Searchable; every entry opens a detail popover (the manifest-
+// powered help seed). Placement/binding is deliberately absent — that is
+// builder-mode's milestone.
+let CATALOG = null;
+let CATFILTER = "";
+function loadCatalog(url){
+  fetch(url || "/catalog.json")
+    .then(r => r.json())
+    .then(c => { CATALOG = c; renderCatalogList(); })
+    .catch(() => { CATALOG = null; renderCatalogList(); });
+}
+(function initCatalogPanel(){
+  catalogPanel.innerHTML = `
+    <input id="catsearch" type="text"
+      placeholder="search widgets · kinds · contracts…"
+      title="filter the catalog (substring match on ids, names, descriptions)">
+    <div id="catlist"></div>`;
+  const cs = document.getElementById("catsearch");
+  cs.oninput = () => { CATFILTER = cs.value; renderCatalogList(); };
+})();
+const catMatch = (f, ...fields) =>
+  !f || fields.some(x => String(x || "").toLowerCase().includes(f));
+function renderCatalogList(){
+  const list = document.getElementById("catlist");
+  // zero-config backend gate: the Catalog section exists only where
+  // /catalog.json does (v3 serves it; on a backend without the route the
+  // fetch 404s and the whole section — header included — stays hidden)
+  const hdr = catalogPanel.parentElement &&
+    catalogPanel.parentElement.classList.contains("secbody")
+      ? catalogPanel.parentElement.previousElementSibling : null;
+  catalogPanel.style.display = CATALOG ? "" : "none";
+  if (hdr && hdr.tagName === "H3") hdr.style.display = CATALOG ? "" : "none";
+  if (!CATALOG){
+    list.innerHTML = "";
+    return;
+  }
+  const f = CATFILTER.trim().toLowerCase();
+  const widgets = (CATALOG.widgets || []).filter(w =>
+    catMatch(f, w.id, w.name, w.renders, w.required_kind));
+  const kinds = (CATALOG.understood_kinds || []).filter(k =>
+    catMatch(f, k.kind, k.description));
+  const contracts = (CATALOG.contracts || []).filter(c =>
+    catMatch(f, c.intent, c.renderer, c.verdict, c.contract));
+  const row = (group, id, label, tag, tagCls) => `
+    <div class="catrow" data-group="${group}" data-id="${qEsc(id)}"
+         title="click for details">
+      <span class="cid">${qEsc(label)}</span>
+      <span class="ctag${tagCls ? " " + tagCls : ""}">${qEsc(tag)}</span>
+    </div>`;
+  const none = "<div style='color:#6f6f6f;font-size:11px'>no matches</div>";
+  list.innerHTML = `
+    <h5>Native widgets <span class="ct">${widgets.length}</span></h5>
+    ${widgets.map(w => row("widget", w.id, w.id,
+      w.required_kind || "self", "")).join("") || none}
+    <h5>Understood kinds <span class="ct">${kinds.length}</span></h5>
+    ${kinds.map(k => row("kind", k.kind, k.kind,
+      (k.widgets || []).length ? `${k.widgets.length} widget${
+        k.widgets.length > 1 ? "s" : ""}` : "recorded", "")).join("") || none}
+    <h5>Render contracts <span class="ct">${contracts.length}</span></h5>
+    ${contracts.map(c => row("contract", `${c.contract}/${c.intent}`, c.intent,
+      c.verdict, c.verdict === "refuse" ? "refuse" : "")).join("") || none}
+    <div style="font-size:10px;color:#6f6f6f;margin-top:6px;line-height:1.4">
+      served typed from /catalog.json · read-only this round —
+      placement/binding is builder-mode's milestone</div>`;
+}
+function openCatPop(group, id, anchor){
+  if (!CATALOG) return;
+  const rows = [];
+  if (group === "widget"){
+    const w = (CATALOG.widgets || []).find(x => x.id === id);
+    if (!w) return;
+    rows.push(`<div class="row"><b>${qEsc(w.name)}</b> <span class="mono">${qEsc(w.id)}</span></div>`,
+      `<div class="row">${qEsc(w.renders)}</div>`,
+      `<div class="row">feeds on: <span class="mono">${qEsc(w.required_kind || "— (self-contained)")}</span></div>`,
+      `<div class="row">ready to use: <b>${w.ready ? "yes — exists today" : "no"}</b></div>`);
+  } else if (group === "kind"){
+    const k = (CATALOG.understood_kinds || []).find(x => x.kind === id);
+    if (!k) return;
+    rows.push(`<div class="row"><b class="mono">${qEsc(k.kind)}</b></div>`,
+      `<div class="row">${qEsc(k.description)}</div>`,
+      `<div class="row">rendered by: ${(k.widgets || []).length
+        ? k.widgets.map(w => `<span class="mono">${qEsc(w)}</span>`).join(", ")
+        : "no widget yet (understood + recorded)"}</div>`);
+  } else {
+    const c = (CATALOG.contracts || []).find(x =>
+      `${x.contract}/${x.intent}` === id);
+    if (!c) return;
+    rows.push(`<div class="row"><b class="mono">${qEsc(c.intent)}</b> · ${qEsc(c.verdict)}</div>`,
+      c.renderer ? `<div class="row">via native renderer <span class="mono">${qEsc(c.renderer)}</span></div>`
+                 : `<div class="row">explicitly refused by the contract (documented honesty, not an omission)</div>`,
+      `<div class="row">contract <span class="mono">${qEsc(c.contract)}</span> · ${qEsc(c.source)}</div>`);
+  }
+  catpop.innerHTML = rows.join("");
+  const r = anchor.getBoundingClientRect();
+  catpop.style.display = "block";
+  catpop.style.left = `${Math.max(8, r.left - 292)}px`;
+  catpop.style.top = `${Math.max(8, Math.min(r.top, innerHeight - 170))}px`;
+}
+catalogPanel.addEventListener("click", e => {
+  const row = e.target.closest(".catrow");
+  if (row) openCatPop(row.dataset.group, row.dataset.id, row);
+});
+document.addEventListener("click", e => {
+  if (catpop.style.display === "block" && !catpop.contains(e.target) &&
+      !e.target.closest(".catrow"))
+    catpop.style.display = "none";
+});
+
+// ---------- collapsible tool sections (state persists per header) ----------
+function makeCollapsible(panel, panelKey){
+  let body = null;
+  for (const el of [...panel.children]){
+    if (el.tagName === "H3"){
+      body = document.createElement("div");
+      body.className = "secbody";
+      el.after(body);
+      el.classList.add("sech");
+      const chev = document.createElement("span");
+      chev.className = "chev";
+      el.prepend(chev);
+      const key = `muas3.sec.${panelKey}.${el.textContent.trim()}`;
+      const bodyEl = body;
+      let open = true;
+      try { open = localStorage.getItem(key) !== "0"; } catch (e) {}
+      const apply = () => {
+        bodyEl.style.display = open ? "" : "none";
+        chev.textContent = open ? "▾ " : "▸ ";
+      };
+      apply();
+      el.onclick = () => {
+        open = !open; apply();
+        try { localStorage.setItem(key, open ? "1" : "0"); } catch (e) {}
+      };
+    } else if (body) body.appendChild(el);
+  }
+}
+makeCollapsible(sidebar, "side");
+makeCollapsible(right, "right");
+
+// ---------- resizable / collapsible side panels ------------------------------
+const PANEL_KEY = "muas3.panels";
+const PANELS = { side: { w: 336, open: true }, right: { w: 288, open: true } };
 (function loadPanels(){
   try {
     const s = JSON.parse(localStorage.getItem(PANEL_KEY) || "{}");
-    for (const k of ["side","right"]){
+    for (const k of ["side", "right"]){
       if (s[k]){
         if (typeof s[k].w === "number") PANELS[k].w = s[k].w;
         if (typeof s[k].open === "boolean") PANELS[k].open = s[k].open;
@@ -2403,40 +4763,14 @@ function gripDrag(grip, which){
 }
 gripDrag(sideGrip, "side");
 gripDrag(rightGrip, "right");
-// collapsible tool sections: each panel h3 becomes a toggle wrapping its
-// following siblings in a .secbody; open/closed state persists per header.
-function makeCollapsible(panel, panelKey){
-  let body = null;
-  for (const el of [...panel.children]){
-    if (el.tagName === "H3"){
-      body = document.createElement("div");
-      body.className = "secbody";
-      el.after(body);
-      el.classList.add("sech");
-      const chev = document.createElement("span");
-      chev.className = "chev";
-      el.prepend(chev);
-      const key = `muas2.sec.${panelKey}.${el.textContent.trim()}`;
-      const bodyEl = body;
-      let open = true;
-      try { open = localStorage.getItem(key) !== "0"; } catch (e) {}
-      const apply = () => { bodyEl.style.display = open ? "" : "none";
-        chev.textContent = open ? "▾ " : "▸ "; };
-      apply();
-      el.onclick = () => { open = !open; apply();
-        try { localStorage.setItem(key, open ? "1" : "0"); } catch (e) {} };
-    } else if (body) body.appendChild(el);
-  }
-}
-makeCollapsible(sidebar, "side");
-makeCollapsible(right, "right");
 applyPanels();
 
 renderCmdLog();
 renderLegend();
-syncMapCtl();          // reflect any restored map mode/orient before first hello
-
-resize(); connect(); draw();
+renderNetPanel();
+loadCatalog();                     // hello may re-point via catalog_url
+syncLogVids(); applyLogFilter();   // restore persisted event-log filters
+resize(); syncMapCtl(); connect(); draw();
 setTimeout(preview, 800);
 </script>
 </body>

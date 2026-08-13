@@ -2036,6 +2036,16 @@ def make_app(dash: Dashboard, args):
         dash.clients.add(ws)
         await ws.send_str(json.dumps({
             "type": "hello",
+            # capability gates for the converged (v2+v3) dashboard.html:
+            # each flag lights up a v2-only surface; a backend that omits
+            # them serves the same file with those surfaces hidden.
+            "bundle": True,          # GET /mission/bundle + POST /mission/import
+            "video_transport": True, # per-vehicle segmented/stream selector
+            "command_mode": True,    # targeted vs two-phase routing toggle
+            # the dashboard IS the v2 sim operator (anomalies are always
+            # placeable — there is no separate virtual-deployment mode), so
+            # the sim panel is unconditionally on, as v2's old panel was
+            "sim": True,
             "vehicles": dash.vehicles,
             "enabled": dash.enabled,
             "capabilities": {
