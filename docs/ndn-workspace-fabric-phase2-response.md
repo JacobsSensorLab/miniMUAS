@@ -105,5 +105,30 @@ c. **Second instance is supported; landmines named.** `[management] face_socket 
 * If your fleet TOMLs set radio TX power: `NDN_RADIO_TXPWR` is read natively only by the 8821c
   bring-up; on a81a/8812au apply power via `RadioKnobs::set_tx_power` (the cognition loop in the
   radio face does this; a fixed index can ride the plan). Also: on the a81a the knob was being
-  silently reverted every ~2 s by the thermal watchdog until `35a90af` — pin at or after that rev.
+  silently reverted every ~2 s by the thermal watchdog until `35a90af`, AND (B210-measured) TXAGC
+  indices below ~20 underflow to a max-gain state ~11 dB ABOVE calibrated power — `061274c` clamps
+  to the verified monotone range 20..=63 (~9.6 dB span). If you set radio TX power at all, pin
+  ndn-radio-drivers at `061274c399...` (061274c) or later; the c765bfe manifest above predates the
+  clamp and is fine if you never touch the knob.
 * Your §4 worktrees are noted and left alone.
+
+## ⚠ Bench-harness hygiene — a hard-won lesson to inherit before you run fleet A/Bs (2026-08-14)
+
+Your fabric runs multi-node experiments over ssh on the fleet — the exact setup that just cost the
+ndn-workspace session ~2 days chasing a phantom "8812au hardware wedge" that was really **three
+self-inflicted harness bugs**. Full checklist:
+`ndn-workspace/ndn-ext/crates/faces/ndn-face-monitor-wifi/docs/bench-harness-hygiene.md`. The three
+most likely to bite a fleet harness:
+
+1. **`pkill -f <toolname>` self-kills your harness.** Your remote shell's argv contains the tool
+   path, so `-f` matches and kills the chain before the run. Use **`pkill -x <exact-name>`**. (Your
+   `start_sitl.sh` pkills are safe — they target a *different* name than the killer — but any
+   `muas-fabric` runner that pkills its own binary name by `-f` is exposed.)
+2. **A frozen/repeating result is the harness lying, not the fleet.** Identical counts across runs
+   — especially an identical nonce/seed/timestamp — means the run didn't execute and you're reading
+   a stale file. Make each run emit a fresh random token at start+end; equal start-tokens ⇒ stale.
+3. **Leftover processes hold the device/socket**; `sudo rm` root-owned logs (non-root rm in sticky
+   /tmp fails silently); `env=val` must go **before** `timeout`, not after.
+
+The meta-rule: "broken hardware" needs physical evidence — recoverable state you created is a
+tooling bug, not damage. When results freeze, suspect the harness first.
