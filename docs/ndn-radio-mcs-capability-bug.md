@@ -134,3 +134,64 @@ so "GCS frames never reach the air" is not excluded. A `ta`-to-node mapping
 Reverted to `nfd wifi` on both nodes; telemetry live again (~0.3 s cadence).
 Retest is one `muas-fabric set ndn-fwd radio` per node once there's a candidate
 fix — repin cost is ~15 min.
+
+---
+
+## CORRECTION + re-assessment against the MAC redesign — 2026-09-03
+
+**We retract our Tier-0 PrefixBloom hypothesis.** Reading the current tree:
+`ndn-fwd`'s `mount_radio_face` never installs an RX name gate at all
+(`radio_face.rs:203-212` builds with signal-sink / link-FEC / legacy-gate and
+**no** `.with_bloom*`/`.with_rx_gate`; builder default `rx_gate: None`,
+`medium.rs:922`), so the medium was promiscuous in our runs. `with_bloom_relay`
+no longer exists outside prose. Also the gate's admit rule is
+`bcast ∨ e_fib ∨ e_pit_pfx ∨ e_pit_exact ∨ e_cs` — an Interest under a served
+prefix *is* admitted, so our "producer-Data-name vs consumer-Interest-name"
+model was wrong regardless. Apologies for the false lead.
+
+**Better-fitting explanation (matches every counter we measured):**
+1. Our GCS's `in-data > 0, in-interests = 0` is what a radio face with a live RX
+   and no crossing app traffic looks like **by construction**: the face
+   broadcasts its own cognition report as named Data on
+   `/localhop/radio/report/<node>` at 1 Hz, and the ingress hook consumes it but
+   does not stop it counting as in-data.
+2. Reports go via `send_robust` (`TxIntent::MostRobust`) *specifically so every
+   neighbour decodes them*; everything else goes at the cognition-decided MCS.
+   That is exactly the one-way shape we saw — only the robust 1 Hz frames crossed.
+3. This failure is documented on this chip pair: `ndn-radio-drivers 0795a9a`
+   ("honour TxIntent::MostRobust on the ten backends that ignored it") cites
+   "drone->GCS perfect, GCS->drone nothing but legacy 6M" — mirrored direction,
+   same class — and `649f131` fixed `rtl8812au: set_rate was inert` (cognition's
+   rate never reached the TX descriptor). Both landed AFTER our pin.
+
+### Still-open upstream gap (our GCS leg) — please look
+`AfPacketBackend::inject` discards `frame.tx` whenever a rate has been set:
+```rust
+// ndn-radio-drivers/crates/ndn-frame-io/src/af_packet.rs:350-358
+let buf = match *self.cur_mcs.lock().unwrap() {
+    Some(mcs) => crate::frame::build_at(self.format, &frame, mcs)?,  // frame.tx DISCARDED
+    None      => crate::frame::build(self.format, &frame)?,
+};
+```
+`ndn-fwd` attaches a `MediumActuator` to every bearer including af-packet
+(`radio_face.rs:174-179`), which calls `set_rate`, so `cur_mcs` is `Some(..)` in
+steady state and **`send_robust` reception reports leave our GCS at the
+cognition MCS, not a basic rate**. The `0795a9a` fix covered the drivers in
+`ndn-radio-drivers/src/*.rs`; the `TX_INTENT` coverage gate
+(`coverage.rs:91-105`) has **no row for `AfPacketBackend`** because it lives in
+the separate `ndn-frame-io` crate the gate doesn't walk. Even the `None` branch
+wouldn't give legacy: `McsDescriptor::for_intent(MostRobust)` = HT MCS0
++STBC+LDPC. Ask: honour `TxIntent` in `AfPacketBackend::inject` (and extend the
+coverage ratchet to reach `ndn-frame-io`).
+
+Secondary, unexplained by the above: our drone's radio face reported
+`in: bytes=0` — total RX deafness, not filtering. Only candidate we can see is
+`11bd8d8 fix(8812au): impl Drop` (clean-exit state), which is about leaving
+state, not cold-start RX.
+
+### Consequences for our packaging (no action needed from you)
+The named-radio stack moved to a new sibling repo `ndn-radio` and
+`ndn-face-monitor-wifi` → `ndn-phy-wifi`. Our required fetch set becomes
+`{ndn-fwd, ndn-rs, ndn-ext, ndn-radio, ndn-radio-drivers}`; `ndn-sim` drops out.
+TOML schema, driver strings, cargo feature names and `ndn-ctl` surface are all
+unchanged, so our fabric config survives as-is.
