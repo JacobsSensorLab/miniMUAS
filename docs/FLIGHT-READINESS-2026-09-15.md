@@ -122,30 +122,89 @@ sub-second hiccup rather than a dead feed) — but with the 43 s journal
 trigger removed it did not fire once in the final run.
 
 ## Residual, known
-- **iuas-02 (node 04) is out of service** — pre-existing, not caused by this
-  work, and NOT fixed here. It now runs the current generation and is on the
-  `nfd wifi` fabric, but its agent cannot complete NDNSF certificate bootstrap:
-  first `certificate bootstrap timed out`, and once its runaway 54 MB journal
-  was rotated away, the underlying `encrypted bootstrap request decrypt
-  failed`. Checked and ruled out: the controller IS reachable over NDN from it
-  (6 /muas routes, 5 udp faces, POLICY-MANIFEST fetches fine), the identity IS
-  present, and its iuas-02 key has the *same* key id as the GCS's copy — so
-  this is not the identity-keyset mismatch it first looked like. It is the
-  same long-standing iuas-02 ABE universe/identity problem seen before, which
-  was deliberately not forced then because regenerating that identity risks a
-  fleet-wide ABE re-mint that would strand the working aircraft.
 
-  Its agent is **stopped** (`sudo systemctl start muas-v2-agent` on node 04, or
-  a reboot, brings it back). Left crash-looping it restarted every ~20 s and
-  retried bootstrap over NDN each time, putting churn on the fabric the flying
-  aircraft shares — one video stutter was traced to that. Its previous
-  identity is backed up at `/tmp/iuas02-OLD-backup.safebag` on node 04.
+### iuas-02 (node 04) — root-caused; fix needs a fleet-wide decision
 
-  wuas-01 (node 02) and node 05 are powered off.
-- The radio cell remains available (`muas-fabric set ndn-fwd radio`) for
-  experiments. It loses 50-75 % of Interests; the causes are RF/PHY and N=2
-  economics, not wiring — the MAC hardware gate *is* correctly wired now that
-  both ends are `rtl8822e`.
+**It is not an ABE problem, and iuas-02 is not the broken node.** The earlier
+handoff said this was "the same long-standing iuas-02 ABE universe/identity
+problem". It is not. `muas-v2-ensure-identities` imported a fleet identity
+only when its *name* was absent, so every node kept whatever KEY it first
+received, forever, across every deploy:
+
+```sh
+if ! ndnsec list | grep -q "$identity\$"; then ndnsec import ...; fi
+```
+
+Measured on the live fleet: the controller, **both** GCS roles and iuas-01 all
+run `/muas/v2/controller/KEY/%F5%9E%0A%1B%16%FF%9E%D5` (v=1781235610495,
+June). The keyset package — and iuas-02 — ship
+`%5C%3C%0E%8E%3Em%0F%0F` (v=1783970812252, July). iuas-02 encrypts its
+bootstrap request to a controller key nobody running can decrypt, which
+surfaces as `encrypted bootstrap request decrypt failed` with the identity
+present and correctly named throughout.
+
+So **iuas-02 is the only node matching the packaged keyset**; everything that
+works is frozen on the superseded June generation. With the key-id check added
+(below), iuas-01 logs 5 `KEYSET MISMATCH` lines and iuas-02 logs none.
+
+Why an earlier session ruled this out: iuas-02's *own* `/muas/v2/iuas-02` key
+**does** match the GCS copy — it was provisioned late, so the name guard let
+it through. Checking that one key shows a match and looks like proof.
+
+`ensure-identities` now compares the key id (resolving the packaged key in a
+throwaway keychain, so the check is read-only) and logs a loud
+`KEYSET MISMATCH` naming both keys. Repair is opt-in:
+`services.muasV2.syncKeysetOnMismatch`, **default false**, because it deletes
+a live identity and a node whose controller key disagrees with the running
+controller cannot bootstrap at all.
+
+**To actually fix it** the fleet must converge on ONE generation in a SINGLE
+deploy — controller, both GCS roles, iuas-01 and iuas-02 together. Converging
+one node at a time drops the others instead. Re-keying the controller identity
+is also the ABE re-mint hazard, so this is a deliberate maintenance window,
+not a routine deploy. Node 04's PIB is backed up at
+`~/.ndn-muas/agent.bak-1789491776`, and its agent is stopped.
+
+### Other airframes
+wuas-01 (node 02) and node 05 are **powered off** — no ARP entry, no mesh
+station. Nothing to fix remotely; they need power.
+
+### Radio
+The radio cell remains available (`muas-fabric set ndn-fwd radio`) for
+experiments. It loses 50-75 % of Interests; the causes are RF/PHY and N=2
+economics, not wiring — the MAC hardware gate *is* correctly wired now that
+both ends are `rtl8822e`.
+
+### Residual video hiccup — narrowed, not closed
+Roughly one run in two shows a 1-4 s video hiccup; a 240 s run came back
+completely clean. What it is **not**, all measured:
+- **not the video producer** — the loop now times each phase (idle / capture /
+  push) and logs any cycle > 400 ms. Across every run since, `slow_frame`
+  count is **0**. The producer never pauses.
+- **not RF** — sampling the mesh station 1 Hz through a stall: tx retries flat
+  (23057 across the window), `tx failed` frozen at 721 for the whole run,
+  signal -21 dBm, bitrate 173.3 Mbps steady.
+- **not GCS load** — load average 0.46, dashboard 8.5 % of a core.
+- **not frame loss** — across a stall the consumer stays `ACTIVE`, `timeouts`
+  does not increment and `delivered` keeps climbing ~99-100 per 10 s window
+  while `in_flight` rises 2 -> 8. Frames arrive late in a burst.
+
+What it **is**: telemetry and video — two independent paths — stall at the
+same instant (e.g. telemetry gap t+43.6 s, video stall t+44.7 s; again at
+t+284.4/t+284.9), and the agent's own NDNSF timeline shows a matching hole
+(`data-put` 1789490225.921, then nothing until 1789490227.354 = 1.43 s). That
+puts it in the layer both share below the agent's video loop — the agent's
+single NDN Face or NFD itself. A journald hypothesis (the trace writes one
+DEBUG line per packet to a 4 GB journal on SD with `SyncIntervalSec=10s`) was
+tested by disabling the trace and **refuted**: stalls got worse, not better
+(8 vs 1), though that A/B was confounded by restarts.
+
+### Agent restart makes the drone briefly uncommandable
+Reproduced twice: for ~1-2 minutes after an agent restart the dashboard's
+targeted service path fails — first `Targeted ProviderToken is unknown or
+expired`, then `video.control_timeout` — while telemetry keeps flowing at
+3/s. It self-heals, but the first command after any restart is silently lost.
+Not yet fixed.
 
 ## How to check flight readiness yourself
 
