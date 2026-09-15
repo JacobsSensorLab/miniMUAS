@@ -2177,6 +2177,14 @@ def main() -> int:
                     stream_id=vehicle_id,
                     data_prefix=vehicle_video_stream_name(vehicle_id),
                     fps=video_cfg["fps"],
+                    # Frames MUST be signed by the stream's provider identity:
+                    # the Core rejects any push whose signer != definition.provider
+                    # ("predictive Data signature is invalid or outside provider
+                    # authority") and every frame would throw. `prefix` is this
+                    # vehicle's provider prefix AND a real keychain identity
+                    # (/muas/v2/<vid>); the stream's data_prefix underneath it
+                    # is not a key. Same rule the bench already follows.
+                    signing_identity=prefix,
                 )
                 video_stream["producer"] = producer
                 video_stream["key"] = key
