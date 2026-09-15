@@ -1374,12 +1374,17 @@ class CameraHub:
     thread owns the device and everyone else copies `latest`.
     """
 
+    # Decode rate when nobody is streaming video. Frames stay fresh enough for
+    # on-demand sensor captures without paying a full-res decode 30x/s.
+    IDLE_DECODE_HZ = 4.0
+
     def __init__(self, spec: str) -> None:
         self._source = frame_source_from_spec(spec)
         self._cv2 = None
         self._lock = threading.Lock()
         self._latest = None  # BGR ndarray
         self._latest_ts = 0.0
+        self._decode_hz = self.IDLE_DECODE_HZ
         self._stop = threading.Event()
         if hasattr(self._source, "_capture"):  # OpenCV-backed: live hub
             import cv2
@@ -1391,16 +1396,38 @@ class CameraHub:
     def describe(self):
         return self._source.describe()
 
+    def set_decode_hz(self, hz: float) -> None:
+        """Raise/lower the decode rate (video control calls this).
+
+        Only the *decode* is paced; frames are still grabbed at camera rate
+        so `latest` never goes stale.
+        """
+        self._decode_hz = max(1.0, min(float(hz), 30.0))
+
     def _reader(self) -> None:
+        # cap.read() == grab() + retrieve(). grab() is a cheap buffer dequeue
+        # that blocks until the next frame (releasing the GIL); retrieve() is
+        # the expensive part — a full-res MJPEG->BGR decode. Reading both at
+        # the camera's rate meant decoding 1280x800 at 30 fps forever, even
+        # with video disabled: measured 83% of a core at idle on the C4, which
+        # starved the GIL and showed up as telemetry drop-outs and 8-12 s
+        # service latencies. Grab always (frames stay fresh, no stale-buffer
+        # backlog), decode only as fast as a consumer actually needs.
         cap = self._source._capture
+        next_decode = 0.0
         while not self._stop.is_set():
-            ok, frame = cap.read()
+            if not cap.grab():
+                time.sleep(0.05)
+                continue
+            now = time.monotonic()
+            if now < next_decode:
+                continue  # frame dropped before paying for the decode
+            ok, frame = cap.retrieve()
             if ok and frame is not None:
                 with self._lock:
                     self._latest = frame
-                    self._latest_ts = time.monotonic()
-            else:
-                time.sleep(0.05)
+                    self._latest_ts = now
+                next_decode = now + (1.0 / max(self._decode_hz, 1.0))
 
     def latest_bgr(self):
         with self._lock:
@@ -1419,16 +1446,26 @@ class CameraHub:
         scaled by the squash factor). Callers embed the returned actual
         dimensions in the frame header.
         """
-        frame, ts = self.latest_bgr()
-        if frame is None or self._cv2 is None:
+        if self._cv2 is None:
             return None, None, 0.0
-        h0, w0 = frame.shape[:2]
-        if width and int(width) < w0:
-            w = int(width)
-            h = max(2, int(round(w * h0 / w0)))
-            frame = self._cv2.resize(frame, (w, h))
-        else:
-            w, h = w0, h0
+        # Downscale INSIDE the lock, straight off `_latest`. Going through
+        # latest_bgr() first copied the whole full-res frame (~3 MB at
+        # 1280x800) only to immediately shrink it — per video frame. resize()
+        # allocates its own output, so nothing aliases the reader's buffer;
+        # the expensive encode still happens outside the lock.
+        with self._lock:
+            latest = self._latest
+            ts = self._latest_ts
+            if latest is None:
+                return None, None, 0.0
+            h0, w0 = latest.shape[:2]
+            if width and int(width) < w0:
+                w = int(width)
+                h = max(2, int(round(w * h0 / w0)))
+                frame = self._cv2.resize(latest, (w, h))
+            else:
+                w, h = w0, h0
+                frame = latest.copy()
         ok, buf = self._cv2.imencode(
             ".jpg", frame, [int(self._cv2.IMWRITE_JPEG_QUALITY), int(quality)]
         )
@@ -2320,6 +2357,15 @@ def main() -> int:
             quality=max(10, min(request.quality, 95)),
             transport=transport,
         )
+        # Pace the camera hub's full-res decode to what video actually needs.
+        # Streaming at N fps needs N decodes/s; with video off the hub drops
+        # back to its idle rate instead of decoding 1280x800 at camera rate
+        # forever (the measured 83%-of-a-core idle load that starved
+        # telemetry and service handlers).
+        if hasattr(camera, "set_decode_hz"):
+            camera.set_decode_hz(
+                video_cfg["fps"] if request.enable else CameraHub.IDLE_DECODE_HZ
+            )
         # Build/tear down the predictive stream to match, so the descriptor is
         # ready to hand back in this response (the dashboard subscribes from
         # it). No-op on the segmented path beyond clearing any old session.

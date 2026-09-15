@@ -1479,8 +1479,19 @@ class Dashboard:
                     })
                     stat["frames"], stat["bytes"], stat["t0"] = 0, 0, now
 
+            def on_status(status) -> None:
+                # Without this the subscriber can hit a terminal error and
+                # simply stop delivering, with nothing logged anywhere — the
+                # frames just end. Surface it as a normal dashboard event so a
+                # stalled stream is diagnosable instead of silent.
+                try:
+                    self.event("video.stream_status", vehicle=vid,
+                               status=str(status)[:300])
+                except Exception:
+                    pass
+
             self.video_subs[vid] = VideoStreamConsumer(
-                self.user, descriptor_json, on_frame,
+                self.user, descriptor_json, on_frame, on_status=on_status,
             )
             self.event("video.stream_subscribed", vehicle=vid)
         except Exception as exc:
