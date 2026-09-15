@@ -1386,12 +1386,35 @@ class CameraHub:
         self._latest_ts = 0.0
         self._decode_hz = self.IDLE_DECODE_HZ
         self._stop = threading.Event()
+        self._synthetic = False
         if hasattr(self._source, "_capture"):  # OpenCV-backed: live hub
             import cv2
 
             self._cv2 = cv2
             self._thread = threading.Thread(target=self._reader, daemon=True)
             self._thread.start()
+        else:
+            # No capture device (synthetic / file-less source). jpeg() used to
+            # hard-return None here, so a node whose camera spec is synthetic
+            # ADVERTISED /video/control, accepted an enable, started a stream
+            # producer and then pushed nothing at all -- the subscriber saw
+            # delivered=0 and died on terminal-gap:timeout. That is exactly
+            # what iuas-02 (the mic airframe, --camera synthetic) did. Serve a
+            # cheap generated frame instead so every node that offers the
+            # service can actually satisfy it.
+            try:
+                import cv2
+                import numpy as np
+
+                self._cv2 = cv2
+                self._np = np
+                self._synthetic = True
+                self._thread = threading.Thread(
+                    target=self._synthetic_reader, daemon=True
+                )
+                self._thread.start()
+            except Exception as exc:  # no cv2/numpy: stay dry, as before
+                print_json("agent.camera.synthetic_unavailable", error=str(exc))
 
     def describe(self):
         return self._source.describe()
@@ -1428,6 +1451,32 @@ class CameraHub:
                     self._latest = frame
                     self._latest_ts = now
                 next_decode = now + (1.0 / max(self._decode_hz, 1.0))
+
+    def _synthetic_reader(self) -> None:
+        """Generate a moving test pattern for camera-less nodes.
+
+        Paced by the same `_decode_hz` the real reader uses, so an idle node
+        costs ~4 small frames/s and a streaming one costs exactly the fps the
+        consumer asked for. 640x480 keeps a frame well inside FRAME_BUDGET
+        after JPEG.
+        """
+        np = self._np
+        w, h = 640, 480
+        # static gradient base; only a cheap moving bar is redrawn per frame
+        base = np.zeros((h, w, 3), dtype=np.uint8)
+        base[:, :, 1] = np.linspace(0, 255, w, dtype=np.uint8)[None, :]
+        base[:, :, 2] = np.linspace(0, 255, h, dtype=np.uint8)[:, None]
+        i = 0
+        while not self._stop.is_set():
+            frame = base.copy()
+            x = int((i * 8) % max(w - 40, 1))
+            frame[:, x:x + 40, 0] = 255  # sweeping bar proves liveness
+            now = time.monotonic()
+            with self._lock:
+                self._latest = frame
+                self._latest_ts = now
+            i += 1
+            time.sleep(1.0 / max(self._decode_hz, 1.0))
 
     def latest_bgr(self):
         with self._lock:

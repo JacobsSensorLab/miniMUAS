@@ -87,6 +87,19 @@ def main():
                          "the dashboard advertises). Vehicles outside this set "
                          "that report nothing are shown as OFFLINE, not failed "
                          "— a powered-down airframe is not a system fault.")
+    ap.add_argument("--video-all", action="store_true",
+                    help="report video for EVERY vehicle that delivered frames, "
+                         "plus an aggregate line. A network should carry as many "
+                         "streams as it has capacity for; judging one stream in "
+                         "isolation hides both the aggregate capacity and whether "
+                         "the streams share it gracefully.")
+    ap.add_argument("--audio", default="",
+                    help="vehicle to task an AUDIO capture on (the mic airframe, "
+                         "e.g. iuas-02). Video is the wrong payload test for a "
+                         "node that carries a microphone and a synthetic camera; "
+                         "this drives sensor/capture and waits for the result.")
+    ap.add_argument("--audio-seconds", type=float, default=6.0,
+                    help="duration of the tasked audio capture (default 6)")
     ap.add_argument("--warmup", type=float, default=15.0,
                     help="seconds after the first frame treated as live-stream "
                          "subscription warm-up: gaps there are printed but do "
@@ -98,16 +111,27 @@ def main():
     hello = None
     tele = defaultdict(list); vstats = defaultdict(list)
     frames = defaultdict(list); events = defaultdict(int); frame_bytes = defaultdict(int)
+    vid_list = [x for x in a.video.split(",") if x]
     t_start = time.time(); video_sent_at = None
+    audio_sent_at = None; audio_result = None
 
     while time.time() - t_start < a.seconds:
         # enable video ~3s in, once we have hello/vehicle list
         if a.video and not a.passive and video_sent_at is None and time.time() - t_start > 3:
-            ws.send_json({"cmd": "video", "vehicle": a.video, "params": {
-                "enable": True, "transport": a.transport, "width": a.width,
-                "height": int(a.width*3/4), "fps": a.fps, "quality": a.quality}})
+            for _v in vid_list:
+                ws.send_json({"cmd": "video", "vehicle": _v, "params": {
+                    "enable": True, "transport": a.transport, "width": a.width,
+                    "height": int(a.width*3/4), "fps": a.fps, "quality": a.quality}})
             video_sent_at = time.time()
-            print(f"[{time.time()-t_start:5.1f}s] -> video enable {a.video} transport={a.transport} fps={a.fps} w={a.width} q={a.quality}")
+            print(f"[{time.time()-t_start:5.1f}s] -> video enable {','.join(vid_list)} "
+                  f"transport={a.transport} fps={a.fps} w={a.width} q={a.quality}")
+        # task the mic airframe a few seconds in, after video, so the two
+        # payload paths are exercised on the same run
+        if a.audio and not a.passive and audio_sent_at is None and time.time() - t_start > 6:
+            ws.send_json({"cmd": "sensor", "vehicle": a.audio, "params": {
+                "sensor": "audio", "mode": "now", "duration_s": a.audio_seconds}})
+            audio_sent_at = time.time()
+            print(f"[{time.time()-t_start:5.1f}s] -> audio capture {a.audio} ({a.audio_seconds}s)")
         try:
             op, pay = ws.recv()
         except socket.timeout:
@@ -132,6 +156,8 @@ def main():
             print(f"[{now-t_start:5.1f}s] video_stats {m.get('vehicle')}: fps={m.get('fps')} kbps={m.get('kbps')} seq={m.get('seq')}")
         elif t == "event":
             k = m.get("kind","?"); events[k] += 1
+            if k in ("sensor.result", "sensor.rejected") and m.get("vehicle") == a.audio:
+                audio_result = (now - (audio_sent_at or now), dict(m))
             if any(s in k for s in ("video", "fail", "timeout", "error", "stale")):
                 print(f"[{now-t_start:5.1f}s] EVENT {k}: { {kk:vv for kk,vv in m.items() if kk not in ('type','kind','t')} }")
 
@@ -155,40 +181,56 @@ def main():
                 print(f" BAD TELEM {v}: NO DATA"); ok = False
             else:
                 print(f" --  TELEM {v}: offline (not in --expect; ignored)")
-    if a.video:
-        idx = vehicles.index(a.video) if a.video in vehicles else 0
-        fr = frames.get(idx, [])
-        if not fr:
-            print(f" BAD VIDEO {a.video}: ZERO frames received"); ok = False
+    if a.audio:
+        if audio_result is None:
+            print(f" BAD AUDIO {a.audio}: no sensor.result "
+                  f"({'not tasked' if audio_sent_at is None else 'tasked, no reply'})")
+            ok = False
         else:
+            dt, m = audio_result
+            st = m.get("status") or m.get("reason") or "?"
+            if st == "captured":
+                print(f" OK  AUDIO {a.audio}: captured in {dt:.1f}s "
+                      f"sensor={m.get('sensor')} at {m.get('lat')},{m.get('lon')}")
+            else:
+                print(f" BAD AUDIO {a.audio}: status={st} {m.get('message','')}")
+                ok = False
+    if vid_list or a.video_all:
+        # Report EVERY vehicle that delivered frames, not just the one asked
+        # for: the question a shared network has to answer is how much total
+        # video it carries and whether concurrent streams share it gracefully,
+        # which a single-stream number cannot show.
+        report = sorted(set(vid_list) | ({v for v in vehicles
+                        if frames.get(vehicles.index(v))} if a.video_all else set()))
+        agg_fps = 0.0; agg_kbps = 0.0; worst = 0.0
+        for v in report:
+            idx = vehicles.index(v) if v in vehicles else -1
+            fr = frames.get(idx, [])
+            if not fr:
+                print(f" BAD VIDEO {v}: ZERO frames received"); ok = False; continue
             span = fr[-1] - fr[0] if len(fr) > 1 else 1
             gaps = [b - a_ for a_, b in zip(fr, fr[1:])]
             fps = len(fr) / max(span, 0.001)
             kbps = frame_bytes[idx] * 8 / max(span, .001) / 1000
             first = fr[0] - video_sent_at if video_sent_at else -1
-            # A live subscriber pays a one-time settling cost: it joins at the
-            # live edge and fills its prefetch window before delivery is
-            # smooth. That is not a flight fault -- the producer keeps
-            # producing through it (verify in the agent journal: NDNSF
-            # timeline events continue). Judge the verdict on STEADY STATE,
-            # but always print the warm-up gap so it can never hide a real
-            # stall that happens to land early.
             warm = [g for g, t in zip(gaps, fr) if t - fr[0] < a.warmup]
             steady = [g for g, t in zip(gaps, fr) if t - fr[0] >= a.warmup]
             stutter = sum(1 for g in steady if g > 1.0)
             warm_stutter = sum(1 for g in warm if g > 1.0)
+            agg_fps += fps; agg_kbps += kbps; worst = max(worst, max(gaps) if gaps else 0)
             verdict = "OK " if fps >= 3.0 and stutter == 0 else "BAD"
             if verdict == "BAD": ok = False
-            print(f" {verdict} VIDEO {a.video}: n={len(fr)} fps={fps:.1f} kbps={kbps:.0f} "
-                  f"first_frame={first:.1f}s gap p50={pct(gaps,.5)}s p95={pct(gaps,.95)}s max={round(max(gaps),2) if gaps else '-'}s stutters>1s={stutter}"
+            print(f" {verdict} VIDEO {v}: n={len(fr)} fps={fps:.1f} kbps={kbps:.0f} "
+                  f"first_frame={first:.1f}s gap p50={pct(gaps,.5)}s p95={pct(gaps,.95)}s "
+                  f"max={round(max(gaps),2) if gaps else '-'}s stutters>1s={stutter}"
                   + (f" (+{warm_stutter} in first {a.warmup:.0f}s warm-up)" if warm_stutter else ""))
-            # where the stalls were: offset into the run, so they can be lined
-            # up against the agent's journal (the 43 s journal republisher was
-            # found exactly this way -- a precise period names its process).
             for i, g in enumerate(gaps):
                 if g > 1.0:
                     tag = "warm-up" if fr[i] - fr[0] < a.warmup else "STALL  "
                     print(f"      {tag} @ t+{fr[i]-t_start:.1f}s for {g:.2f}s (resumed t+{fr[i+1]-t_start:.1f}s)")
+        if len(report) > 1:
+            print(f" ==  VIDEO AGGREGATE: {len(report)} streams, {agg_fps:.1f} fps total, "
+                  f"{agg_kbps:.0f} kbps total, worst single gap {worst:.2f}s")
     if events: print(f" events: {dict(sorted(events.items(), key=lambda kv:-kv[1])[:8])}")
     print(f"===== {'FLIGHT-READY' if ok else 'NOT FLIGHT-READY'} =====")
     return 0 if ok else 1
