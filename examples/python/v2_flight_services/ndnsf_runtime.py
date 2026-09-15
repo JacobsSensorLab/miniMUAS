@@ -295,11 +295,21 @@ def start_journal_publisher(
     node_id: str,
     session: str = "latest",
     *,
-    interval_s: float = 30.0,
+    interval_s: float = 300.0,
     signing_identity: str = "",
 ):
     """Republish this role's journal on an interval so the dashboard sweep can
     pull a fresh copy at any time while the node is up.
+
+    The interval is deliberately long. Each refresh re-segments and re-signs
+    the whole snapshot (one RSA signature per ~6 KB segment, 5.59 ms each on
+    the C4), which measured ~13 s of wall time for a 700 KB journal on the
+    drone — and while it runs it starves the video producer badly enough that
+    the live stream consumer blows its retry budget and declares a terminal
+    gap. That was visible in the field as a video hiccup every ~43 s, matching
+    this loop's period exactly (30 s sleep + ~13 s of work). The journal is a
+    post-mission diagnostic, not a live-flight dependency, and the on-disk file
+    is already fsync'd per line — only the over-NDN snapshot ages.
 
     A daemon thread re-snapshots + re-serves the journal every `interval_s`.
     No-op (returns None) if the journal is disabled. The republisher stops
