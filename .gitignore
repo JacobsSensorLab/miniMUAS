@@ -11,3 +11,6 @@ __pycache__/
 *.py[cod]
 .DS_Store
 /test.jpg
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/

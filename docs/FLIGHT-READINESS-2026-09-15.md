@@ -73,7 +73,7 @@ was running application code from 2026-08-06 that predated every video fix.
    journal being republished in full every 30 s (~9,000 RSA signatures per
    cycle). It starved its own startup until NDNSF certificate bootstrap timed
    out, and the agent crash-looped. The published payload is now capped at
-   2 MB of tail.
+   512 KB of tail (see 5).
 
 7. **Radio slot MAC was enabled against upstream's own measurement.** The
    committed radio cell set `NDN_SCHED_SLOT=16:10000`. Upstream records, in
