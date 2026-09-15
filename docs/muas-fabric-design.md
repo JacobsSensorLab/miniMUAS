@@ -134,6 +134,32 @@ Each cell = one systemd unit-set the fabric module can bring up. All share
   come back), and LP reliability/MTU knobs on its udp faces (`UdpFaceSystemConfig`)
   to match the mtu-1452 lesson.
 
+- **VERIFIED 2026-09-15 — item 1 FAILED; this cell is not field-ready.** First
+  test on a live 3-airframe fleet (the bug is invisible with one airframe).
+  With the whole fleet switched to this cell, every per-vehicle NDNSF service
+  call timed out — `video.control_timeout` on all three airframes,
+  `sensor.timeout` on iuas-02, zero video frames — while polled telemetry
+  limped at 2.60-3.16/s with gaps to 5.7 s. NFD on the same fleet the same
+  minute: 3.29-3.34/s, zero gaps, every service answering.
+
+  `route list` showed `/muas` with a **single nexthop** although all three
+  peer faces existed (2 → .11, 3 → .12, 4 → .14) and the multicast strategy
+  *was* set — multicast has nothing to fan to with one nexthop. The cause is
+  the one already recorded in §4.3 for radio: a config `[[route]]` is a direct
+  FIB add that the RIB clobbers once the local app registers the same prefix.
+  The TOML emits one `[[route]]` per peer and the RIB overwrites them; radio
+  was fixed by registering through the RIB, wifi never was.
+
+  A fix is committed (the wifi parity setup now does `ndn-ctl route add` per
+  peer face) but is **UNVALIDATED**: after redeploy the persistent peer UDP
+  faces were missing from the face table entirely and `/muas` had no route at
+  all — a second, separate problem, cause not established. Note that
+  `muas-fabric apply` short-circuits on "already active + healthy" and does
+  **not** re-run the setup script, so testing a setup-script change requires
+  bouncing the cell or running the script directly.
+
+  The fleet was reverted to `nfd wifi` and re-verified FLIGHT-READY.
+
 ### 4.3 `ndn-fwd radio` — native (T3)
 - One ndn-fwd owns the app socket AND the medium:
   ```toml
