@@ -121,9 +121,70 @@ terminal reason and rejoins at the live edge, so a future stall costs a
 sub-second hiccup rather than a dead feed) — but with the 43 s journal
 trigger removed it did not fire once in the final run.
 
+## Fleet state after convergence (all four nodes)
+
+The whole fleet now runs one keyset generation and one clock.
+
+| | before | after |
+|---|---|---|
+| Airframes serving | 1 (iuas-01) | **3** (iuas-01, iuas-02, wuas-01) |
+| Fleet keyset | split June/July across nodes | **one generation everywhere** |
+| Clock vs real UTC | 94 days out, ±50 ms-8 s wander | **9 ns (GCS), 0.1-49 us (drones)** |
+| Workstation-to-fleet offset | 158 s | **236 ms** |
+| Aggregate video | 9.8 fps (1 stream) | **28.0 fps / 1082 kbps (3 streams)** |
+| Telemetry under full video load | n/a | **3.30-3.31/s, ZERO gaps, all three** |
+
+`flightcheck --video a,b,c --video-all` reports each stream plus an aggregate;
+`--audio <vid>` tasks the mic airframe's real payload (iuas-02 carries a
+microphone and a synthetic camera, so video alone is the wrong test for it).
+
+### Multi-stream behaviour — throughput scales, smoothness does not
+
+Aggregate video is close to linear in the number of streams (9.8 -> 18.2 ->
+28.0 fps) with each stream keeping near-full rate, and telemetry is never
+starved. What degrades is per-stream smoothness: 16 / 2 / 11 stutters across
+the three. There is no aggregate pacing or admission coordination between
+live stream subscriptions — each prefetches independently
+(`LIVE_INTEREST_LIMIT = 16`, 4 s lifetime), so offered load grows with N and
+the streams collide rather than share a budget. The lightest stream (254 kbps
+synthetic) stuttered least. **This is the open work: a shared budget across
+active streams, not more throughput.**
+
 ## Residual, known
 
-### iuas-02 (node 04) — root-caused; fix needs a fleet-wide decision
+### The clock was a circle — fixed
+`muas-time` steps the clock once at boot from GPS or the FC's MAVLink
+`SYSTEM_TIME`; indoors both fail and it falls through to a fleet peer. The
+GCS stepped **94 days from a drone**, then served that free-running clock to
+the fleet as chrony `local stratum 10` (refid `7F7F0101` = the local-clock
+refclock, `NTPSynchronized=no`) while every drone disciplined *to the GCS*.
+Time flowed drone -> GCS -> drones with no reference anywhere, and chrony
+slewing each node at a different stage produced the +50 ms to -8 s swing
+operators saw.
+
+Root cause: the chrony pool servers were `lib.optionals cfg.bench`, so in
+field mode the GCS — the fleet's designated reference — had **zero** sources
+despite a working default route. Fixed by giving the `gcs` role the pool
+unconditionally (chrony only selects reachable sources, so the field
+GPS-stepped clock still stands with no internet) plus `makestep 0.5 -1` so a
+large offset is stepped rather than slewed for hours.
+
+Note fleet-internal correlation only needs consistency, but absolute time
+gates trust: NDN certificate validity, NAC-ABE and the GPS time-gate check
+real dates. Single-clock measurements (telemetry rate/gaps, video fps,
+`age_s` on `time.monotonic()`, NDNSF `steady_us`) were never affected by any
+of this; cross-node wall-clock latency was.
+
+### wuas-01 (node 02) — recovered; was a wedged driver, not hardware
+It presented as a dead radio: `signal: -99 dBm`, 0 mesh stations, and a
+full-band scan finding **0 APs** on a campus full of them. That reads as an
+antenna fault, but reloading the `8812eu` module fixed it completely — 48 APs
+visible, associated at **-32 dBm**, 0% packet loss at 1.06 ms. Reach for a
+driver reload before concluding hardware. It is on the campus hostname
+(`minidronesys-02.uom.memphis.edu`) as well as the mesh, which is how it was
+reachable while its radio was down.
+
+### iuas-02 (node 04) — fixed (was a keyset split, NOT ABE)
 
 **It is not an ABE problem, and iuas-02 is not the broken node.** The earlier
 handoff said this was "the same long-standing iuas-02 ABE universe/identity
@@ -158,16 +219,16 @@ throwaway keychain, so the check is read-only) and logs a loud
 a live identity and a node whose controller key disagrees with the running
 controller cannot bootstrap at all.
 
-**To actually fix it** the fleet must converge on ONE generation in a SINGLE
-deploy — controller, both GCS roles, iuas-01 and iuas-02 together. Converging
-one node at a time drops the others instead. Re-keying the controller identity
-is also the ABE re-mint hazard, so this is a deliberate maintenance window,
-not a routine deploy. Node 04's PIB is backed up at
-`~/.ndn-muas/agent.bak-1789491776`, and its agent is stopped.
+**Done 2026-09-15:** `services.muasV2.syncKeysetOnMismatch = true` on every v2
+host (01, 02, 03, 04) and deployed in one pass, so controller, both GCS roles
+and all three airframes purged and re-imported together. All five keychains
+now hold `%5C%3C..`. Re-keying the controller did NOT disturb ABE — the
+universe is persisted as raw params (`abe-universe.pub/.msk` via
+`NAC_ABE_PERSIST_DIR`) and is independent of the NDN signing identity.
+Keychains backed up to `/var/tmp/keyset-backup-*.tgz` on 03/01/04.
 
-### Other airframes
-wuas-01 (node 02) and node 05 are **powered off** — no ARP entry, no mesh
-station. Nothing to fix remotely; they need power.
+### Node 05
+Not a v2 role node (no `services.muasV2` block); genuinely powered off.
 
 ### Radio
 The radio cell remains available (`muas-fabric set ndn-fwd radio`) for
