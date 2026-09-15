@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 import threading
-from typing import Iterator
+from typing import Callable, Iterator
 
 
 MINIMUAS_ROOT = Path(__file__).resolve().parents[3]
@@ -215,7 +215,11 @@ _JOURNAL_PRODUCERS: dict = {}
 # whole file is re-signed on every refresh, so this bounds a real failure mode
 # rather than being a nicety: an unbounded journal scales the per-refresh
 # signing cost without limit and has already taken a vehicle out of service.
-JOURNAL_PUBLISH_MAX_BYTES = 2_000_000
+# Bounded so that *if* a refresh does fire it is a sub-second burst rather
+# than a visible video freeze: one RSA signature per ~6 KB segment at 5.59 ms
+# on the C4, so 512 KB is ~85 segments is ~0.5 s. At 2 MB it was ~333
+# signatures and measured a 2.11 s stall in the live stream.
+JOURNAL_PUBLISH_MAX_BYTES = 512_000
 
 def publish_journal(
     node_id: str,
@@ -297,6 +301,7 @@ def start_journal_publisher(
     *,
     interval_s: float = 300.0,
     signing_identity: str = "",
+    defer_while: Callable[[], bool] = lambda: False,
 ):
     """Republish this role's journal on an interval so the dashboard sweep can
     pull a fresh copy at any time while the node is up.
@@ -311,6 +316,11 @@ def start_journal_publisher(
     post-mission diagnostic, not a live-flight dependency, and the on-disk file
     is already fsync'd per line — only the over-NDN snapshot ages.
 
+    `defer_while` is polled before each refresh: while it returns True (the
+    agent passes "a live video stream is running") the refresh is skipped
+    entirely rather than delayed, because the burst holds the GIL against the
+    video producer. A refresh whose snapshot has not grown is also skipped.
+
     A daemon thread re-snapshots + re-serves the journal every `interval_s`.
     No-op (returns None) if the journal is disabled. The republisher stops
     the previous producer before serving the new snapshot, so exactly one
@@ -319,13 +329,30 @@ def start_journal_publisher(
     if current_journal_path() is None:
         return None
     stop = threading.Event()
+    last = {"size": -1}
 
     def loop() -> None:
         # publish once immediately so the object exists as soon as the node
         # is up, then refresh on the interval
         publish_journal(node_id, session, signing_identity=signing_identity)
         while not stop.wait(interval_s):
+            # Never preempt a live video stream. The snapshot is served BY
+            # THIS NODE, so a fresher over-NDN copy is worth nothing while the
+            # node is up and reachable -- and if the node is lost, so is the
+            # copy. Freshness during flight therefore buys nothing, while the
+            # re-sign burst measurably freezes the stream. Defer and catch up
+            # when video goes idle; the on-disk file is fsync'd per line.
+            while defer_while() and not stop.is_set():
+                print_json("journal.publish.deferred", node=node_id,
+                           reason="video stream live")
+                if stop.wait(interval_s):
+                    return
+            path = current_journal_path()
+            size = path.stat().st_size if path and path.exists() else -1
+            if size == last["size"]:
+                continue  # nothing new to say; don't pay to re-sign it
             publish_journal(node_id, session, signing_identity=signing_identity)
+            last["size"] = size
 
     threading.Thread(
         target=loop, name=f"journal-publisher-{node_id}", daemon=True

@@ -1720,7 +1720,15 @@ def main() -> int:
     # Serve this vehicle's agent journal (events + metrics + logs) over NDN
     # under /muas/v2/<vehicle_id>/journal/<session> so the dashboard's mission
     # bundle sweep can pull the whole flight record without SSH.
-    start_journal_publisher(vehicle_id, args.session)
+    # Late-bound: video_cfg is built below, but the publisher must never fire
+    # a re-sign burst while video is live (it holds the GIL and freezes the
+    # stream -- measured as a 2.11 s stall). Read through a holder so the
+    # thread sees the real dict once it exists.
+    _video_state: dict = {}
+    start_journal_publisher(
+        vehicle_id, args.session,
+        defer_while=lambda: bool(_video_state.get("enabled")),
+    )
     from ndnsf import AckDecision, ServiceProvider, ServiceResponse
 
     provider = ServiceProvider(**provider_kwargs(args, prefix, ""))
@@ -1749,6 +1757,7 @@ def main() -> int:
         # dashboard can subscribe; empty on the segmented path.
         "transport": "segmented", "descriptor": "",
     }
+    _video_state = video_cfg  # journal publisher defers while this is enabled
     # Owns the lifecycle of the predictive video stream (stream transport
     # only). The video/control handler is the sole creator (so the descriptor
     # is ready in its response); the video loop only pushes frames.

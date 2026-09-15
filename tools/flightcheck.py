@@ -164,6 +164,12 @@ def main():
             if verdict == "BAD": ok = False
             print(f" {verdict} VIDEO {a.video}: n={len(fr)} fps={fps:.1f} kbps={kbps:.0f} "
                   f"first_frame={first:.1f}s gap p50={pct(gaps,.5)}s p95={pct(gaps,.95)}s max={round(max(gaps),2) if gaps else '-'}s stutters>1s={stutter}")
+            # where the stalls were: offset into the run, so they can be lined
+            # up against the agent's journal (the 43 s journal republisher was
+            # found exactly this way -- a precise period names its process).
+            for i, g in enumerate(gaps):
+                if g > 1.0:
+                    print(f"      stall @ t+{fr[i]-t_start:.1f}s for {g:.2f}s (resumed t+{fr[i+1]-t_start:.1f}s)")
     if events: print(f" events: {dict(sorted(events.items(), key=lambda kv:-kv[1])[:8])}")
     print(f"===== {'FLIGHT-READY' if ok else 'NOT FLIGHT-READY'} =====")
     return 0 if ok else 1

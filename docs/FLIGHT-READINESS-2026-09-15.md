@@ -139,9 +139,6 @@ Video occasionally shows a ~2 s hiccup (roughly one per two minutes); the
 supervisor rejoins at the live edge. Telemetry has been gap-free (> 2 s)
 across every run since the fixes.
 
-```
-```
-
 **Measurement warning:** the fleet runs an island clock ~158 s off this
 workstation. Anything that filters recorder timestamps by *local* time
 silently returns nothing — take `t0` from the node. That class of error
