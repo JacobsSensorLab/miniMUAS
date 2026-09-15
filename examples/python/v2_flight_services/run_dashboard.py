@@ -1479,14 +1479,45 @@ class Dashboard:
                     })
                     stat["frames"], stat["bytes"], stat["t0"] = 0, 0, now
 
+            # (state, reason) of the last status we logged, so a 1 Hz status
+            # callback doesn't spam the journal — we log transitions plus a
+            # periodic heartbeat.
+            last_status = {"key": None, "t": 0.0}
+
             def on_status(status) -> None:
                 # Without this the subscriber can hit a terminal error and
                 # simply stop delivering, with nothing logged anywhere — the
                 # frames just end. Surface it as a normal dashboard event so a
                 # stalled stream is diagnosable instead of silent.
                 try:
-                    self.event("video.stream_status", vehicle=vid,
-                               status=str(status)[:300])
+                    g = lambda k: getattr(status, k, None)
+                    key = (str(g("state")), str(g("reason")))
+                    now = time.monotonic()
+                    if key == last_status["key"] and now - last_status["t"] < 10.0:
+                        return
+                    last_status["key"], last_status["t"] = key, now
+                    self.event(
+                        "video.stream_status", vehicle=vid,
+                        state=key[0], reason=key[1],
+                        delivered=g("delivered"), rejected=g("rejected"),
+                        timeouts=g("timeouts"), nacks=g("nacks"),
+                        next_cursor=g("next_deliver_cursor"),
+                        oldest_ready=g("oldest_ready_cursor"),
+                        ready_q=g("ready_queue_depth"),
+                        in_flight=g("in_flight"),
+                        pending=g("pending_interests"),
+                        # mapping_* tells us whether the consumer can still
+                        # resolve cursor->name: delivery stopping at ~one
+                        # mapping block (capacity 16) with interests issued but
+                        # no new responses is the signature of a mapping stall.
+                        map_int=g("mapping_interests"),
+                        map_data=g("mapping_data_responses"),
+                        map_new=g("mapping_new_data_responses"),
+                        retry_exh=g("retry_exhaustions"),
+                        recov_exh=g("recovery_exhaustions"),
+                        missing=g("terminal_missing_sources"),
+                        stale_drops=g("stale_ready_drops"),
+                    )
                 except Exception:
                     pass
 
