@@ -211,6 +211,12 @@ def current_journal_path() -> Path | None:
 _JOURNAL_PRODUCERS: dict = {}
 
 
+# Cap on how much journal we republish over NDN (see publish_journal). The
+# whole file is re-signed on every refresh, so this bounds a real failure mode
+# rather than being a nicety: an unbounded journal scales the per-refresh
+# signing cost without limit and has already taken a vehicle out of service.
+JOURNAL_PUBLISH_MAX_BYTES = 2_000_000
+
 def publish_journal(
     node_id: str,
     session: str,
@@ -240,7 +246,24 @@ def publish_journal(
         return None
     flush_json_log()
     try:
-        payload = path.read_bytes()
+        # Publish at most the TAIL of the journal. This is republished in full
+        # on every refresh and each ~6 KB segment costs an RSA signature
+        # (5.6 ms on the C4), so an unbounded file turns the republisher into a
+        # CPU bomb: iuas-02 was found with a 54 MB journal, i.e. ~9k signatures
+        # — tens of seconds of CPU — every 30 s interval, which starved its
+        # startup badly enough that NDNSF certificate bootstrap timed out and
+        # the agent crash-looped. Bounded, a refresh is a few hundred segments.
+        # Seek to a line boundary so the object is still valid JSONL.
+        size = path.stat().st_size
+        with path.open("rb") as fh:
+            if size > JOURNAL_PUBLISH_MAX_BYTES:
+                fh.seek(size - JOURNAL_PUBLISH_MAX_BYTES)
+                fh.readline()  # drop the partial first line
+                payload = fh.read()
+                print_json("journal.publish.truncated", node=node_id,
+                           file_bytes=size, published_bytes=len(payload))
+            else:
+                payload = fh.read()
     except Exception as exc:
         print_json("journal.publish.error", node=node_id, error=str(exc))
         return None
