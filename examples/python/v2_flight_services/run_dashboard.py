@@ -543,7 +543,16 @@ class Dashboard:
                 # timeouts that starve the asyncio event loop and hang the whole
                 # dashboard. Back off (1→2→5 s), sleeping between attempts so the
                 # loop runs; reset to fast polling the instant it answers again.
-                backoff = min(5.0, backoff * 2 or 1.0)
+                # Cap at 1.5 s, not 5 s. The pause exists so the GIL-held
+                # fetch can't be re-issued back-to-back and starve the asyncio
+                # loop — any real pause achieves that, and 1.5 s still gives
+                # the loop far more room than it needs. The 5 s cap meant two
+                # consecutive transient failures blacked telemetry out for
+                # ~5.8 s (800 ms timeout + backoff), which is what the field
+                # saw as "telemetry drop-out"; measured worst gap tracked the
+                # cap exactly. Bounding it keeps the worst case ~2.3 s, just
+                # under the UI's 2.5 s stale threshold.
+                backoff = min(1.5, backoff * 2 or 0.5)
                 time.sleep(backoff)
 
     def _poll_search_forever(self) -> None:

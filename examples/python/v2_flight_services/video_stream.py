@@ -95,6 +95,24 @@ FRAME_BUDGET = 7000
 FEC_MAX_SOURCE_BYTES = SIGNED_WIRE_CAP
 FEC_RECOVERY_BUDGET_MS = 200  # reasonable for real-time local Wi-Fi
 
+# A live subscriber prefetches FUTURE cursors — Interests for frames the camera
+# has not taken yet — which the producer parks until it produces them. So the
+# Interest lifetime has to outlast the wait, and the prefetch depth must not
+# reach further ahead than the lifetime covers:
+#
+#     prefetch_depth / fps  <=  interest_lifetime
+#
+# The generic defaults (limit 64, lifetime 500 ms) violate this badly for live
+# video: at 10 fps, 64 cursors is 6.4 s ahead while each Interest dies after
+# 0.5 s, so everything past ~5 frames ahead expires before its frame exists.
+# Measured on the fleet: 34 timeouts, retry AND recovery exhausted, then
+# `terminal-gap:timeout` — delivery stopped dead after ~11-20 frames while the
+# producer was happily pushing 10 fps. Depth 16 at 5-15 fps is 1.1-3.2 s ahead,
+# comfortably inside a 4 s lifetime, and 16 deep is ample pipelining on a link
+# whose RTT is ~1 ms.
+LIVE_INTEREST_LIFETIME_MS = 4000
+LIVE_INTEREST_LIMIT = 16
+
 
 def predictive_data_name(mapping_root: str, mapping_version: int, seq: int) -> str:
     """Canonical predictive-stream Data name for one pushed sample.
@@ -316,6 +334,8 @@ class VideoStreamConsumer:
         require_full_delivery: bool = False,
         prefetch_policy: Optional[str] = None,
         on_status: Optional[Callable[[object], None]] = None,
+        interest_lifetime_ms: int = LIVE_INTEREST_LIFETIME_MS,
+        aggregate_interest_limit: int = LIVE_INTEREST_LIMIT,
     ) -> None:
         from ndnsf import (
             LiveStreamItemAdmission,
@@ -351,10 +371,10 @@ class VideoStreamConsumer:
                 on_item=_on_item,
                 start="latest",
                 prefetch_policy=prefetch_policy,
-                aggregate_interest_limit=64,
+                aggregate_interest_limit=aggregate_interest_limit,
                 enable_fec_recovery=True,
                 require_full_delivery=require_full_delivery,
-                interest_lifetime_ms=500,
+                interest_lifetime_ms=interest_lifetime_ms,
                 on_status=on_status,
             ),
         )
