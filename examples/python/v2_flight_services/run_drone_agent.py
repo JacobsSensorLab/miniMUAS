@@ -2260,10 +2260,25 @@ def main() -> int:
                 else:
                     payload = video_cfg["seq"].to_bytes(8, "big") + jpeg
                     try:
+                        # Freshness must not outlive the versions we keep
+                        # alive. We retain exactly two producers (prev+curr),
+                        # i.e. ~2 frame periods. With a fixed 300 ms freshness
+                        # at 10+ fps the content store answers "latest" with a
+                        # pointer up to 300 ms stale — a version whose producer
+                        # we already stopped — so the follow-up segment fetch
+                        # finds no producer and burns the consumer's full
+                        # timeout. Measured in the field as ~1.4 fps delivered
+                        # (~714 ms/frame == the dashboard's 700 ms fetch
+                        # timeout) while the drone was publishing 10-17 fps.
+                        # Tying freshness to one frame period keeps every
+                        # pointer the CS can hand out inside the live window.
+                        fresh_ms = max(
+                            50, int(1000.0 / max(video_cfg["fps"], 0.5))
+                        )
                         producer = publish_segmented(
                             vehicle_video_live_name(vehicle_id),
                             payload,
-                            freshness_ms=300,
+                            freshness_ms=fresh_ms,
                         )
                         if prev is not None:
                             try:
