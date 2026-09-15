@@ -44,6 +44,8 @@ import re
 import shutil
 import tempfile
 import threading
+from statistics import median
+from collections import deque
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -570,8 +572,9 @@ class Dashboard:
             sample = TelemetrySample.from_bytes(payload)
             now = time.monotonic()
             state = self.sample_state.setdefault(
-                vid, {"last_ns": None, "changed_mono": now}
+                vid, {"last_ns": None, "changed_mono": now, "skew": deque(maxlen=31)}
             )
+            state.setdefault("skew", deque(maxlen=31))
             if sample.gps_time_ns != state["last_ns"]:
                 state["last_ns"] = sample.gps_time_ns
                 state["changed_mono"] = now
@@ -588,6 +591,7 @@ class Dashboard:
             # then to whole seconds in the UI) turned a steady ~0.5 s into a
             # value that appeared to flap between 0 and 1.
             skew_s = (gps_time_ns() - sample.gps_time_ns) / 1e9
+            state["skew"].append(skew_s)
             self.telemetry_age[vid] = now
             sample_dict = json.loads(payload.decode())
             self.last_sample[vid] = sample_dict
@@ -597,6 +601,14 @@ class Dashboard:
                 "sample": sample_dict,
                 "age_s": round(age_s, 1),
                 "skew_s": round(skew_s, 3),
+                # Median over recent samples. A single reading is dominated by
+                # one-way transport jitter and by chrony actively SLEWING the
+                # node clock (the fleet has no disciplined time source: the GCS
+                # serves its own free-running clock as stratum 10 / refid
+                # 127.127.1.1, and took that time from a drone at boot), so the
+                # instantaneous value swings hundreds of ms to seconds and is
+                # unreadable. The median is stable enough to show a trend.
+                "skew_med_s": round(median(state["skew"]), 3) if state["skew"] else None,
             })
             return True
         except Exception:

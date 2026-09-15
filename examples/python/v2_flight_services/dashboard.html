@@ -3207,21 +3207,35 @@ function onTelemetry(m){
   }
   const link = document.getElementById(`link-${vid}`);
   if (link){ const age = m.age_s;
-    link.textContent = `link ${age.toFixed(0)} s`;
+    // Age is the number to trust: it is measured start-to-finish on the
+    // dashboard's OWN monotonic clock, so it is immune to the fleet's clock
+    // disagreement entirely. Show ms below 10 s -- at whole seconds a healthy
+    // 0.3 s link rendered as "link 0 s".
+    link.textContent = age < 10 ? `link ${Math.round(age * 1000)} ms`
+                                : `link ${age.toFixed(1)} s`;
     link.className = "cds-tag " + (age < 4 ? "cds-tag--green"
       : age < 10 ? "cds-tag--yellow" : "cds-tag--red"); }
   const skew = document.getElementById(`skew-${vid}`);
-  if (skew && m.skew_s != null){
-    const a = Math.abs(m.skew_s);
-    const sign = m.skew_s > 0 ? "−" : "+";
-    // Millisecond resolution below 10 s. At whole-second rounding a steady
-    // ~0.5 s reading alternated between "0 s" and "1 s" every update, which
-    // read as a flapping clock when nothing was actually moving. Most of a
-    // normal reading is the sample's in-flight age, not clock error.
+  // Show the MEDIAN, not the instantaneous value. A single reading mixes the
+  // clock offset with one-way transport jitter and with chrony slewing the
+  // node clock, so it swings from tens of ms to seconds sample to sample and
+  // tells an operator nothing. The median of recent samples is stable enough
+  // to read as a trend; the raw value stays in the tooltip.
+  const sv = (m.skew_med_s != null) ? m.skew_med_s : m.skew_s;
+  if (skew && sv != null){
+    const a = Math.abs(sv);
+    const sign = sv > 0 ? "−" : "+";
     skew.textContent =
-      a < 10  ? `${sign}${Math.round(a * 1000)} ms`
-    : a < 120 ? `${sign}${a.toFixed(2)} s`
-    :           `${sign}${(a / 60).toFixed(1)} min`;
+      a < 10  ? `${sign}${Math.round(a * 1000)} ms~`
+    : a < 120 ? `${sign}${a.toFixed(2)} s~`
+    :           `${sign}${(a / 60).toFixed(1)} min~`;
+    if (m.skew_s != null) {
+      skew.title = `median of recent samples (~ = estimate). Latest raw: `
+        + `${(m.skew_s * 1000).toFixed(0)} ms. This is clock offset PLUS the `
+        + `sample's in-flight age, and the fleet has no disciplined time `
+        + `source, so treat it as a trend, not a measurement. Link freshness `
+        + `is the "link" tag, which is skew-immune.`;
+    }
     skew.style.color = a < 5 ? "" : "var(--cds-support-warning)";
   }
 }
