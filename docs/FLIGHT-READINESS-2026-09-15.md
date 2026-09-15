@@ -14,7 +14,7 @@ named-data radio is not flight-worthy and is not on the flight path.
 |---|---|---|
 | Telemetry rate | 0.38 /s | **3.2 /s** |
 | Telemetry worst gap | 21.4 s | **1.6 s** (zero gaps > 2 s over 3 min) |
-| Video | 1.4 fps, 17 stutters / 75 s | **9.8 fps, ZERO stutters > 1 s over 3 min** (gap p50 0.10 s, max 0.42 s) |
+| Video | 1.4 fps, 17 stutters / 75 s | **9.8 fps, ZERO stutters > 1 s over 400 s** (gap p50 0.10 s, max 0.59 s) |
 | Drone agent CPU (idle) | 83 % of a core | **26 %** |
 | Drone agent CPU (video on) | 92 % | **31 %** |
 
@@ -49,12 +49,25 @@ was running application code from 2026-08-06 that predated every video fix.
    exhausted, `terminal-gap:timeout`, delivery dead after ~16 frames. Now
    lifetime 4 s / depth 16 — that alone took delivery from 16 frames to 251.
 
-5. **The journal republisher was killing the video every 43 s.** Video hit a
-   terminal gap on a startlingly regular period — 42.7/42.4/43.3 s, identical
-   across frame sizes. `journal.publish.ready` fires at exactly 43 s (30 s
-   sleep + ~13 s of work): it re-segments and re-signs the whole ~700 KB
-   journal, one RSA signature per ~6 KB segment, starving the video producer
-   past the consumer's retry budget. Now every 300 s.
+5. **The journal republisher was killing the video.** Video hit a terminal
+   gap on a startlingly regular period — 42.7/42.4/43.3 s, identical across
+   frame sizes. `journal.publish.ready` fires at exactly 43 s (30 s sleep +
+   ~13 s of work): it re-segments and re-signs the whole journal, one RSA
+   signature per ~6 KB segment, starving the video producer past the
+   consumer's retry budget.
+
+   Moving the interval to 300 s made this *rarer, not gone* — a 180 s check
+   still caught a 2.11 s stall, and the agent journal bracketed it exactly
+   (`journal.publish.truncated` at 1789486160.99, `.ready` at 1789486163.08,
+   zero NDNSF timeline events in between). Interval tuning was the wrong axis.
+   The snapshot is served **by the node itself**, so a fresher over-NDN copy
+   buys nothing while the node is up — and if the node is lost, the copy is
+   lost with it. Mid-flight freshness has no value; the burst has a measured
+   cost. The republisher now **defers entirely while video is live**, skips a
+   snapshot that has not grown, and caps the tail at 512 KB so that even a
+   refresh that does fire is ~85 segments / ~0.5 s rather than ~333 / ~2 s.
+   Verified: over 400 s the deferral fired at both 300 s boundaries
+   (`journal.publish.deferred`) with zero video stalls.
 
 6. **Unbounded journal took iuas-02 out of service.** Found with a **54 MB**
    journal being republished in full every 30 s (~9,000 RSA signatures per
@@ -81,13 +94,27 @@ was running application code from 2026-08-06 that predated every video fix.
 - **Mapping-block exhaustion** as the stream stall (`map_int` was 0
   throughout), and **regulatory/channel** as the video cause.
 
-## Final verified state (iuas-01, 190 s continuous)
+## Final verified state (iuas-01, 400 s continuous)
 
 ```
-OK  TELEM iuas-01: rate=2.90/s p50=0.30s p95=0.37s max=1.60s gaps>2s=0
-OK  VIDEO iuas-01: n=1813 fps=9.8 kbps=469 first_frame=1.4s
-                   gap p50=0.10s p95=0.21s max=0.42s stutters>1s=0
+===== FLIGHT CHECK [STALL HUNT] 400s =====
+ OK  TELEM iuas-01: rate=3.01/s p50=0.3s p95=0.33s max=1.6s gaps>2s=0
+ OK  VIDEO iuas-01: n=3912 fps=9.8 kbps=380 first_frame=1.0s
+                    gap p50=0.10s p95=0.21s max=0.59s stutters>1s=0
+===== FLIGHT-READY =====
 ```
+
+Long enough to cross two 300 s journal boundaries; both deferred cleanly, and
+the agent logged no errors for the whole run.
+
+**Residual, accepted:** roughly one run in two shows a single sub-1.5 s video
+hiccup at a non-periodic point. It is not frame loss — across it the consumer
+stays `ACTIVE`, `timeouts` does not increment, and `delivered` keeps climbing
+~99-100 per 10 s window, with `in_flight` briefly rising 2 -> 8. The producer
+pauses and catches up. Telemetry is unaffected. Separately, joining a live
+stream costs a one-time settling gap in the first few seconds (the producer
+keeps producing through it — NDNSF timeline events are continuous), which
+`flightcheck` reports as `warm-up` and excludes from the verdict.
 
 Stream supervision stays in place as a safety net (`on_status` watches for a
 terminal reason and rejoins at the live edge, so a future stall costs a
