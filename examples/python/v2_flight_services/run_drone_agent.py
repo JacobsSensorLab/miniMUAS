@@ -2262,15 +2262,27 @@ def main() -> int:
 
         prev = None
         curr = None
+        # Stall instrumentation. A residual sub-1.5 s video pause survived the
+        # journal fix, and the consumer showed it was NOT frame loss (stream
+        # stays ACTIVE, timeouts flat, delivered keeps climbing) -- the
+        # producer pauses and catches up. Guessing which phase blocks is how
+        # the previous sessions burned themselves, so time each phase and let
+        # the next hiccup name its own cause: capture (grab/retrieve/encode),
+        # push (sign + NDN), or neither (= the loop itself was descheduled,
+        # i.e. GIL or CPU contention from another thread).
+        last_push = 0.0
         while True:
             if not video_cfg["enabled"]:
                 time.sleep(0.25)
+                last_push = 0.0
                 continue
             t0 = time.monotonic()
+            since_last = (t0 - last_push) if last_push else 0.0
             jpeg, _dims, ts = camera.jpeg(
                 width=video_cfg["width"],
                 quality=video_cfg["quality"],
             )
+            t_cap = time.monotonic()
             if jpeg is not None:
                 video_cfg["seq"] += 1
                 if video_cfg["transport"] == "stream":
@@ -2336,7 +2348,28 @@ def main() -> int:
                         print_json("agent.video.publish_failed", error=str(exc))
                 if video_cfg["seq"] % 50 == 1:
                     publish_video_status()
-            delay = (1.0 / max(video_cfg["fps"], 0.5)) - (time.monotonic() - t0)
+            t_end = time.monotonic()
+            # Frame period at 10 fps is 100 ms; anything past 400 ms between
+            # pushes is a visible hitch. Report the phase breakdown so the
+            # cause is read off the journal instead of hypothesised. A large
+            # `idle_ms` with small capture+push means the thread was not
+            # running at all -- look at what else woke on this node.
+            # cycle = idle (sleep + any deschedule) + capture + push. The
+            # three are disjoint and sum to the push-to-push period, so
+            # whichever dominates IS the cause.
+            cycle = (t_end - last_push) if last_push else 0.0
+            if cycle > 0.4:
+                print_json(
+                    "agent.video.slow_frame",
+                    cycle_ms=round(cycle * 1000, 1),
+                    idle_ms=round(since_last * 1000, 1),
+                    capture_ms=round((t_cap - t0) * 1000, 1),
+                    push_ms=round((t_end - t_cap) * 1000, 1),
+                    seq=video_cfg["seq"],
+                    frame_age_ms=round((t_cap - ts) * 1000, 1) if ts else -1,
+                )
+            last_push = t_end
+            delay = (1.0 / max(video_cfg["fps"], 0.5)) - (t_end - t0)
             if delay > 0:
                 time.sleep(delay)
 
