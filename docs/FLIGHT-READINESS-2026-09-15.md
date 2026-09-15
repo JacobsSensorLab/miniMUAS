@@ -95,10 +95,26 @@ sub-second hiccup rather than a dead feed) — but with the 43 s journal
 trigger removed it did not fire once in the final run.
 
 ## Residual, known
-- **iuas-02 (node 04) is down**: `certificate bootstrap timed out`,
-  crash-looping, and still on the pre-fabric June generation. Its journal has
-  been rotated; it needs the current generation deployed. wuas-01 (node 02)
-  and node 05 are powered off.
+- **iuas-02 (node 04) is out of service** — pre-existing, not caused by this
+  work, and NOT fixed here. It now runs the current generation and is on the
+  `nfd wifi` fabric, but its agent cannot complete NDNSF certificate bootstrap:
+  first `certificate bootstrap timed out`, and once its runaway 54 MB journal
+  was rotated away, the underlying `encrypted bootstrap request decrypt
+  failed`. Checked and ruled out: the controller IS reachable over NDN from it
+  (6 /muas routes, 5 udp faces, POLICY-MANIFEST fetches fine), the identity IS
+  present, and its iuas-02 key has the *same* key id as the GCS's copy — so
+  this is not the identity-keyset mismatch it first looked like. It is the
+  same long-standing iuas-02 ABE universe/identity problem seen before, which
+  was deliberately not forced then because regenerating that identity risks a
+  fleet-wide ABE re-mint that would strand the working aircraft.
+
+  Its agent is **stopped** (`sudo systemctl start muas-v2-agent` on node 04, or
+  a reboot, brings it back). Left crash-looping it restarted every ~20 s and
+  retried bootstrap over NDN each time, putting churn on the fabric the flying
+  aircraft shares — one video stutter was traced to that. Its previous
+  identity is backed up at `/tmp/iuas02-OLD-backup.safebag` on node 04.
+
+  wuas-01 (node 02) and node 05 are powered off.
 - The radio cell remains available (`muas-fabric set ndn-fwd radio`) for
   experiments. It loses 50-75 % of Interests; the causes are RF/PHY and N=2
   economics, not wiring — the MAC hardware gate *is* correctly wired now that
