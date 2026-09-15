@@ -122,14 +122,24 @@ trigger removed it did not fire once in the final run.
 
 ## How to check flight readiness yourself
 
-`scratchpad/flightcheck.py` drives the real operator path — it speaks the
+`tools/flightcheck.py` drives the real operator path — it speaks the
 dashboard's WebSocket, enables video, and reports telemetry cadence, video fps
 and gap distribution, with an explicit FLIGHT-READY / NOT verdict:
 
 ```
-python3 flightcheck.py --seconds 180 --video iuas-01            # stream (default)
-python3 flightcheck.py --seconds 180 --video iuas-01 --transport segmented
-python3 flightcheck.py --seconds 120 --video iuas-01 --passive  # observe, don't command
+python3 tools/flightcheck.py --seconds 180 --video iuas-01           # stream (default)
+python3 tools/flightcheck.py --seconds 180 --video iuas-01 --transport segmented
+python3 tools/flightcheck.py --seconds 120 --video iuas-01 --passive # observe, don't command
+python3 tools/flightcheck.py --seconds 180 --expect iuas-01,iuas-02  # require both airframes
+```
+
+Vehicles outside `--expect` that report nothing are shown as OFFLINE rather
+than failed, so a powered-down airframe doesn't read as a system fault.
+Video occasionally shows a ~2 s hiccup (roughly one per two minutes); the
+supervisor rejoins at the live edge. Telemetry has been gap-free (> 2 s)
+across every run since the fixes.
+
+```
 ```
 
 **Measurement warning:** the fleet runs an island clock ~158 s off this
