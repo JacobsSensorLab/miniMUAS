@@ -3086,8 +3086,8 @@ function onHello(m){
     // video command carries no transport field (legacy behavior)
     const xportSel = m.video_transport ? `
         <select id="vxport-${vid}" class="vxport" title="video transport">
-          <option value="segmented">poll</option>
           <option value="stream">stream</option>
+          <option value="segmented">poll</option>
         </select>` : "";
     vp.innerHTML = `
       <div class="head"><b style="color:${COLORS[vid]}">${vid}</b>${xportSel}
