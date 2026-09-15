@@ -578,7 +578,15 @@ class Dashboard:
             # freshness on the dashboard's own clock: seconds since the
             # last NEW sample was observed (skew-immune)
             age_s = now - state["changed_mono"]
-            # clock skew, reported separately as a time-subsystem diagnostic
+            # Clock offset, reported separately as a time-subsystem
+            # diagnostic. NOTE this is NOT a pure clock difference: it is
+            # (our clock - the stamp the node wrote) and so carries the
+            # sample's in-flight age too -- publish, NDN fetch, and up to one
+            # poll period of "latest" staleness. On a healthy link that age
+            # alone is ~0.3-0.7 s, which is the whole magnitude of a normal
+            # reading. Keep MILLISECOND resolution: rounding to 0.1 s (and
+            # then to whole seconds in the UI) turned a steady ~0.5 s into a
+            # value that appeared to flap between 0 and 1.
             skew_s = (gps_time_ns() - sample.gps_time_ns) / 1e9
             self.telemetry_age[vid] = now
             sample_dict = json.loads(payload.decode())
@@ -588,7 +596,7 @@ class Dashboard:
                 "vehicle": vid,
                 "sample": sample_dict,
                 "age_s": round(age_s, 1),
-                "skew_s": round(skew_s, 1),
+                "skew_s": round(skew_s, 3),
             })
             return True
         except Exception:

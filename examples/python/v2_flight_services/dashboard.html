@@ -3034,7 +3034,7 @@ function onHello(m){
         <span class="v" id="busy-${vid}">–</span>
         <span class="v" id="src-${vid}">–</span>
         <span class="k">clock Δ</span><span class="k"></span><span class="k"></span>
-        <span class="v" id="skew-${vid}" title="node clock minus GCS clock; large values mean the time subsystem needs attention, not the link">–</span>
+        <span class="v" id="skew-${vid}" title="node clock offset PLUS the sample's in-flight age (publish + fetch + up to one poll period of latest-staleness). A few hundred ms is normal on a healthy link and is mostly that age, not clock error. Seconds or minutes here mean the time subsystem needs attention, not the link.">–</span>
         <span class="v"></span>
         <span class="v"></span>
       </div>
@@ -3213,8 +3213,15 @@ function onTelemetry(m){
   const skew = document.getElementById(`skew-${vid}`);
   if (skew && m.skew_s != null){
     const a = Math.abs(m.skew_s);
-    skew.textContent = a < 120 ? `${m.skew_s > 0 ? "−" : "+"}${a.toFixed(0)} s`
-      : `${m.skew_s > 0 ? "−" : "+"}${(a/60).toFixed(1)} min`;
+    const sign = m.skew_s > 0 ? "−" : "+";
+    // Millisecond resolution below 10 s. At whole-second rounding a steady
+    // ~0.5 s reading alternated between "0 s" and "1 s" every update, which
+    // read as a flapping clock when nothing was actually moving. Most of a
+    // normal reading is the sample's in-flight age, not clock error.
+    skew.textContent =
+      a < 10  ? `${sign}${Math.round(a * 1000)} ms`
+    : a < 120 ? `${sign}${a.toFixed(2)} s`
+    :           `${sign}${(a / 60).toFixed(1)} min`;
     skew.style.color = a < 5 ? "" : "var(--cds-support-warning)";
   }
 }
