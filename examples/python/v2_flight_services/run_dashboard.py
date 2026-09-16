@@ -1527,6 +1527,50 @@ class Dashboard:
                     g = lambda k: getattr(status, k, None)
                     key = (str(g("state")), str(g("reason")))
                     now = time.monotonic()
+
+                    # Resubscribe decision FIRST, above the log-dedup return.
+                    #
+                    # A single unrecoverable frame also ends the subscription
+                    # for good ("terminal-gap:timeout") — the producer pausing
+                    # longer than the retry budget, a camera hiccup, a busy
+                    # moment on the drone — which is what "video rarely works"
+                    # looked like in the field. Resubscribing with
+                    # start="latest" picks up at the live edge, so the operator
+                    # sees a sub-second hiccup instead of a dead feed.
+                    #
+                    # A FAILED lifecycle state is terminal by construction —
+                    # NDNSF's PredictiveStreamSubscriber raises on any attempt
+                    # to restart after stop/failure — so the only recovery is a
+                    # fresh subscription. Keying this off the STATE rather than
+                    # the reason text matters: the most common opening failure
+                    # is "predictive frontier unavailable after timeout", which
+                    # contains no "terminal" and so was never retried. The
+                    # stream then stayed dead until some slower path happened to
+                    # re-trigger it — measured as first_frame=124s against NFD's
+                    # 1-2s, on a link whose steady-state delivery is fine.
+                    #
+                    # It also has to sit ABOVE the 10 s log-dedup `return`: a
+                    # repeated identical failure would otherwise bail out before
+                    # ever reaching the retry.
+                    state_s, reason_s = key
+                    is_terminal = (
+                        "FAILED" in state_s.upper() or "terminal" in reason_s.lower()
+                    )
+                    if (
+                        is_terminal
+                        and self.video_relays.get(vid, {}).get("enabled")
+                        and now - last_status["resub"] > 3.0
+                    ):
+                        last_status["resub"] = now
+                        self.event("video.stream_resubscribe",
+                                   vehicle=vid, reason=reason_s)
+                        threading.Thread(
+                            target=self._start_video_sub,
+                            args=(vid, descriptor_json),
+                            name=f"video-resub-{vid}",
+                            daemon=True,
+                        ).start()
+
                     if key == last_status["key"] and now - last_status["t"] < 10.0:
                         return
                     last_status["key"], last_status["t"] = key, now
@@ -1552,29 +1596,6 @@ class Dashboard:
                         missing=g("terminal_missing_sources"),
                         stale_drops=g("stale_ready_drops"),
                     )
-                    # A single unrecoverable frame ends the subscription for
-                    # good ("terminal-gap:timeout"): the producer pausing
-                    # longer than the retry budget — a camera hiccup, a busy
-                    # moment on the drone — permanently killed the feed, which
-                    # is what "video rarely works" looked like in the field.
-                    # Supervise it: on a terminal reason, resubscribe. start=
-                    # "latest" means the new subscription picks up at the live
-                    # edge, so the operator sees a sub-second hiccup instead of
-                    # a dead feed. Rate-limited, and only while video is still
-                    # enabled for this vehicle.
-                    if "terminal" in key[1].lower() and self.video_relays.get(
-                        vid, {}
-                    ).get("enabled"):
-                        if now - last_status["resub"] > 3.0:
-                            last_status["resub"] = now
-                            self.event("video.stream_resubscribe",
-                                       vehicle=vid, reason=key[1])
-                            threading.Thread(
-                                target=self._start_video_sub,
-                                args=(vid, descriptor_json),
-                                name=f"video-resub-{vid}",
-                                daemon=True,
-                            ).start()
                 except Exception:
                     pass
 
