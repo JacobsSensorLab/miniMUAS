@@ -113,6 +113,30 @@ FEC_RECOVERY_BUDGET_MS = 200  # reasonable for real-time local Wi-Fi
 LIVE_INTEREST_LIFETIME_MS = 4000
 LIVE_INTEREST_LIMIT = 16
 
+# Mapping blocks must fit ONE link fragment.
+#
+# A Name-Map block is published roughly once per frame (measured: 452 blocks
+# for ~437 frames), so `mapping_block_capacity` sets each block's SIZE, not how
+# many blocks there are — shrinking it costs nothing in block count.
+#
+# At the NDNSF default (16 items) a block is ~8.7 KB, which the forwarder must
+# split into 6 link fragments; an N-fragment packet is lost if ANY fragment is
+# lost, so a 5% frame loss becomes ~26% block loss. Every lost block stalls the
+# consumer, which re-requests — measured on the fleet as 26 blocks/s of churn
+# against 10 blocks/s of real work, saturating the link and causing the very
+# loss it was reacting to.
+#
+# ~545 B/item measured, so 2 items + name + SignatureInfo/Value lands near
+# 1.4 KB — inside one fragment on this fleet's 1452-byte datagram MTU. Keep
+# the ITEM lookahead roughly unchanged (2 x 16 = 32 items ~ 3.2 s at 10 fps,
+# comfortably inside LIVE_INTEREST_LIFETIME_MS) by raising the block count as
+# the capacity falls.
+#
+# NOTE: do NOT lower `signed_wire_cap` to force this — that cap also bounds a
+# pushed FRAME (~7 KB under FRAME_BUDGET), and an over-budget push is rejected.
+MAPPING_BLOCK_CAPACITY = 2
+MAPPING_AHEAD_BLOCKS = 16
+
 
 def predictive_data_name(mapping_root: str, mapping_version: int, seq: int) -> str:
     """Canonical predictive-stream Data name for one pushed sample.
@@ -180,6 +204,20 @@ def _build_fec(scheme: str, group_frames: int, max_source_bytes: int,
     raise ValueError(f"unknown FEC scheme: {scheme!r}")
 
 
+def _mapping_options(StreamAdvancedOptions, block_capacity: int,
+                     ahead_blocks: int):
+    """Advanced options with the Name-Map block geometry capped to one fragment.
+
+    ``StreamAdvancedOptions`` is a FROZEN dataclass — set the fields through the
+    constructor; assigning to them raises ``FrozenInstanceError``. Every other
+    field keeps its wrapper default.
+    """
+    return StreamAdvancedOptions(
+        mapping_block_capacity=int(block_capacity),
+        mapping_ahead_blocks=int(ahead_blocks),
+    )
+
+
 def default_video_stream_config(
     stream_id: str,
     data_prefix: str,
@@ -189,6 +227,8 @@ def default_video_stream_config(
     fec_scheme: str = "auto",
     fec_max_source_bytes: int = FEC_MAX_SOURCE_BYTES,
     fec_recovery_budget_ms: int = FEC_RECOVERY_BUDGET_MS,
+    mapping_block_capacity: int = MAPPING_BLOCK_CAPACITY,
+    mapping_ahead_blocks: int = MAPPING_AHEAD_BLOCKS,
     advanced=None,
 ):
     """Video-tuned :class:`StreamConfig` (one sample class, group-coherent FEC).
@@ -214,9 +254,13 @@ def default_video_stream_config(
             fec_scheme, fec_group_frames,
             fec_max_source_bytes, fec_recovery_budget_ms,
         ),
-        # Wrapper defaults = the recommended starting point (mapping_ahead=4,
-        # retained_items=600, …). Only override if measurements call for it.
-        advanced=advanced if advanced is not None else StreamAdvancedOptions(),
+        # Wrapper defaults are the recommended starting point, EXCEPT the
+        # Name-Map block geometry: the default 16-item block is ~8.7 KB, which
+        # fragments 6 ways on a Wi-Fi datagram face and is then all-or-nothing.
+        # See MAPPING_BLOCK_CAPACITY.
+        advanced=advanced if advanced is not None else _mapping_options(
+            StreamAdvancedOptions, mapping_block_capacity, mapping_ahead_blocks,
+        ),
     )
 
 
