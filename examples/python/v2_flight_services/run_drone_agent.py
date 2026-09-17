@@ -2343,16 +2343,13 @@ def main() -> int:
                         if video_cfg["seq"] % 50 == 1:
                             print_json("agent.video.stream_not_ready")
                     else:
+                        # No size fallback: the publisher segments a frame
+                        # across as many Data packets as it needs. The old
+                        # guard re-encoded anything over 7000 B at 256px/q30,
+                        # so requesting HIGHER quality silently produced LOWER
+                        # resolution — measured as bytes/frame pinned at ~4500
+                        # whether 320/q40 or 960/q95 was requested.
                         frame = jpeg
-                        if len(frame) > _FRAME_BUDGET:
-                            # one push == one signed Data under the wire cap;
-                            # re-encode smaller once rather than drop the frame.
-                            alt, _d, _t = camera.jpeg(
-                                width=min(video_cfg["width"], 256),
-                                quality=min(video_cfg["quality"], 30),
-                            )
-                            if alt is not None:
-                                frame = alt
                         try:
                             if not producer.publish_frame(frame):
                                 if video_cfg["seq"] % 50 == 1:

@@ -88,6 +88,51 @@ from typing import Callable, Optional
 SIGNED_WIRE_CAP = 8800
 FRAME_BUDGET = 7000
 
+# Bytes of JPEG carried per published Data. One Data can hold at most
+# `SIGNED_WIRE_CAP` (8800) INCLUDING name + SignatureInfo/Value, so the payload
+# budget is FRAME_BUDGET; take a further `CHUNK_HEADER_BYTES` for the
+# reassembly header and leave slack.
+#
+# A frame larger than one packet is split across several. 8800 is the cap on a
+# single Data, NOT on a frame — real NDN video (NDN-RTC and friends) segments
+# every frame this way. Before this, `publish_frame` pushed one Data per frame
+# and the agent silently re-encoded anything over budget at 256px/q30, so
+# asking for HIGHER quality produced LOWER resolution and the bitrate was
+# pinned near 250-500 kbps regardless of the requested settings.
+FRAME_CHUNK_BYTES = 5800
+CHUNK_HEADER_BYTES = 10
+_CHUNK_MAGIC = b"V1"
+
+# Guard against a runaway encode; 2 MB is ~340 chunks.
+MAX_FRAME_BYTES = 2 * 1024 * 1024
+
+
+def _chunk_header(frame_seq: int, idx: int, count: int) -> bytes:
+    """`V1` + frame_seq(4) + idx(2) + count(2) — 10 bytes, big-endian.
+
+    Self-describing so the consumer can reassemble from per-item delivery
+    without depending on NDNSF sample-grouping metadata (the delivered item
+    exposes `cursor`/`content`/`provenance`, not a sample id).
+    """
+    return (
+        _CHUNK_MAGIC
+        + int(frame_seq).to_bytes(4, "big")
+        + int(idx).to_bytes(2, "big")
+        + int(count).to_bytes(2, "big")
+    )
+
+
+def parse_chunk_header(buf: bytes):
+    """-> (frame_seq, idx, count, payload) or None when not a V1 chunk."""
+    if len(buf) < CHUNK_HEADER_BYTES or buf[:2] != _CHUNK_MAGIC:
+        return None
+    return (
+        int.from_bytes(buf[2:6], "big"),
+        int.from_bytes(buf[6:8], "big"),
+        int.from_bytes(buf[8:10], "big"),
+        buf[CHUNK_HEADER_BYTES:],
+    )
+
 # FEC "max source bytes" must cover the COMPLETE signed Data wire (name +
 # signature + content), not just the JPEG payload, or parity can't reconstruct
 # a full packet. A within-budget frame's signed Data is bounded by the
@@ -293,6 +338,7 @@ class VideoStreamProducer:
         self._definition = self._descriptor.definition
         self._signing_identity = signing_identity
         self._seq = 0
+        self._frame_seq = 0
         # Frames pushed but not yet bound into a flushed FEC group.
         self._pending = 0
         self._lock = threading.Lock()
@@ -311,30 +357,48 @@ class VideoStreamProducer:
         return self._seq
 
     def publish_frame(self, jpeg: bytes) -> bool:
-        """Push one frame; returns False (skipped) if it exceeds the budget.
+        """Publish one frame, split across as many Data packets as it needs.
 
-        Names each frame under the stream's mapping root so the consumer's
-        adaptive fetcher can predict and prefetch the next sample. A flush
-        (which closes the current FEC group and emits its parity) fires once
-        ``fec_group_frames`` frames have accumulated.
+        A frame larger than one packet is segmented: each chunk is its own
+        signed Data carrying a `parse_chunk_header` prefix, and the consumer
+        reassembles by frame sequence. One Data can hold at most
+        `SIGNED_WIRE_CAP` including name and signature, but a FRAME has no such
+        limit — that is how NDN video is normally carried.
+
+        The flush after the last chunk closes the FEC group on a frame
+        boundary, so parity protects exactly one frame's chunks. That is
+        strictly better than the previous group-of-one-frame, where a
+        single-packet loss was unrecoverable.
+
+        Returns False only for an implausibly large frame (`MAX_FRAME_BYTES`),
+        which indicates an encoder problem rather than a transport limit.
         """
-        if len(jpeg) > FRAME_BUDGET:
+        if not jpeg or len(jpeg) > MAX_FRAME_BYTES:
             return False
+        chunks = [
+            jpeg[i : i + FRAME_CHUNK_BYTES]
+            for i in range(0, len(jpeg), FRAME_CHUNK_BYTES)
+        ]
+        count = len(chunks)
         with self._lock:
-            name = predictive_data_name(
-                self._definition.mapping_root,
-                self._definition.mapping_version,
-                self._seq,
-            )
-            self._stream.push(
-                make_app_signed_data(name, jpeg, self._signing_identity)
-            )
-            self._seq += 1
+            frame_seq = self._frame_seq
+            for idx, chunk in enumerate(chunks):
+                name = predictive_data_name(
+                    self._definition.mapping_root,
+                    self._definition.mapping_version,
+                    self._seq,
+                )
+                self._stream.push(
+                    make_app_signed_data(
+                        name,
+                        _chunk_header(frame_seq, idx, count) + chunk,
+                        self._signing_identity,
+                    )
+                )
+                self._seq += 1
+            self._frame_seq += 1
             self._pending += 1
             if self._pending >= self._fec_group_frames:
-                # Close the group: publish FEC parity for the frames pushed
-                # since the last flush so they can be recovered without a
-                # retransmit round-trip.
                 self._stream.flush()
                 self._pending = 0
         return True
@@ -396,6 +460,35 @@ class VideoStreamConsumer:
         self.delivered = 0
         self.recovered = 0  # frames reconstructed by FEC rather than fetched
 
+        # Reassembly of segmented frames, keyed by frame sequence. A frame
+        # larger than one Data arrives as several items; `on_frame` must only
+        # fire once the whole JPEG is back. Bounded: a frame still incomplete
+        # once `_REASM_KEEP` newer frames have completed is abandoned, so a
+        # permanently-lost chunk cannot pin memory.
+        pending_frames: dict = {}
+        _REASM_KEEP = 4
+        self.partial_frames_dropped = 0
+
+        def _reassemble(raw, cursor):
+            parsed = parse_chunk_header(raw)
+            if parsed is None:
+                # Un-segmented publisher (or a foreign item): pass it straight
+                # through, so a consumer keeps working against an old producer.
+                return cursor, raw
+            frame_seq, idx, count, payload = parsed
+            if count <= 1:
+                return frame_seq, payload
+            slot = pending_frames.setdefault(frame_seq, {})
+            slot[idx] = payload
+            if len(slot) < count:
+                return None
+            jpeg = b"".join(slot[i] for i in range(count))
+            del pending_frames[frame_seq]
+            for stale in [k for k in pending_frames if k < frame_seq - _REASM_KEEP]:
+                del pending_frames[stale]
+                self.partial_frames_dropped += 1
+            return frame_seq, jpeg
+
         def _on_item(item):
             self.delivered += 1
             # provenance distinguishes a directly-fetched item from one the
@@ -404,7 +497,9 @@ class VideoStreamConsumer:
             if "recover" in (item.provenance or ""):
                 self.recovered += 1
             try:
-                on_frame(item.cursor, item.content)
+                done = _reassemble(item.content, item.cursor)
+                if done is not None:
+                    on_frame(done[0], done[1])
             except Exception:
                 pass
             return LiveStreamItemAdmission.accept_item()
