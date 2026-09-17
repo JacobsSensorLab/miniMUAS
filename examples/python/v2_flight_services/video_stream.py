@@ -106,6 +106,19 @@ _CHUNK_MAGIC = b"V1"
 # Guard against a runaway encode; 2 MB is ~340 chunks.
 MAX_FRAME_BYTES = 2 * 1024 * 1024
 
+# Data packets one frame may occupy, and therefore the source-item capacity the
+# stream must declare. A flush closes the FEC group on a frame boundary, so the
+# group holds this frame's CHUNKS -- not one item per frame.
+#
+# Getting this wrong is silent and total: NDNSF rejects the push with "flush
+# group exceeds configured FEC source capacity" and the stream delivers
+# nothing. It is scene-dependent, so it looks like an intermittent per-vehicle
+# fault rather than a configuration error -- a busy scene makes a bigger JPEG,
+# more chunks, and a group that overflows, while a flat scene stays under.
+#
+# 64 chunks is ~371 KB, comfortably above a 1280x800 q70 JPEG (~150-250 KB).
+FRAME_MAX_CHUNKS = 64
+
 
 def _chunk_header(frame_seq: int, idx: int, count: int) -> bytes:
     """`V1` + frame_seq(4) + idx(2) + count(2) — 10 bytes, big-endian.
@@ -236,9 +249,15 @@ def _build_fec(scheme: str, group_frames: int, max_source_bytes: int,
 
     ``scheme`` is "auto" (derive from group size), "none", "xor", or "gf256".
     "auto": a 1-frame group → XOR one-repair; a multi-frame group → GF(256)
-    two-repair over the group. XOR/GF(256) ``source_items`` == the group size
-    so the coding matches the packets a single ``flush()`` will bind together.
+    two-repair over the group.
+
+    ``source_items`` counts the DATA PACKETS a single ``flush()`` binds, which
+    since frame segmentation is ``group_frames * FRAME_MAX_CHUNKS`` -- not
+    ``group_frames``. Sizing it per FRAME made every multi-chunk frame fail to
+    push with "flush group exceeds configured FEC source capacity". A group
+    smaller than the declared capacity is fine; only overflow is an error.
     """
+    group_items = max(1, group_frames) * FRAME_MAX_CHUNKS
     from ndnsf import LiveStreamFecOptions
 
     if scheme == "auto":
@@ -247,14 +266,14 @@ def _build_fec(scheme: str, group_frames: int, max_source_bytes: int,
         return LiveStreamFecOptions.none()
     if scheme == "xor":
         return LiveStreamFecOptions.xor_one_repair(
-            source_items=max(1, group_frames),
+            source_items=group_items,
             max_source_bytes=max_source_bytes,
             recovery_budget_ms=recovery_budget_ms,
         )
     if scheme == "gf256":
         # GF(256) two-repair needs at least a 2-packet group to be meaningful.
         return LiveStreamFecOptions.gf256_two_repair(
-            source_items=max(2, group_frames),
+            source_items=max(2, group_items),
             max_source_bytes=max_source_bytes,
             recovery_budget_ms=recovery_budget_ms,
         )
@@ -304,9 +323,13 @@ def default_video_stream_config(
         stream_id=stream_id,
         data_prefix=data_prefix,
         sample_period_ms=1000.0 / max(fps, 1.0),
-        # Each pushed frame is exactly one signed Data (make_app_signed_data
-        # raises otherwise), so a sample always holds one packet: (1, 1).
-        sample_classes=(SampleClassProfile("video", 1, 1),),
+        # A sample is one FRAME, which segmentation spreads over up to
+        # FRAME_MAX_CHUNKS Data packets. The seed stays 1 (a flat scene really
+        # does fit in one packet); the hard max is what a busy scene needs.
+        # This was left at (1, 1) when frames became multi-packet.
+        sample_classes=(
+            SampleClassProfile("video", 1, FRAME_MAX_CHUNKS),
+        ),
         fec=_build_fec(
             fec_scheme, fec_group_frames,
             fec_max_source_bytes, fec_recovery_budget_ms,
@@ -353,6 +376,11 @@ class VideoStreamProducer:
         self._frame_seq = 0
         # Frames pushed but not yet bound into a flushed FEC group.
         self._pending = 0
+        # Frames dropped for needing more than FRAME_MAX_CHUNKS packets. Should
+        # stay 0; a rising count means the encoder is outrunning the declared
+        # stream geometry and FRAME_MAX_CHUNKS needs raising (in step with the
+        # FEC source capacity, which is derived from it).
+        self.frames_over_chunk_budget = 0
         self._lock = threading.Lock()
 
     @property
@@ -382,8 +410,11 @@ class VideoStreamProducer:
         strictly better than the previous group-of-one-frame, where a
         single-packet loss was unrecoverable.
 
-        Returns False only for an implausibly large frame (`MAX_FRAME_BYTES`),
-        which indicates an encoder problem rather than a transport limit.
+        Returns False for an implausibly large frame (`MAX_FRAME_BYTES`), which
+        indicates an encoder problem rather than a transport limit, and for one
+        needing more than `FRAME_MAX_CHUNKS` packets -- dropping that frame is
+        far better than pushing it, because an over-capacity flush group fails
+        the push and takes the whole stream down with it.
         """
         if not jpeg or len(jpeg) > MAX_FRAME_BYTES:
             return False
@@ -392,6 +423,9 @@ class VideoStreamProducer:
             for i in range(0, len(jpeg), FRAME_CHUNK_BYTES)
         ]
         count = len(chunks)
+        if count > FRAME_MAX_CHUNKS:
+            self.frames_over_chunk_budget += 1
+            return False
         with self._lock:
             frame_seq = self._frame_seq
             for idx, chunk in enumerate(chunks):
