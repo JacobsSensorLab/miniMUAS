@@ -156,7 +156,19 @@ FEC_RECOVERY_BUDGET_MS = 200  # reasonable for real-time local Wi-Fi
 # comfortably inside a 4 s lifetime, and 16 deep is ample pipelining on a link
 # whose RTT is ~1 ms.
 LIVE_INTEREST_LIFETIME_MS = 4000
-LIVE_INTEREST_LIMIT = 16
+# Prefetch window, in ITEMS. Once a frame is segmented an item is a CHUNK, not
+# a frame, so 16 items is under one frame in flight at 1280px (~20 chunks) —
+# and delivered fps tracked chunks-per-frame almost inversely on BOTH stacks
+# with 100% fragment completion, i.e. the window was the binding constraint,
+# not loss:
+#     640px  ~6.8 chunks/frame -> 6.3-11.6 fps
+#     960px  ~14.5            -> 3.0-4.2 fps
+#     1280px ~19.6            -> 2.2-2.3 fps
+# 128 items covers ~6 frames even at 1280px. The depth/lifetime rule still
+# holds with room to spare: 128 items at 20 chunks and 10 fps is ~0.64 s of
+# lookahead against a 4 s Interest lifetime (the rule that matters is
+# frames_ahead / fps <= lifetime, and frames_ahead = limit / chunks_per_frame).
+LIVE_INTEREST_LIMIT = 128
 
 # Mapping blocks must fit ONE link fragment.
 #
