@@ -2441,7 +2441,14 @@ def main() -> int:
             enabled=request.enable,
             width=max(120, min(request.width, 1280)),
             height=max(90, min(request.height, 800)),
-            fps=max(0.5, min(request.fps, 15.0)),
+            # Cap at the sensor rate (the Arducam OV9782 runs 1280x800@30),
+            # not at 15. The old 15 fps ceiling was a signing-cost artifact:
+            # make_signed_data built an ndn::KeyChain per Data packet, which
+            # capped the producer near 70 packets/s, so asking for more than
+            # ~15 fps just queued work that could never be signed. With the
+            # KeyChain cached and an EC signing key that is 0.39 ms/packet
+            # (~2576/s), the constraint is now capture/encode, not crypto.
+            fps=max(0.5, min(request.fps, 30.0)),
             quality=max(10, min(request.quality, 95)),
             transport=transport,
         )
