@@ -2394,6 +2394,21 @@ def main() -> int:
                         print_json("agent.video.publish_failed", error=str(exc))
                 if video_cfg["seq"] % 50 == 1:
                     publish_video_status()
+                # Publish-path handoff cost. This is the ONLY place the
+                # difference between forwarders can show up for a self-paced
+                # producer: the loop sleeps `1/fps - cycle`, so a slower
+                # handoff to the local face lowers the achieved frame rate
+                # instead of queueing. slow_frame cannot see it -- that fires
+                # at 400 ms (2.5 fps) while the effect is tens of ms.
+                if video_cfg["seq"] % 150 == 1:
+                    vsp = video_stream.get("producer")
+                    if vsp is not None and hasattr(vsp, "timing_stats"):
+                        try:
+                            print_json(
+                                "agent.video.publish_timing", **vsp.timing_stats()
+                            )
+                        except Exception:
+                            pass
             t_end = time.monotonic()
             # Frame period at 10 fps is 100 ms; anything past 400 ms between
             # pushes is a visible hitch. Report the phase breakdown so the

@@ -80,6 +80,8 @@ from __future__ import annotations
 
 import json
 import threading
+import time
+from collections import deque
 from typing import Callable, Optional
 
 # One pushed frame must encode into a single signed Data under the stream's
@@ -381,6 +383,16 @@ class VideoStreamProducer:
         # stream geometry and FRAME_MAX_CHUNKS needs raising (in step with the
         # FEC source capacity, which is derived from it).
         self.frames_over_chunk_budget = 0
+        # Rolling publish-path timings. `push` is per DATA PACKET (the handoff
+        # of one signed Data to the local forwarder); `flush` is per FRAME (it
+        # closes the FEC group and emits the group's control packets). These
+        # are the two calls that can block on the local face, so if one
+        # forwarder is slower to drain the app's socket than another it shows
+        # up here and nowhere else -- the video publish loop is self-paced
+        # (`delay = 1/fps - cycle`), so a slower handoff lowers the achieved
+        # frame rate directly rather than queueing.
+        self._push_us = deque(maxlen=4096)
+        self._flush_us = deque(maxlen=1024)
         self._lock = threading.Lock()
 
     @property
@@ -434,20 +446,55 @@ class VideoStreamProducer:
                     self._definition.mapping_version,
                     self._seq,
                 )
-                self._stream.push(
-                    make_app_signed_data(
-                        name,
-                        _chunk_header(frame_seq, idx, count) + chunk,
-                        self._signing_identity,
-                    )
+                wire = make_app_signed_data(
+                    name,
+                    _chunk_header(frame_seq, idx, count) + chunk,
+                    self._signing_identity,
                 )
+                # Time ONLY the handoff, not the signing: signing is
+                # stack-independent, the handoff is what differs per forwarder.
+                _t0 = time.perf_counter()
+                self._stream.push(wire)
+                self._push_us.append((time.perf_counter() - _t0) * 1e6)
                 self._seq += 1
             self._frame_seq += 1
             self._pending += 1
             if self._pending >= self._fec_group_frames:
+                _t0 = time.perf_counter()
                 self._stream.flush()
+                self._flush_us.append((time.perf_counter() - _t0) * 1e6)
                 self._pending = 0
         return True
+
+    def timing_stats(self) -> dict:
+        """Percentiles of the publish-path handoff, in microseconds.
+
+        `push_*` is per Data packet, `flush_*` per frame. Both measure only the
+        call into NDNSF/the local face -- signing is excluded, since it is the
+        same work whichever forwarder is underneath.
+        """
+        def pct(samples, q):
+            if not samples:
+                return 0.0
+            ordered = sorted(samples)
+            idx = min(len(ordered) - 1, int(len(ordered) * q))
+            return round(ordered[idx], 1)
+
+        with self._lock:
+            push = list(self._push_us)
+            flush = list(self._flush_us)
+        return {
+            "push_n": len(push),
+            "push_p50_us": pct(push, 0.50),
+            "push_p90_us": pct(push, 0.90),
+            "push_p99_us": pct(push, 0.99),
+            "push_max_us": round(max(push), 1) if push else 0.0,
+            "flush_n": len(flush),
+            "flush_p50_us": pct(flush, 0.50),
+            "flush_p90_us": pct(flush, 0.90),
+            "flush_p99_us": pct(flush, 0.99),
+            "flush_max_us": round(max(flush), 1) if flush else 0.0,
+        }
 
     def stop(self) -> None:
         try:
