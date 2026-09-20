@@ -38,6 +38,7 @@ import os
 import subprocess
 import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -2293,6 +2294,74 @@ def main() -> int:
                 video_cfg["descriptor"] = ""
                 print_json("agent.video.stream_start_failed", error=str(exc))
 
+    class _VideoEncoder:
+        """Encode frames OFF the publish thread, latest-wins.
+
+        `camera.jpeg()` is a resize + cv2.imencode and measured ~19 ms
+        (`capture_ms` in agent.video.slow_frame). It ran INLINE in video_loop,
+        so every frame cost encode + publish SERIALLY: the fitted cost was
+        ~21 ms fixed + ~3.8 ms per chunk, which is why 1280x800 topped out at
+        12.8 fps with the loop never sleeping (`idle_ms=0.0`).
+
+        cv2 releases the GIL for both resize and imencode, so running them on
+        their own thread genuinely overlaps them with the NDN publish. The
+        frame period becomes max(encode, publish) instead of the sum.
+
+        Latest-wins is the correct semantic for LIVE video and is what keeps
+        this safe: if publishing is slower than encoding, intermediate frames
+        are dropped rather than queued, so the stream can never build a
+        playback backlog. The publisher blocks on a condition rather than
+        spinning, and the encoder paces itself to the requested fps so it
+        never burns CPU encoding frames nobody will send.
+        """
+
+        def __init__(self, camera, cfg) -> None:
+            self._camera = camera
+            self._cfg = cfg
+            self._lock = threading.Lock()
+            self._cond = threading.Condition(self._lock)
+            self._frame = None  # (jpeg, dims, ts, gen)
+            self._gen = 0
+            self.encode_us: "deque[float]" = deque(maxlen=4096)
+            self._thread = threading.Thread(
+                target=self._run, daemon=True, name="video-encode"
+            )
+            self._thread.start()
+
+        def _run(self) -> None:
+            while True:
+                if not self._cfg["enabled"]:
+                    time.sleep(0.25)
+                    continue
+                t0 = time.monotonic()
+                try:
+                    jpeg, dims, ts = self._camera.jpeg(
+                        width=self._cfg["width"], quality=self._cfg["quality"]
+                    )
+                except Exception as exc:  # a camera fault must not kill the thread
+                    jpeg = None
+                    print_json("agent.video.encode_failed", error=str(exc))
+                t1 = time.monotonic()
+                if jpeg is not None:
+                    self.encode_us.append((t1 - t0) * 1e6)
+                    with self._cond:
+                        self._gen += 1
+                        self._frame = (jpeg, dims, ts, self._gen)
+                        self._cond.notify_all()
+                delay = (1.0 / max(self._cfg["fps"], 0.5)) - (t1 - t0)
+                time.sleep(delay if delay > 0 else 0.001)
+
+        def take(self, last_gen: int, timeout: float = 1.0):
+            """Newest frame strictly newer than `last_gen`, or None on timeout."""
+            deadline = time.monotonic() + timeout
+            with self._cond:
+                while self._frame is None or self._frame[3] == last_gen:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return None
+                    self._cond.wait(remaining)
+                return self._frame
+
     def video_loop() -> None:
         # Two transports share this loop; the transport is chosen per
         # video/control request and defaults to segmented.
@@ -2320,6 +2389,9 @@ def main() -> int:
         # push (sign + NDN), or neither (= the loop itself was descheduled,
         # i.e. GIL or CPU contention from another thread).
         last_push = 0.0
+        encoder = _VideoEncoder(camera, video_cfg)
+        video_stream["encoder"] = encoder
+        last_gen = 0
         while True:
             if not video_cfg["enabled"]:
                 time.sleep(0.25)
@@ -2327,10 +2399,13 @@ def main() -> int:
                 continue
             t0 = time.monotonic()
             since_last = (t0 - last_push) if last_push else 0.0
-            jpeg, _dims, ts = camera.jpeg(
-                width=video_cfg["width"],
-                quality=video_cfg["quality"],
-            )
+            # Wait for a frame NEWER than the one we last published. The
+            # encoder thread is already working on the next one while we
+            # publish this one, so this wait is normally near zero.
+            got = encoder.take(last_gen)
+            if got is None:
+                continue
+            jpeg, _dims, ts, last_gen = got
             t_cap = time.monotonic()
             if jpeg is not None:
                 video_cfg["seq"] += 1
@@ -2404,9 +2479,17 @@ def main() -> int:
                     vsp = video_stream.get("producer")
                     if vsp is not None and hasattr(vsp, "timing_stats"):
                         try:
-                            print_json(
-                                "agent.video.publish_timing", **vsp.timing_stats()
-                            )
+                            stats = vsp.timing_stats()
+                            enc = sorted(encoder.encode_us)
+                            if enc:
+                                stats["encode_n"] = len(enc)
+                                stats["encode_p50_us"] = round(
+                                    enc[len(enc) // 2], 1
+                                )
+                                stats["encode_p99_us"] = round(
+                                    enc[min(len(enc) - 1, int(len(enc) * 0.99))], 1
+                                )
+                            print_json("agent.video.publish_timing", **stats)
                         except Exception:
                             pass
             t_end = time.monotonic()
@@ -2430,9 +2513,10 @@ def main() -> int:
                     frame_age_ms=round((t_cap - ts) * 1000, 1) if ts else -1,
                 )
             last_push = t_end
-            delay = (1.0 / max(video_cfg["fps"], 0.5)) - (t_end - t0)
-            if delay > 0:
-                time.sleep(delay)
+            # No sleep here any more: the ENCODER thread owns pacing, and this
+            # loop blocks in encoder.take() until a genuinely new frame
+            # exists. Sleeping here too would pace the pipeline twice and cap
+            # it below the requested rate.
 
     # ---- service: bench/echo (NDNSF latency/throughput instrument) ---------
     # Synthetic workload: sleep delay_ms, return resp_size bytes. Isolates the

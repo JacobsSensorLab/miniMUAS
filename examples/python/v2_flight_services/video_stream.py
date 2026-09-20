@@ -101,7 +101,17 @@ FRAME_BUDGET = 7000
 # and the agent silently re-encoded anything over budget at 256px/q30, so
 # asking for HIGHER quality produced LOWER resolution and the bitrate was
 # pinned near 250-500 kbps regardless of the requested settings.
-FRAME_CHUNK_BYTES = 5800
+# 6800, not 5800: the chunk count is what the publish path costs, since every
+# chunk is a separate signed Data with its own push. Measured on the fleet, a
+# 1280x800 q75 frame is ~86 KB = 15 chunks at 5800 but 13 at 6800, and the
+# fitted frame cost was ~21 ms + ~3.8 ms per chunk. The ceiling is
+# FRAME_BUDGET - CHUNK_HEADER_BYTES (6990); 6800 keeps slack under it.
+#
+# This is NOT the ndn-svs MAX_DATA_SIZE=6000 limit that poisons segmented
+# SVSPubSub *service responses* -- that applies to the SVSPubSub publish path,
+# while these chunks are individual signed Data pushed into the predictive
+# stream, bounded only by SIGNED_WIRE_CAP.
+FRAME_CHUNK_BYTES = 6800
 CHUNK_HEADER_BYTES = 10
 _CHUNK_MAGIC = b"V1"
 
