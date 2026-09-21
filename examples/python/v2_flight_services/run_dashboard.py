@@ -1451,6 +1451,18 @@ class Dashboard:
                 relay["seq"] = status.seq
                 if not request.enable:
                     return
+                # Tell the UI what the vehicle ACTUALLY applied. It clamps
+                # (1280x800, 30 fps, q95) and the camera derives height from
+                # width to preserve the sensor aspect ratio, so the applied
+                # settings can differ from what was requested — and until now
+                # nothing reported them, which is why the feed's resolution was
+                # not visible anywhere.
+                self._send_loop({
+                    "type": "video_settings", "vehicle": vid,
+                    "width": status.width, "height": status.height,
+                    "fps": status.fps, "quality": status.quality,
+                    "transport": status.transport,
+                })
                 if status.transport == "stream" and status.descriptor:
                     # Subscribe once to the vehicle's predictive stream; frames
                     # arrive on framework threads and feed the same WS drainer.

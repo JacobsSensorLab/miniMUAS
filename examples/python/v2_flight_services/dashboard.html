@@ -942,6 +942,28 @@ const mPerDegLon = lat => M_PER_DEG_LAT * Math.max(Math.cos(lat*Math.PI/180), 1e
 // Carbon categorical palette (blue 40, purple 40, teal 40, magenta 40)
 const PALETTE = ["#78a9ff", "#be95ff", "#08bdba", "#ff7eb6"];
 const COLORS = {};
+// Video quality presets, measured on the 3-airframe fleet (2026-09-21).
+//
+// `width` is what actually decides resolution: the camera hub preserves the
+// sensor aspect ratio and derives height from width, so `height` is carried
+// only so the vehicle can echo it back. The sensor is 1280x800 @30 (Arducam
+// OV9782); the agent clamps to 1280x800, 30 fps, q95.
+//
+// The fleet shares one 802.11 medium, so these are whole-fleet budgets, not
+// per-vehicle ones. "Smooth" is the validated all-three operating point: every
+// vehicle held its full 20 fps with a p99 inter-frame gap of ~125 ms. Above
+// that, aggregate demand exceeds what the medium delivers to every station and
+// the busiest vehicle starts stalling for seconds — higher presets are for one
+// or two feeds, not three.
+const VIDEO_PRESETS = [
+  {label:"smooth · 640p20",  width:640,  height:400, fps:20, quality:55},
+  {label:"balanced · 960p20", width:960,  height:600, fps:20, quality:70},
+  {label:"detail · 1280p15",  width:1280, height:800, fps:15, quality:75},
+  {label:"max · 1280p30",     width:1280, height:800, fps:30, quality:85},
+];
+// Default to the measured-smooth preset rather than the old hardcoded
+// 320x240 @8 fps, which was neither selectable nor visible in the UI.
+const VIDEO_PRESET_DEFAULT = 0;
 let VEHICLES = ["wuas-01","iuas-01"];
 
 // ---------- display (viz) config: persisted rendering knobs ----------
@@ -1009,6 +1031,7 @@ function dispatch(m){
   else if (m.type === "task_queue") onTaskQueue(m);
   else if (m.type === "rc") onRc(m);
   else if (m.type === "video_stats") onVideoStats(m);
+  else if (m.type === "video_settings") onVideoSettings(m);
   else if (m.type === "net"){ NETPREV = NET; NET = m; renderNetPanel(); }
   else if (m.type === "sim_anomalies"){
     // payload-key reconciliation: v3 sends `items`, v2 sends `anomalies`
@@ -3089,8 +3112,12 @@ function onHello(m){
           <option value="stream">stream</option>
           <option value="segmented">poll</option>
         </select>` : "";
+    const presetSel = `<select id="vpreset-${vid}" class="sel" title="video quality preset">` +
+      VIDEO_PRESETS.map((p,i) =>
+        `<option value="${i}"${i === VIDEO_PRESET_DEFAULT ? " selected" : ""}>${p.label}</option>`
+      ).join("") + `</select>`;
     vp.innerHTML = `
-      <div class="head"><b style="color:${COLORS[vid]}">${vid}</b>${xportSel}
+      <div class="head"><b style="color:${COLORS[vid]}">${vid}</b>${xportSel}${presetSel}
         <span class="cds-toggle" id="vtog-${vid}" role="switch" aria-checked="false"
               tabindex="0"><span class="lbl">camera</span><span class="track"></span></span>
       </div>
@@ -3100,12 +3127,18 @@ function onHello(m){
     let on = false;
     const tog = document.getElementById(`vtog-${vid}`);
     const xport = document.getElementById(`vxport-${vid}`);
+    const presetEl = document.getElementById(`vpreset-${vid}`);
+    // Changing the preset while live re-sends the control so the operator
+    // does not have to toggle the camera off and on to apply it.
+    if (presetEl) presetEl.onchange = () => { if (on) { on = !on; flip(); } };
     const flip = () => {
       on = !on;
       tog.classList.toggle("on", on);
       tog.setAttribute("aria-checked", on);
       document.getElementById(`vimg-${vid}`).style.display = on ? "" : "none";
-      const params = {enable:on, width:320, height:240, fps:8, quality:40};
+      const preset = VIDEO_PRESETS[Number(presetEl && presetEl.value) || 0] || VIDEO_PRESETS[0];
+      const params = {enable:on, width:preset.width, height:preset.height,
+                      fps:preset.fps, quality:preset.quality};
       if (xport){
         // Lock the transport selector while a feed is live — the vehicle
         // mints its stream session on enable, so transport only changes
@@ -3280,9 +3313,26 @@ function onCaps(m){
       sensorData.filter(d => d.vehicle === m.vehicle).slice().reverse());
   renderLegend();     // symbology can change with advertised sensors
 }
+// Settings the VEHICLE reported applying, kept separate from the live rate so
+// the operator can see both "what I asked for" and "what I am getting".
+const VIDEO_APPLIED = {};
+function onVideoSettings(m){
+  VIDEO_APPLIED[m.vehicle] = m;
+  renderVideoLine(m.vehicle);
+}
 function onVideoStats(m){
-  const el = document.getElementById(`vstats-${m.vehicle}`);
-  if (el) el.textContent = `${m.fps} fps · ${m.kbps} kbps · #${m.seq}`;
+  VIDEO_APPLIED[m.vehicle] = Object.assign({}, VIDEO_APPLIED[m.vehicle] || {},
+                                           {live: m});
+  renderVideoLine(m.vehicle);
+}
+function renderVideoLine(vid){
+  const el = document.getElementById(`vstats-${vid}`);
+  if (!el) return;
+  const a = VIDEO_APPLIED[vid] || {};
+  const parts = [];
+  if (a.width) parts.push(`${a.width}x${a.height} q${a.quality} · ask ${a.fps} fps`);
+  if (a.live) parts.push(`${a.live.fps} fps · ${a.live.kbps} kbps · #${a.live.seq}`);
+  el.textContent = parts.join("  |  ");
 }
 
 // ---------- per-vehicle task-queue strip ----------
