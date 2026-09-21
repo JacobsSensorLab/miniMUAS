@@ -197,7 +197,28 @@ LIVE_INTEREST_LIFETIME_MS = 4000
 # holds with room to spare: 128 items at 20 chunks and 10 fps is ~0.64 s of
 # lookahead against a 4 s Interest lifetime (the rule that matters is
 # frames_ahead / fps <= lifetime, and frames_ahead = limit / chunks_per_frame).
-LIVE_INTEREST_LIMIT = 128
+# 24, measured. This is a BANDWIDTH-DELAY PRODUCT bound, not a "how far ahead
+# would we like to read" bound, and getting that wrong cost ~3.6x throughput.
+#
+# ndn-iperf over the GCS<->iuas-01 link, 5800 B chunks, video disabled so the
+# path was otherwise idle:
+#     window    4     8    16    24    32    48   128   256
+#     Mbps   26.9  28.8  36.5  44.2  30.7  27.2  12.2  24.7
+# The true path RTT is ~2.8 ms (min), so the BDP is only ~2 chunks; 128 is
+# ~60x that and drives the path into congestion collapse -- queueing inflates
+# RTT p50 to 19.5 ms and p99 to 220 ms, Interests then expire in the queue, and
+# delivery stalls for SECONDS. That is the video stutter, and it is
+# self-inflicted: 12.2 Mbps out of an achievable 44.2.
+#
+# The floor matters too, which is why this is not smaller. A window below one
+# frame's chunk count cannot get a frame in flight, and that is the starvation
+# the previous note recorded when this was 16 (a 1280px frame is ~20 chunks).
+# At ~10 chunks/frame for 960x600, 24 is ~2.4 frames in flight AND the measured
+# throughput peak.
+#
+# Re-measure with ndn-iperf if the radio, MTU or chunk size changes -- the
+# right value tracks the BDP, not the frame rate.
+LIVE_INTEREST_LIMIT = 24
 
 # Mapping blocks must fit ONE link fragment.
 #
