@@ -101,17 +101,21 @@ FRAME_BUDGET = 7000
 # and the agent silently re-encoded anything over budget at 256px/q30, so
 # asking for HIGHER quality produced LOWER resolution and the bitrate was
 # pinned near 250-500 kbps regardless of the requested settings.
-# 6800, not 5800: the chunk count is what the publish path costs, since every
-# chunk is a separate signed Data with its own push. Measured on the fleet, a
-# 1280x800 q75 frame is ~86 KB = 15 chunks at 5800 but 13 at 6800, and the
-# fitted frame cost was ~21 ms + ~3.8 ms per chunk. The ceiling is
-# FRAME_BUDGET - CHUNK_HEADER_BYTES (6990); 6800 keeps slack under it.
+# 5800. DO NOT raise this toward FRAME_BUDGET without first finding the real
+# constraint -- 6800 was tried on the fleet (2026-09-21) and BROKE high-quality
+# 1280x800 outright: StreamPublisher::flush() threw "predictive group commit
+# failed" on every frame (1780 failures), so the stream delivered nothing.
 #
-# This is NOT the ndn-svs MAX_DATA_SIZE=6000 limit that poisons segmented
-# SVSPubSub *service responses* -- that applies to the SVSPubSub publish path,
-# while these chunks are individual signed Data pushed into the predictive
-# stream, bounded only by SIGNED_WIRE_CAP.
-FRAME_CHUNK_BYTES = 6800
+# It is chunk SIZE, not chunk count: 1280x800 q75 worked at 15 chunks of 5800
+# and failed at 13 chunks of 6800. The failure is frame-size dependent at fixed
+# chunk size too -- q40 (7 chunks) and q55 (8) ran fine at 6800 while q70 (13)
+# failed -- so the binding limit is somewhere in commitPredictiveGroup's parity
+# / group-manifest encoding against SIGNED_WIRE_CAP, not in FRAME_BUDGET
+# arithmetic, which said 6800+10 <= 7000 was fine.
+#
+# The upside was only ~13% fewer chunks, so this is not worth re-attempting
+# until that limit is actually characterised.
+FRAME_CHUNK_BYTES = 5800
 CHUNK_HEADER_BYTES = 10
 _CHUNK_MAGIC = b"V1"
 
