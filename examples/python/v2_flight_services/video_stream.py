@@ -296,8 +296,44 @@ def _build_fec(scheme: str, group_frames: int, max_source_bytes: int,
     raise ValueError(f"unknown FEC scheme: {scheme!r}")
 
 
+# Seconds of published history a producer must keep.
+#
+# Retention is configured in ITEMS, but what actually matters is how long an
+# item stays fetchable, and that is items / item_rate. The wrapper default of
+# 600 items is fine for a small stream and a trap for a big one: measured on
+# the fleet, iuas-01 at 960x600 q75 pushes ~10 chunks x ~15.5 fps = ~155
+# items/s, so 600 items is only ~3.9 SECONDS of history -- shorter than the
+# 4 s Interest lifetime it may spend retrying a single lost chunk.
+#
+# That is a one-way trap, not a slowdown. A lost chunk stalls the ordered
+# drain; while the consumer retries, the producer keeps publishing and the
+# retention window slides PAST the cursor being retried; the Interest can then
+# never be satisfied, so the consumer falls further behind, and so on. Measured
+# consequence on iuas-01: 406-1691 timeouts, p99 inter-frame gap 8.9 s and
+# 1.5-3.7 fps delivered, while wuas-01 and iuas-02 on the same medium at the
+# same moment ran 20-27 fps with 0-3 timeouts. It tracks frame SIZE, which is
+# why the airframe with the real camera was the one that broke.
+#
+# Size it in time instead, against the worst-case recovery latency.
+RETENTION_SECONDS = 12.0
+# Ceiling so a pathological rate cannot pin unbounded memory. At ~6 KB/item
+# this is ~24 MB of published history per stream.
+MAX_RETAINED_ITEMS = 4096
+
+
+def retained_items_for(fps: float) -> int:
+    """Items to retain so history spans `RETENTION_SECONDS` at this rate.
+
+    Sized from the WORST case (`FRAME_MAX_CHUNKS` per frame) rather than the
+    typical one: under-retaining is the trap described above, while
+    over-retaining only costs memory that `MAX_RETAINED_ITEMS` bounds.
+    """
+    rate = max(1.0, float(fps)) * FRAME_MAX_CHUNKS
+    return int(min(MAX_RETAINED_ITEMS, max(600, rate * RETENTION_SECONDS)))
+
+
 def _mapping_options(StreamAdvancedOptions, block_capacity: int,
-                     ahead_blocks: int):
+                     ahead_blocks: int, fps: float):
     """Advanced options with the Name-Map block geometry capped to one fragment.
 
     ``StreamAdvancedOptions`` is a FROZEN dataclass — set the fields through the
@@ -307,6 +343,7 @@ def _mapping_options(StreamAdvancedOptions, block_capacity: int,
     return StreamAdvancedOptions(
         mapping_block_capacity=int(block_capacity),
         mapping_ahead_blocks=int(ahead_blocks),
+        retained_items=retained_items_for(fps),
     )
 
 
@@ -355,7 +392,7 @@ def default_video_stream_config(
         # fragments 6 ways on a Wi-Fi datagram face and is then all-or-nothing.
         # See MAPPING_BLOCK_CAPACITY.
         advanced=advanced if advanced is not None else _mapping_options(
-            StreamAdvancedOptions, mapping_block_capacity, mapping_ahead_blocks,
+            StreamAdvancedOptions, mapping_block_capacity, mapping_ahead_blocks, fps,
         ),
     )
 
@@ -550,13 +587,35 @@ class VideoStreamConsumer:
         prefetch_policy: Optional[str] = None,
         on_status: Optional[Callable[[object], None]] = None,
         interest_lifetime_ms: int = LIVE_INTEREST_LIFETIME_MS,
-        aggregate_interest_limit: int = LIVE_INTEREST_LIMIT,
+        aggregate_interest_limit: Optional[int] = None,
+        fps: Optional[float] = None,
     ) -> None:
         from ndnsf import (
             LiveStreamItemAdmission,
             PredictiveStreamDescriptor,
             StreamSubscriptionOptions,
         )
+
+        # Prefetch depth must satisfy  depth / item_rate <= interest_lifetime,
+        # and the depth that matters is in ITEMS while the constant is fixed.
+        # At a LOW item rate the fixed 128 over-reaches badly: measured on the
+        # fleet at 320x240 q40 5 fps (~2 chunks/frame, ~10 items/s), 128 items
+        # is ~12.8 s of lookahead against a 4 s lifetime, so prefetch Interests
+        # expire before the frames they ask for are even produced -- 1534-2181
+        # timeouts per 150 s run and p99 inter-frame gaps of 4-8 s on ALL THREE
+        # airframes. At 960x600 q75 30 fps the same 128 is ~0.6 s of lookahead
+        # and the identical streams ran 20-27 fps with 0-3 timeouts.
+        #
+        # So derive it from the rate when the caller knows it. chunks/frame is
+        # not known before frames arrive, so assume the small-frame case (2);
+        # under-estimating only costs pipelining, while over-estimating
+        # reproduces the stall above.
+        if aggregate_interest_limit is None:
+            if fps:
+                budget = max(1.0, float(fps)) * 2.0 * (interest_lifetime_ms / 1000.0 / 2.0)
+                aggregate_interest_limit = int(min(LIVE_INTEREST_LIMIT, max(8, budget)))
+            else:
+                aggregate_interest_limit = LIVE_INTEREST_LIMIT
 
         if isinstance(descriptor, (bytes, bytearray)):
             descriptor = json.loads(bytes(descriptor).decode())

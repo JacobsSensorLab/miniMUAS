@@ -1454,7 +1454,8 @@ class Dashboard:
                 if status.transport == "stream" and status.descriptor:
                     # Subscribe once to the vehicle's predictive stream; frames
                     # arrive on framework threads and feed the same WS drainer.
-                    self._start_video_sub(vid, status.descriptor)
+                    self._start_video_sub(vid, status.descriptor,
+                                          fps=status.fps)
                 else:
                     # segmented: one shared, paced relay thread for the whole
                     # fleet — never a blocking-fetch thread per vehicle (that
@@ -1476,7 +1477,8 @@ class Dashboard:
             vehicle=vid,
         )
 
-    def _start_video_sub(self, vid: str, descriptor_json: str) -> None:
+    def _start_video_sub(self, vid: str, descriptor_json: str,
+                         *, fps: float | None = None) -> None:
         """Subscribe to a vehicle's predictive video stream (idempotent).
 
         Replaces any prior subscription (a re-enable mints a new descriptor).
@@ -1599,8 +1601,12 @@ class Dashboard:
                 except Exception:
                     pass
 
+            # Pass the vehicle's frame rate so the prefetch depth is sized
+            # from the item rate. A fixed depth over-reaches at low rates
+            # and every prefetch Interest expires before its frame exists.
             self.video_subs[vid] = VideoStreamConsumer(
                 self.user, descriptor_json, on_frame, on_status=on_status,
+                fps=fps,
             )
             self.event("video.stream_subscribed", vehicle=vid)
         except Exception as exc:
