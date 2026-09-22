@@ -3286,15 +3286,42 @@ function onSearch(m){
 }
 
 // ---------- video frames (binary: [vehicleIndex][jpeg]) ----------
+// LATEST-WINS, painted once per animation frame.
+//
+// This used to set img.src for every frame the socket delivered. A live NDN
+// stream does not arrive at a steady rate: when a lost chunk stalls the
+// subscriber's ordered drain, the frames behind it queue up and are then
+// released in a burst. Painting each one in turn replayed that backlog as
+// fast as the browser could decode it, which is the "freeze for a few
+// seconds, then fast-forward until it catches up" the operator sees.
+//
+// A live view wants the NEWEST frame, not a replay: keep only the most recent
+// buffer per vehicle and drop whatever it superseded, so a stall ends by
+// jumping straight to the current frame. requestAnimationFrame also caps
+// decoding at the display rate, so a fast stream cannot outrun the compositor.
 const blobURLs = {};
+const pendingFrames = {};
+let framePaintQueued = false;
 function onVideoFrame(buf){
   const u8 = new Uint8Array(buf);
   const vid = VEHICLES[u8[0]]; if (!vid) return;
-  const img = document.getElementById(`vimg-${vid}`); if (!img) return;
-  const blob = new Blob([u8.slice(1)], {type:"image/jpeg"});
-  if (blobURLs[vid]) URL.revokeObjectURL(blobURLs[vid]);
-  blobURLs[vid] = URL.createObjectURL(blob);
-  img.src = blobURLs[vid];
+  pendingFrames[vid] = u8;   // supersedes anything not yet painted
+  if (!framePaintQueued){
+    framePaintQueued = true;
+    requestAnimationFrame(paintPendingFrames);
+  }
+}
+function paintPendingFrames(){
+  framePaintQueued = false;
+  for (const vid of Object.keys(pendingFrames)){
+    const u8 = pendingFrames[vid];
+    delete pendingFrames[vid];
+    const img = document.getElementById(`vimg-${vid}`); if (!img) continue;
+    const blob = new Blob([u8.slice(1)], {type:"image/jpeg"});
+    if (blobURLs[vid]) URL.revokeObjectURL(blobURLs[vid]);
+    blobURLs[vid] = URL.createObjectURL(blob);
+    img.src = blobURLs[vid];
+  }
 }
 const SENSOR_ICON = { camera:"📷", audio:"🎙" };
 function onCaps(m){
