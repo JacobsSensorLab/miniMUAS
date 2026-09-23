@@ -85,6 +85,7 @@ from dataplane import (
     set_runtime,
 )
 from raster import build_raster
+from timesync import ClockMonitor
 from ndnsf_runtime import (
     add_common_arguments,
     add_ndnsf_path,
@@ -1458,8 +1459,7 @@ class CameraHub:
 
         Paced by the same `_decode_hz` the real reader uses, so an idle node
         costs ~4 small frames/s and a streaming one costs exactly the fps the
-        consumer asked for. 640x480 keeps a frame well inside FRAME_BUDGET
-        after JPEG.
+        consumer asked for. 640x480 keeps a frame to a few chunks after JPEG.
         """
         np = self._np
         w, h = 640, 480
@@ -2203,15 +2203,20 @@ def main() -> int:
     # ---- telemetry loop ----------------------------------------------------
     def telemetry_loop() -> None:
         period = 1.0 / max(args.telemetry_hz, 0.2)
+        clock = ClockMonitor()
         while True:
             try:
                 t = flight.telemetry()
+                c = clock.reading()
                 sample = TelemetrySample(
                     vehicle_id=vehicle_id,
                     gps_time_ns=gps_time_ns(),
                     source=flight.source,
                     busy=busy["task"],
                     avoid_tier=avoid["tier"],
+                    clock_ref=c.ref,
+                    clock_offset_ms=round(c.offset_ms, 3),
+                    clock_rms_ms=round(c.rms_ms, 3),
                     **{k: v for k, v in t.items()},
                 )
                 telemetry_pub.publish(sample.to_bytes())
@@ -2376,8 +2381,6 @@ def main() -> int:
         # session that sync_video_stream() owns. No per-frame producer churn
         # (the segmented path's churn is what poisons the SVS node); the
         # consumer subscribes once with adaptive prefetch + FEC.
-        from video_stream import FRAME_BUDGET as _FRAME_BUDGET
-
         prev = None
         curr = None
         # Stall instrumentation. A residual sub-1.5 s video pause survived the

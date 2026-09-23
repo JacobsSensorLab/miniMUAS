@@ -446,20 +446,46 @@ async fn prefetch(flake_ref: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("`nix flake prefetch {flake_ref}` returned no sha256 hash"))
 }
 
+/// A local checkout to plan from: its directory, the ref to compare against (default `@{u}`),
+/// and path prefixes no fleet derivation builds.
+struct Local<'a> {
+    dir: &'a Path,
+    upstream: Option<&'a str>,
+    not_built: &'a [String],
+}
+
 /// Resolve and vet one repo's requested rev against its current pin. Returns the rev in force
 /// after the deploy and the change, if any. Refuses (I4) a rev that is not on the upstream — the
 /// fleet builds from GitHub — and a pin change out of a dirty checkout, whose deployer would
-/// believe their local edits ship.
+/// believe their local edits ship. Dirt under a `not_built` prefix cannot be mistaken for
+/// shipping, so it is only reported.
 async fn plan_repo(
     name: &str,
-    dir: &Path,
-    upstream: Option<&str>,
+    local: Local<'_>,
     old_rev: &str,
     requested: Option<&str>,
     source: Source<'_>,
     warnings: &mut Vec<String>,
 ) -> Result<(String, Option<RepoChange>)> {
-    let co = inspect(dir, upstream).await?;
+    let dir = local.dir;
+    let mut co = inspect(dir, local.upstream).await?;
+    let not_built = local.not_built;
+    let (unbuilt, dirty): (Vec<String>, Vec<String>) = co.dirty.drain(..).partition(|line| {
+        // porcelain v1 "XY <path>", but `lines_of` trims, so " M a" arrives as "M a":
+        // the path follows the status field, not a fixed column.
+        let path = line
+            .trim_start()
+            .split_once(' ')
+            .map_or("", |(_, p)| p.trim_start());
+        not_built.iter().any(|p| path.starts_with(p.as_str()))
+    });
+    co.dirty = dirty;
+    if !unbuilt.is_empty() {
+        warnings.push(format!(
+            "{name}: uncommitted changes outside what the fleet builds, not deployed: {}",
+            unbuilt.join(", ")
+        ));
+    }
     let new_rev = match requested {
         Some(r) => git_out(dir, &["rev-parse", "--verify", &format!("{r}^{{commit}}")])
             .await
@@ -622,8 +648,11 @@ pub async fn plan(
         };
         let (rev, change) = plan_repo(
             &repo.name,
-            &repo.local,
-            None,
+            Local {
+                dir: &repo.local,
+                upstream: None,
+                not_built: &[],
+            },
             &pin.rev,
             revs.get(&repo.name).map(String::as_str),
             source,
@@ -653,8 +682,11 @@ pub async fn plan(
             let upstream = mm.branch.as_ref().map(|b| format!("origin/{b}"));
             let (rev, change) = plan_repo(
                 MINIMUAS_INPUT,
-                dir,
-                upstream.as_deref(),
+                Local {
+                    dir,
+                    upstream: upstream.as_deref(),
+                    not_built: &cfg.deploy.minimuas_not_built,
+                },
                 &mm.rev,
                 Some(&requested),
                 Source::FlakeUrl(&mm.url),
@@ -1539,6 +1571,14 @@ mod tests {
         );
     }
 
+    fn local<'a>(dir: &'a Path, not_built: &'a [String]) -> Local<'a> {
+        Local {
+            dir,
+            upstream: None,
+            not_built,
+        }
+    }
+
     /// A throwaway repo with a bare `origin`, one pushed commit, upstream set.
     fn scratch_repo(tag: &str) -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -1609,7 +1649,7 @@ mod tests {
 
         // HEAD == pin: nothing ships, so dirt is a warning.
         let mut warnings = Vec::new();
-        let (rev, change) = plan_repo("r", &work, None, &head, None, src(), &mut warnings)
+        let (rev, change) = plan_repo("r", local(&work, &[]), &head, None, src(), &mut warnings)
             .await
             .unwrap();
         assert_eq!(rev, head);
@@ -1619,15 +1659,39 @@ mod tests {
             "{warnings:?}"
         );
 
+        // The same dirt under a not-built prefix is reported as such, not as pending work.
+        let mut warnings = Vec::new();
+        let not_built = ["a.".to_string()];
+        plan_repo(
+            "r",
+            local(&work, &not_built),
+            &head,
+            None,
+            src(),
+            &mut warnings,
+        )
+        .await
+        .unwrap();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("outside what the fleet builds") && w.contains("a.txt")),
+            "{warnings:?}"
+        );
+        assert!(
+            !warnings.iter().any(|w| w.contains("NOT deployed")),
+            "{warnings:?}"
+        );
+
         // HEAD != pin with dirt: refused before any prefetch.
-        let err = plan_repo("r", &work, None, old, None, src(), &mut Vec::new())
+        let err = plan_repo("r", local(&work, &[]), old, None, src(), &mut Vec::new())
             .await
             .unwrap_err();
         assert!(format!("{err:#}").contains("uncommitted"), "{err:#}");
 
         // Committed but not pushed: refused.
         git_sync(&work, &["commit", "-q", "-am", "two"]);
-        let err = plan_repo("r", &work, None, old, None, src(), &mut Vec::new())
+        let err = plan_repo("r", local(&work, &[]), old, None, src(), &mut Vec::new())
             .await
             .unwrap_err();
         assert!(format!("{err:#}").contains("not on origin/main"), "{err:#}");

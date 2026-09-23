@@ -298,6 +298,7 @@ def main():
     # The measured window starts here: nothing received during stop-before counts.
     tele = defaultdict(list); vstats = defaultdict(list)
     frames = defaultdict(list); events = defaultdict(int); frame_bytes = defaultdict(int)
+    clock_ms = defaultdict(list); sample_age_ms = defaultdict(list)
     t_start = time.time(); video_sent_at = None
     audio_sent_at = None; audio_result = None
 
@@ -338,9 +339,11 @@ def main():
                   f"caps={{bundle:{m.get('bundle')}, video_transport:{m.get('video_transport')}, sim:{m.get('sim')}}}")
         elif t == "telemetry":
             tele[m.get("vehicle","?")].append(now); note_telemetry(m, armed)
+            if m.get("clock_ms") is not None: clock_ms[m.get("vehicle","?")].append(m["clock_ms"])
+            if m.get("sample_age_ms") is not None: sample_age_ms[m.get("vehicle","?")].append(m["sample_age_ms"])
         elif t == "video_stats":
-            vstats[m.get("vehicle","?")].append((now, m.get("fps"), m.get("kbps")))
-            print(f"[{now-t_start:5.1f}s] video_stats {m.get('vehicle')}: fps={m.get('fps')} kbps={m.get('kbps')} seq={m.get('seq')}")
+            vstats[m.get("vehicle","?")].append((now, m.get("fps"), m.get("kbps"), m.get("lag_ms")))
+            print(f"[{now-t_start:5.1f}s] video_stats {m.get('vehicle')}: fps={m.get('fps')} kbps={m.get('kbps')} seq={m.get('seq')} lag_ms={m.get('lag_ms')}")
         elif t == "event":
             k = m.get("kind","?"); events[k] += 1
             if k in ("sensor.result", "sensor.rejected") and m.get("vehicle") == a.audio:
@@ -365,8 +368,13 @@ def main():
         verdict = "OK " if rate >= 2.0 and (not gaps or max(gaps) < 3.0) else "BAD"
         if verdict == "BAD": ok = False
         print(f" {verdict} TELEM {v}: rate={rate:.2f}/s p50={pct(gaps,.5)}s p95={pct(gaps,.95)}s "
-              f"max={round(max(gaps),2) if gaps else '-'}s gaps>2s={sum(1 for g in gaps if g>2)}")
-        res_tele[v] = {"n": len(ts), "rate": round(rate, 3), "gaps_p50": pct(gaps, .5),
+              f"max={round(max(gaps),2) if gaps else '-'}s gaps>2s={sum(1 for g in gaps if g>2)}"
+              f" clock={pct(clock_ms[v], .5)}ms (|max| {max((abs(c) for c in clock_ms[v]), default='-')}ms)"
+              f" sample_age={pct(sample_age_ms[v], .5)}ms")
+        res_tele[v] = {"clock_ms_p50": pct(clock_ms[v], .5),
+                       "clock_ms_absmax": max((abs(c) for c in clock_ms[v]), default=None),
+                       "sample_age_ms_p50": pct(sample_age_ms[v], .5),
+                       "sample_age_ms_p95": pct(sample_age_ms[v], .95),"n": len(ts), "rate": round(rate, 3), "gaps_p50": pct(gaps, .5),
                        "gaps_p95": pct(gaps, .95), "gaps_max": round(max(gaps), 2) if gaps else None,
                        "gaps_over_2s": sum(1 for g in gaps if g > 2), "status": verdict.strip()}
         for i, g in enumerate(gaps):
@@ -450,6 +458,10 @@ def main():
                             "gap_p50": pct(gaps, .5), "gap_p95": pct(gaps, .95),
                             "gap_max": round(max(gaps), 2) if gaps else None,
                             "stutters_over_1s": stutter, "warmup_stutters": warm_stutter,
+                            # how far behind live the dashboard fell (its lag-triggered
+                            # resubscribe fires at 1.5 s); None from a pre-lag dashboard
+                            "lag_ms_max": max((x[3] for x in vstats.get(v, []) if x[3] is not None),
+                                              default=None),
                             "valid": valid, "status": verdict.strip()}
             for i, g in enumerate(gaps):
                 if g > 1.0:

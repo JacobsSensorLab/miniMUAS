@@ -28,6 +28,10 @@ flake_attr = "nixosConfigurations.{node}.config.system.build.toplevel"
 build_retries = 3
 # The config flake's `minimuas-src` input is this checkout's GitHub repo.
 minimuas_local = "../.."
+# Paths no fleet derivation reads: minimuas/v2.nix copies examples/python/v2_flight_services
+# and config/, minimuas/default.nix builds the C++ roles. Uncommitted edits here (e.g. bench
+# scripts under tools/) cannot ship, so they do not block a miniMUAS bump.
+minimuas_not_built = ["tools/"]
 
 # Every repo pinned in pins_file: its fetchFromGitHub block name, GitHub owner, local checkout.
 [[deploy.repo]]

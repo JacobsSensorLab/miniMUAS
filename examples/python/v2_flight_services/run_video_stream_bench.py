@@ -109,7 +109,6 @@ def run_producer(args) -> int:
             # rejects any push whose signer != definition.provider ("outside
             # provider authority"). Here the provider prefix IS that identity.
             signing_identity=_frame_prefix(args.stream_id),
-            fec_group_frames=args.fec_group,
             fec_scheme=args.fec_scheme,
         )
         # Advertise the descriptor on the small-payload plane so the consumer
@@ -314,7 +313,6 @@ def _summarize(rec: _Recorder, args, *, recovered: int) -> dict:
         "transport": args.transport,
         "stream_id": args.stream_id,
         "target_fps": args.fps,
-        "fec_group": args.fec_group if args.transport == "stream" else None,
         "fec_scheme": args.fec_scheme if args.transport == "stream" else None,
         "delivered": n,
         "unique_seqs": len(set(seqs)),
@@ -345,20 +343,17 @@ def main() -> int:
     p.add_argument("--stream-id", default="wuas-01")
     p.add_argument("--fps", type=float, default=30.0)
     p.add_argument("--frame-bytes", type=int, default=6000,
-                   help="synthetic frame size; keep < FRAME_BUDGET (7000) for "
-                        "the single-Data stream push")
+                   help="synthetic frame size (bytes); frames are chunked, so any "
+                        "size up to video_stream.MAX_FRAME_BYTES is valid")
     p.add_argument("--seconds", type=float, default=60.0)
     p.add_argument("--descriptor-timeout", type=float, default=30.0,
                    help="consumer: seconds to wait for the producer descriptor")
     p.add_argument("--require-full", action="store_true",
                    help="stream consumer: require_full_delivery")
-    p.add_argument("--fec-group", type=int, default=1,
-                   help="stream producer: frames per FEC group == flush cadence "
-                        "(1 = flush every frame; 4 = GF(256) two-repair over 4)")
-    p.add_argument("--fec-scheme", default="auto",
-                   choices=["auto", "none", "xor", "gf256"],
-                   help="stream producer: FEC scheme; 'auto' derives it from "
-                        "--fec-group (1->xor one-repair, >1->gf256 two-repair)")
+    p.add_argument("--fec-scheme", default="xor",
+                   choices=["none", "xor", "gf256"],
+                   help="stream producer: FEC scheme per chunk group "
+                        "(xor = one repair, gf256 = two repairs)")
     p.add_argument("--loopback-latency", action="store_true",
                    help="also report one-way latency (valid only same-host)")
     p.add_argument("--out", type=Path, default=None,

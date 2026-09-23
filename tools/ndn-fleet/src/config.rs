@@ -49,6 +49,10 @@ pub struct DeployCfg {
     /// Local miniMUAS checkout: the repo behind the config flake's `minimuas-src` input.
     #[serde(default)]
     pub minimuas_local: Option<PathBuf>,
+    /// Path prefixes in the miniMUAS checkout that no fleet derivation builds. Uncommitted
+    /// changes there cannot be mistaken for shipping, so they do not block a miniMUAS bump.
+    #[serde(default)]
+    pub minimuas_not_built: Vec<String>,
     #[serde(rename = "repo")]
     pub repos: Vec<PinnedRepo>,
 }

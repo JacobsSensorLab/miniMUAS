@@ -591,6 +591,12 @@ class TelemetrySample:
     # it to decide who holds course and who yields (see PeerGuard). Defaulted so
     # older telemetry without the field still decodes.
     avoid_tier: int = 1
+    # This node's clock offset from its time reference, as chrony measures it
+    # (timesync.py): local minus `clock_ref`, ms. "" / -1 = unknown. The
+    # dashboard combines it with its own reading into node-minus-GCS.
+    clock_ref: str = ""
+    clock_offset_ms: float = 0.0
+    clock_rms_ms: float = -1.0
 
     def to_bytes(self) -> bytes:
         return encode_dataclass(self)
@@ -618,6 +624,10 @@ class TelemetrySample:
             vn_m_s=float(value.get("vn_m_s", 0.0)),
             ve_m_s=float(value.get("ve_m_s", 0.0)),
             avoid_bias_m=float(value.get("avoid_bias_m", 0.0)),
+            avoid_tier=int(value.get("avoid_tier", 1)),
+            clock_ref=str(value.get("clock_ref", "")),
+            clock_offset_ms=float(value.get("clock_offset_ms", 0.0)),
+            clock_rms_ms=float(value.get("clock_rms_ms", -1.0)),
         )
 
 

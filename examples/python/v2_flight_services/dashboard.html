@@ -3056,9 +3056,9 @@ function onHello(m){
         <span class="v" id="armed-${vid}">–</span>
         <span class="v" id="busy-${vid}">–</span>
         <span class="v" id="src-${vid}">–</span>
-        <span class="k">clock Δ</span><span class="k"></span><span class="k"></span>
-        <span class="v" id="skew-${vid}" title="node clock offset PLUS the sample's in-flight age (publish + fetch + up to one poll period of latest-staleness). A few hundred ms is normal on a healthy link and is mostly that age, not clock error. Seconds or minutes here mean the time subsystem needs attention, not the link.">–</span>
-        <span class="v"></span>
+        <span class="k">clock Δ</span><span class="k">sample age</span><span class="k"></span>
+        <span class="v" id="skew-${vid}" title="this node's clock minus the GCS clock, from chrony on both ends">–</span>
+        <span class="v" id="sage-${vid}" title="age of the telemetry on screen: publish on the vehicle to receipt here, median of recent polls">–</span>
         <span class="v"></span>
       </div>
       <div style="display:flex;gap:8px;align-items:flex-end;margin-top:12px">
@@ -3249,28 +3249,27 @@ function onTelemetry(m){
     link.className = "cds-tag " + (age < 4 ? "cds-tag--green"
       : age < 10 ? "cds-tag--yellow" : "cds-tag--red"); }
   const skew = document.getElementById(`skew-${vid}`);
-  // Show the MEDIAN, not the instantaneous value. A single reading mixes the
-  // clock offset with one-way transport jitter and with chrony slewing the
-  // node clock, so it swings from tens of ms to seconds sample to sample and
-  // tells an operator nothing. The median of recent samples is stable enough
-  // to read as a trend; the raw value stays in the tooltip.
-  const sv = (m.skew_med_s != null) ? m.skew_med_s : m.skew_s;
-  if (skew && sv != null){
-    const a = Math.abs(sv);
-    const sign = sv > 0 ? "−" : "+";
-    skew.textContent =
-      a < 10  ? `${sign}${Math.round(a * 1000)} ms~`
-    : a < 120 ? `${sign}${a.toFixed(2)} s~`
-    :           `${sign}${(a / 60).toFixed(1)} min~`;
-    if (m.skew_s != null) {
-      skew.title = `median of recent samples (~ = estimate). Latest raw: `
-        + `${(m.skew_s * 1000).toFixed(0)} ms. This is clock offset PLUS the `
-        + `sample's in-flight age, and the fleet has no disciplined time `
-        + `source, so treat it as a trend, not a measurement. Link freshness `
-        + `is the "link" tag, which is skew-immune.`;
+  // chrony's measured offset (node minus GCS): the fleet target is < 10 ms,
+  // and on the 2026-09-23 fleet it read tens of microseconds.
+  if (skew){
+    const c = m.clock_ms;
+    if (c == null){
+      skew.textContent = "–";
+      skew.title = "clock offset unknown: chrony on the vehicle or the GCS is "
+        + "unsynchronised or unreadable";
+      skew.style.color = "var(--cds-support-warning)";
+    } else {
+      const a = Math.abs(c);
+      skew.textContent = `${c < 0 ? "−" : "+"}` + (a < 1 ? `${a.toFixed(2)} ms`
+        : a < 1000 ? `${a.toFixed(1)} ms` : `${(a / 1000).toFixed(2)} s`);
+      skew.title = `this node's clock minus the GCS clock, from chrony on both `
+        + `ends (reference ${m.clock_ref || "?"}`
+        + (m.clock_rms_ms != null ? `, RMS ${m.clock_rms_ms.toFixed(3)} ms` : "") + `)`;
+      skew.style.color = a < 10 ? "" : "var(--cds-support-warning)";
     }
-    skew.style.color = a < 5 ? "" : "var(--cds-support-warning)";
   }
+  const sage = document.getElementById(`sage-${vid}`);
+  if (sage) sage.textContent = m.sample_age_ms != null ? `${m.sample_age_ms} ms` : "–";
 }
 function onStale(m){
   const d = drones[m.vehicle]; if (d) d.stale = true;

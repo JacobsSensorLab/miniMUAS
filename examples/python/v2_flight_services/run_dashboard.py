@@ -87,6 +87,7 @@ from dataplane import (
     set_runtime,
 )
 from raster import build_raster, estimate_duration_s
+from timesync import ClockMonitor
 from ndnsf_runtime import (
     add_common_arguments,
     add_ndnsf_path,
@@ -294,7 +295,13 @@ class Dashboard:
         # advertises transport=="stream". These push frames into the SAME
         # _send_loop path as the segmented poller, so the WS side is identical;
         # only the fabric-facing half differs (subscribe vs poll).
-        self.video_subs: dict[str, object] = {}
+        # vid -> {"consumer", "descriptor", "fps", "log_key", "log_t"}; health is
+        # polled at 1 Hz by _watch_video_subs_forever.
+        self.video_subs: dict[str, dict] = {}
+        # Last resubscribe per vehicle. Kept outside the subscription record
+        # because a resubscribe replaces that record, and the 3 s throttle has
+        # to span the replacement.
+        self.video_resub_at: dict[str, float] = {}
         # Live video is latest-wins per vehicle. A single drainer coalesces
         # frames and applies per-send backpressure, so a slow/mesh WS client
         # drops stale frames instead of piling a broadcast task per frame onto
@@ -306,11 +313,12 @@ class Dashboard:
         # asyncio HTTP loop. See _ensure_video_thread / _video_relay_loop.
         self._video_thread = None
         self.telemetry_age: dict[str, float] = {}
-        # link health is measured on OUR clock only: cross-node wall-clock
-        # differencing just reports clock skew on an RTC-less fleet (clocks
-        # are set from GPS/FC/HTTPS-Date and are never aligned to better
-        # than seconds-to-minutes). vid -> {last_ns, changed_mono}
+        # Link health is measured on OUR monotonic clock only, so it never
+        # depends on clock sync. Clock offset comes from chrony on each end
+        # (timesync.py), not from differencing wall clocks across the link.
+        # vid -> {last_ns, changed_mono, age}
         self.sample_state: dict[str, dict] = {}
+        self.clock = ClockMonitor()
         # first monotonic time we tried to poll each vehicle, so a fleet that
         # is still coming up doesn't flash "no link" before its first fix
         self.first_poll: dict[str, float] = {}
@@ -321,6 +329,15 @@ class Dashboard:
     # consecutive misses — unambiguous silence — which keeps a healthy fleet
     # from blinking online/offline at the poll rate.
     STALE_AFTER_S = 2.5
+
+    # Resubscribe a stream at the live edge once it has fallen this far behind
+    # (VideoStreamConsumer.lag_ms). Well above a healthy stream's frame-to-frame
+    # jitter (p95 gap 0.12-0.22 s on the fleet), far below the ~20 s of lag
+    # that built up before the producer's retention cut the stream off.
+    VIDEO_LAG_RESUBSCRIBE_MS = 1500
+    # At most one resubscribe per vehicle per this many seconds, so a stream
+    # that cannot keep up degrades to periodic skips instead of thrashing.
+    VIDEO_RESUBSCRIBE_MIN_S = 3.0
 
     # ---- mission recorder ----------------------------------------------------
 
@@ -466,6 +483,9 @@ class Dashboard:
         threading.Thread(
             target=self._poll_sensor_events_forever, daemon=True
         ).start()
+        threading.Thread(
+            target=self._watch_video_subs_forever, name="video-watch", daemon=True
+        ).start()
         while True:
             time.sleep(3600)
 
@@ -572,26 +592,30 @@ class Dashboard:
             sample = TelemetrySample.from_bytes(payload)
             now = time.monotonic()
             state = self.sample_state.setdefault(
-                vid, {"last_ns": None, "changed_mono": now, "skew": deque(maxlen=31)}
+                vid, {"last_ns": None, "changed_mono": now, "age": deque(maxlen=31)}
             )
-            state.setdefault("skew", deque(maxlen=31))
             if sample.gps_time_ns != state["last_ns"]:
                 state["last_ns"] = sample.gps_time_ns
                 state["changed_mono"] = now
             # freshness on the dashboard's own clock: seconds since the
-            # last NEW sample was observed (skew-immune)
+            # last NEW sample was observed (independent of clock sync)
             age_s = now - state["changed_mono"]
-            # Clock offset, reported separately as a time-subsystem
-            # diagnostic. NOTE this is NOT a pure clock difference: it is
-            # (our clock - the stamp the node wrote) and so carries the
-            # sample's in-flight age too -- publish, NDN fetch, and up to one
-            # poll period of "latest" staleness. On a healthy link that age
-            # alone is ~0.3-0.7 s, which is the whole magnitude of a normal
-            # reading. Keep MILLISECOND resolution: rounding to 0.1 s (and
-            # then to whole seconds in the UI) turned a steady ~0.5 s into a
-            # value that appeared to flap between 0 and 1.
-            skew_s = (gps_time_ns() - sample.gps_time_ns) / 1e9
-            state["skew"].append(skew_s)
+            # Node-minus-GCS clock offset from chrony on both ends: each
+            # measures itself against its reference (drones against the GCS),
+            # so the difference is exact to chrony's ~0.1 ms. The old figure,
+            # our clock minus the sample's stamp, was 300-700 ms of sample age
+            # (publish + fetch + poll staleness) read as "clock error".
+            ours = self.clock.reading()
+            clock_ms = (
+                sample.clock_offset_ms - ours.offset_ms
+                if sample.clock_ref and ours.known else None
+            )
+            # With the offset known, our clock minus the stamp is the sample's
+            # true age from publish to here. Median: one reading carries a
+            # whole poll period of jitter.
+            if clock_ms is not None:
+                stamp_ms = (gps_time_ns() - sample.gps_time_ns) / 1e6
+                state["age"].append(stamp_ms + clock_ms)
             self.telemetry_age[vid] = now
             sample_dict = json.loads(payload.decode())
             self.last_sample[vid] = sample_dict
@@ -600,15 +624,10 @@ class Dashboard:
                 "vehicle": vid,
                 "sample": sample_dict,
                 "age_s": round(age_s, 1),
-                "skew_s": round(skew_s, 3),
-                # Median over recent samples. A single reading is dominated by
-                # one-way transport jitter and by chrony actively SLEWING the
-                # node clock (the fleet has no disciplined time source: the GCS
-                # serves its own free-running clock as stratum 10 / refid
-                # 127.127.1.1, and took that time from a drone at boot), so the
-                # instantaneous value swings hundreds of ms to seconds and is
-                # unreadable. The median is stable enough to show a trend.
-                "skew_med_s": round(median(state["skew"]), 3) if state["skew"] else None,
+                "clock_ms": round(clock_ms, 3) if clock_ms is not None else None,
+                "clock_ref": sample.clock_ref,
+                "clock_rms_ms": sample.clock_rms_ms if sample.clock_rms_ms >= 0 else None,
+                "sample_age_ms": round(median(state["age"])) if state["age"] else None,
             })
             return True
         except Exception:
@@ -1509,6 +1528,7 @@ class Dashboard:
             # counters need no lock. Emit the same video_stats the poll loop
             # does (~2 s window) so the UI fps/kbps indicator works on stream.
             stat = {"frames": 0, "bytes": 0, "t0": None}
+            holder: dict = {"consumer": None}
 
             def on_frame(cursor: int, jpeg: bytes) -> None:
                 self._send_loop(bytes([idx]) + jpeg)
@@ -1519,107 +1539,26 @@ class Dashboard:
                 stat["bytes"] += len(jpeg)
                 dt = now - stat["t0"]
                 if dt >= 2.0:
+                    consumer = holder["consumer"]
                     self._send_loop({
                         "type": "video_stats", "vehicle": vid,
                         "fps": round(stat["frames"] / dt, 1),
                         "kbps": round(stat["bytes"] * 8 / dt / 1000),
                         "seq": cursor,
+                        "lag_ms": consumer.lag_ms if consumer is not None else None,
                     })
                     stat["frames"], stat["bytes"], stat["t0"] = 0, 0, now
 
-            # (state, reason) of the last status we logged, so a 1 Hz status
-            # callback doesn't spam the journal — we log transitions plus a
-            # periodic heartbeat.
-            last_status = {"key": None, "t": 0.0, "resub": 0.0}
-
-            def on_status(status) -> None:
-                # Without this the subscriber can hit a terminal error and
-                # simply stop delivering, with nothing logged anywhere — the
-                # frames just end. Surface it as a normal dashboard event so a
-                # stalled stream is diagnosable instead of silent.
-                try:
-                    g = lambda k: getattr(status, k, None)
-                    key = (str(g("state")), str(g("reason")))
-                    now = time.monotonic()
-
-                    # Resubscribe decision FIRST, above the log-dedup return.
-                    #
-                    # A single unrecoverable frame also ends the subscription
-                    # for good ("terminal-gap:timeout") — the producer pausing
-                    # longer than the retry budget, a camera hiccup, a busy
-                    # moment on the drone — which is what "video rarely works"
-                    # looked like in the field. Resubscribing with
-                    # start="latest" picks up at the live edge, so the operator
-                    # sees a sub-second hiccup instead of a dead feed.
-                    #
-                    # A FAILED lifecycle state is terminal by construction —
-                    # NDNSF's PredictiveStreamSubscriber raises on any attempt
-                    # to restart after stop/failure — so the only recovery is a
-                    # fresh subscription. Keying this off the STATE rather than
-                    # the reason text matters: the most common opening failure
-                    # is "predictive frontier unavailable after timeout", which
-                    # contains no "terminal" and so was never retried. The
-                    # stream then stayed dead until some slower path happened to
-                    # re-trigger it — measured as first_frame=124s against NFD's
-                    # 1-2s, on a link whose steady-state delivery is fine.
-                    #
-                    # It also has to sit ABOVE the 10 s log-dedup `return`: a
-                    # repeated identical failure would otherwise bail out before
-                    # ever reaching the retry.
-                    state_s, reason_s = key
-                    is_terminal = (
-                        "FAILED" in state_s.upper() or "terminal" in reason_s.lower()
-                    )
-                    if (
-                        is_terminal
-                        and self.video_relays.get(vid, {}).get("enabled")
-                        and now - last_status["resub"] > 3.0
-                    ):
-                        last_status["resub"] = now
-                        self.event("video.stream_resubscribe",
-                                   vehicle=vid, reason=reason_s)
-                        threading.Thread(
-                            target=self._start_video_sub,
-                            args=(vid, descriptor_json),
-                            name=f"video-resub-{vid}",
-                            daemon=True,
-                        ).start()
-
-                    if key == last_status["key"] and now - last_status["t"] < 10.0:
-                        return
-                    last_status["key"], last_status["t"] = key, now
-                    self.event(
-                        "video.stream_status", vehicle=vid,
-                        state=key[0], reason=key[1],
-                        delivered=g("delivered"), rejected=g("rejected"),
-                        timeouts=g("timeouts"), nacks=g("nacks"),
-                        next_cursor=g("next_deliver_cursor"),
-                        oldest_ready=g("oldest_ready_cursor"),
-                        ready_q=g("ready_queue_depth"),
-                        in_flight=g("in_flight"),
-                        pending=g("pending_interests"),
-                        # mapping_* tells us whether the consumer can still
-                        # resolve cursor->name: delivery stopping at ~one
-                        # mapping block (capacity 16) with interests issued but
-                        # no new responses is the signature of a mapping stall.
-                        map_int=g("mapping_interests"),
-                        map_data=g("mapping_data_responses"),
-                        map_new=g("mapping_new_data_responses"),
-                        retry_exh=g("retry_exhaustions"),
-                        recov_exh=g("recovery_exhaustions"),
-                        missing=g("terminal_missing_sources"),
-                        stale_drops=g("stale_ready_drops"),
-                    )
-                except Exception:
-                    pass
-
-            # Pass the vehicle's frame rate so the prefetch depth is sized
-            # from the item rate. A fixed depth over-reaches at low rates
-            # and every prefetch Interest expires before its frame exists.
-            self.video_subs[vid] = VideoStreamConsumer(
-                self.user, descriptor_json, on_frame, on_status=on_status,
-                fps=fps,
-            )
+            # Pass the vehicle's frame rate so the prefetch depth and Interest
+            # lifetime are sized from the item rate. A fixed depth over-reaches
+            # at low rates and every prefetch Interest expires before its frame
+            # exists.
+            consumer = VideoStreamConsumer(self.user, descriptor_json, on_frame, fps=fps)
+            holder["consumer"] = consumer
+            self.video_subs[vid] = {
+                "consumer": consumer, "descriptor": descriptor_json, "fps": fps,
+                "log_key": None, "log_t": 0.0,
+            }
             self.event("video.stream_subscribed", vehicle=vid)
         except Exception as exc:
             self.event("video.stream_subscribe_failed", vehicle=vid,
@@ -1629,9 +1568,97 @@ class Dashboard:
         sub = self.video_subs.pop(vid, None)
         if sub is not None:
             try:
-                sub.stop()
+                sub["consumer"].stop()
             except Exception:
                 pass
+
+    def _watch_video_subs_forever(self) -> None:
+        """Check every stream subscription once a second.
+
+        Polled rather than NDNSF's status callback: that fires on EVERY drained
+        item and takes the GIL each time, on the one IO thread all three
+        streams share. Measured: ~230 items/s total across three streams
+        (76 each) against 165-207 items/s for one stream alone.
+        """
+        while True:
+            time.sleep(1.0)
+            for vid, sub in list(self.video_subs.items()):
+                try:
+                    self._check_video_sub(vid, sub)
+                except Exception:
+                    pass
+
+    def _check_video_sub(self, vid: str, sub: dict) -> None:
+        consumer = sub["consumer"]
+        status = consumer.status()
+        g = lambda k: getattr(status, k, None)
+        state_s, reason_s = str(g("state")), str(g("reason"))
+        now = time.monotonic()
+
+        # Resubscribe decision FIRST, above the log-dedup return.
+        #
+        # A single unrecoverable frame also ends the subscription for good
+        # ("terminal-gap:timeout") — the producer pausing longer than the retry
+        # budget, a camera hiccup, a busy moment on the drone — which is what
+        # "video rarely works" looked like in the field. Resubscribing with
+        # start="latest" picks up at the live edge, so the operator sees a
+        # sub-second hiccup instead of a dead feed.
+        #
+        # A FAILED lifecycle state is terminal by construction — NDNSF's
+        # PredictiveStreamSubscriber raises on any attempt to restart after
+        # stop/failure — so the only recovery is a fresh subscription. Keying
+        # this off the STATE rather than the reason text matters: the most
+        # common opening failure is "predictive frontier unavailable after
+        # timeout", which contains no "terminal" and so was never retried
+        # (measured as first_frame=124s against NFD's 1-2s).
+        #
+        # Falling behind live is resubscribed the same way: NDNSF cannot see it
+        # (VideoStreamConsumer.lag_ms), and left alone the lag grew ~0.6 s per
+        # second until the producer evicted the next chunk, then a 12-17 s
+        # freeze, on a ~53 s cycle.
+        if "FAILED" in state_s.upper() or "terminal" in reason_s.lower():
+            why = reason_s or state_s
+        elif consumer.lag_ms > self.VIDEO_LAG_RESUBSCRIBE_MS:
+            why = f"lag:{consumer.lag_ms}ms"
+        else:
+            why = None
+        if (
+            why is not None
+            and self.video_relays.get(vid, {}).get("enabled")
+            and self.video_subs.get(vid) is sub
+            and now - self.video_resub_at.get(vid, 0.0) > self.VIDEO_RESUBSCRIBE_MIN_S
+        ):
+            self.video_resub_at[vid] = now
+            self.event("video.stream_resubscribe", vehicle=vid, reason=why)
+            threading.Thread(
+                target=self._start_video_sub,
+                args=(vid, sub["descriptor"]),
+                kwargs={"fps": sub["fps"]},
+                name=f"video-resub-{vid}",
+                daemon=True,
+            ).start()
+            return
+
+        key = (state_s, reason_s)
+        if key == sub["log_key"] and now - sub["log_t"] < 10.0:
+            return
+        sub["log_key"], sub["log_t"] = key, now
+        self.event(
+            "video.stream_status", vehicle=vid,
+            state=state_s, reason=reason_s,
+            delivered=g("delivered"), rejected=g("rejected"),
+            timeouts=g("timeouts"), nacks=g("nacks"),
+            next_cursor=g("next_deliver_cursor"),
+            oldest_ready=g("oldest_ready_cursor"),
+            ready_q=g("ready_queue_depth"),
+            in_flight=g("in_flight"),
+            pending=g("pending_interests"),
+            retry_exh=g("retry_exhaustions"),
+            recov_exh=g("recovery_exhaustions"),
+            missing=g("terminal_missing_sources"),
+            stale_drops=g("stale_ready_drops"),
+            lag_ms=consumer.lag_ms,
+        )
 
     def _ensure_video_thread(self) -> None:
         """Start the single shared relay thread if it isn't already running.

@@ -33,40 +33,20 @@ for a live camera (matianxing1992, streaming-options guidance):
   ``require_full_delivery=False`` (skip an unrecoverable frame and continue,
   the right choice for live video — set it True only for recording/telemetry
   where any gap is unacceptable).
-* Each pushed frame is exactly one signed Data (see below), so the sample
-  class is ``("video", 1, 1)`` — a sample always holds one packet.
+* A frame is split into 5800-byte chunks, one signed Data each, reassembled
+  by the consumer from a small chunk header (``parse_chunk_header``).
 
 FEC and the flush() contract
 ----------------------------
-``flush()`` CLOSES an FEC group: parity protects exactly the frames pushed
-since the last flush. So the FEC group size and the flush cadence are one
-knob, ``fec_group_frames``:
-
-* ``fec_group_frames=1`` (default, lowest latency): flush after every frame.
-  A group of one source packet suits XOR one-repair (or no FEC) — NOT GF(256)
-  two-repair, which needs a multi-packet group to mean anything. Parity for a
-  frame is available one frame later, so a single lost frame is recoverable
-  without a retransmit round-trip, at the cost of ~2x video bandwidth.
-* ``fec_group_frames=4``: push four frames, then one flush → GF(256)
-  two-repair over four source packets recovers up to two losses per group at
-  ~1.5x bandwidth, but a loss is not recoverable until the group closes.
-
-The old prototype configured GF(256) two-repair over four source items yet
-called ``flush()`` after every ``push()`` — so every group held a single
-packet and the two-repair coding was inert. That mismatch is fixed here by
-deriving the scheme from ``fec_group_frames``.
+``flush()`` CLOSES an FEC group: parity protects exactly the Data pushed since
+the last flush. A frame's chunks are published as ceil(n / FEC_GROUP_MAX_CHUNKS)
+groups, each flushed as soon as it is pushed, so a lost chunk is recoverable
+from its group's XOR repair without waiting for later frames. The group size is
+bounded by the repair's own wire size, not chosen for coding strength (see
+FEC_GROUP_MAX_CHUNKS).
 
 Notes
 -----
-* The high-level ``StreamPublisher.push`` takes ONE app-signed NDN Data
-  packet per call, so each frame must fit a single signed Data under the
-  stream's ``signed_wire_cap`` (default 8800). We push one frame per
-  sample and size frames below ``FRAME_BUDGET``. Full-resolution frames
-  that exceed one packet are the production follow-up: the lower-level
-  ``LiveStreamPublisher.publish_sample(reservation, opaque_sources)``
-  takes a list of opaque chunks as ONE sample and signs internally, which
-  is the correct multi-segment-per-frame path. Kept out of the prototype
-  to stay faithful to the documented simple API.
 * The producer's ``descriptor`` must reach the consumer out-of-band to
   subscribe. It serializes via ``to_dict()``; we ship it as JSON over the
   existing small-payload data plane (reliable — only large/segmented
@@ -84,16 +64,12 @@ import time
 from collections import deque
 from typing import Callable, Optional
 
-# One pushed frame must encode into a single signed Data under the stream's
-# signed-wire cap. Leave headroom for the Name + SignatureInfo/Value over the
-# JPEG content; a frame larger than this must be downscaled by the caller.
+# The most one signed Data (Name + SignatureInfo/Value + content) may occupy:
+# NDN's packet limit, enforced by NDNSF on every pushed and control packet.
 SIGNED_WIRE_CAP = 8800
-FRAME_BUDGET = 7000
 
-# Bytes of JPEG carried per published Data. One Data can hold at most
-# `SIGNED_WIRE_CAP` (8800) INCLUDING name + SignatureInfo/Value, so the payload
-# budget is FRAME_BUDGET; take a further `CHUNK_HEADER_BYTES` for the
-# reassembly header and leave slack.
+# Bytes of JPEG carried per published Data, leaving room under SIGNED_WIRE_CAP
+# for the Name, SignatureInfo/Value and the `CHUNK_HEADER_BYTES` header.
 #
 # A frame larger than one packet is split across several. 8800 is the cap on a
 # single Data, NOT on a frame — real NDN video (NDN-RTC and friends) segments
@@ -101,23 +77,18 @@ FRAME_BUDGET = 7000
 # and the agent silently re-encoded anything over budget at 256px/q30, so
 # asking for HIGHER quality produced LOWER resolution and the bitrate was
 # pinned near 250-500 kbps regardless of the requested settings.
-# 5800. DO NOT raise this toward FRAME_BUDGET without first finding the real
-# constraint -- 6800 was tried on the fleet (2026-09-21) and BROKE high-quality
+# 5800. DO NOT raise this without re-checking FEC_GROUP_MAX_CHUNKS -- 6800 was tried on the fleet (2026-09-21) and BROKE high-quality
 # 1280x800 outright: StreamPublisher::flush() threw "predictive group commit
 # failed" on every frame (1780 failures), so the stream delivered nothing.
 #
 # It is chunk SIZE, not chunk count: 1280x800 q75 worked at 15 chunks of 5800
 # and failed at 13 chunks of 6800. The failure is frame-size dependent at fixed
 # chunk size too -- q40 (7 chunks) and q55 (8) ran fine at 6800 while q70 (13)
-# failed -- so the binding limit is somewhere in commitPredictiveGroup's parity
-# / group-manifest encoding against SIGNED_WIRE_CAP, not in FRAME_BUDGET
-# arithmetic, which said 6800+10 <= 7000 was fine.
-#
-# The upside was only ~13% fewer chunks, so this is not worth re-attempting
-# until that limit is actually characterised.
+# failed. That limit is now characterised: it is the FEC repair's control Data
+# (FEC_GROUP_MAX_CHUNKS), whose size grows with BOTH chunk size and chunk count.
 FRAME_CHUNK_BYTES = 5800
-CHUNK_HEADER_BYTES = 10
-_CHUNK_MAGIC = b"V1"
+CHUNK_HEADER_BYTES = 18
+_CHUNK_MAGIC = b"V2"
 
 # Guard against a runaway encode; 2 MB is ~340 chunks.
 MAX_FRAME_BYTES = 2 * 1024 * 1024
@@ -136,29 +107,34 @@ MAX_FRAME_BYTES = 2 * 1024 * 1024
 FRAME_MAX_CHUNKS = 64
 
 
-def _chunk_header(frame_seq: int, idx: int, count: int) -> bytes:
-    """`V1` + frame_seq(4) + idx(2) + count(2) — 10 bytes, big-endian.
+def _chunk_header(frame_seq: int, idx: int, count: int, pub_ms: int) -> bytes:
+    """`V2` + frame_seq(4) + idx(2) + count(2) + pub_ms(8) — 18 bytes, big-endian.
 
     Self-describing so the consumer can reassemble from per-item delivery
     without depending on NDNSF sample-grouping metadata (the delivered item
-    exposes `cursor`/`content`/`provenance`, not a sample id).
+    exposes `cursor`/`content`/`provenance`, not a sample id). `pub_ms` is the
+    producer's MONOTONIC clock when the frame was published: the consumer only
+    ever differences it against itself, so it measures how far behind live the
+    stream has fallen without depending on clock sync.
     """
     return (
         _CHUNK_MAGIC
         + int(frame_seq).to_bytes(4, "big")
         + int(idx).to_bytes(2, "big")
         + int(count).to_bytes(2, "big")
+        + int(pub_ms).to_bytes(8, "big")
     )
 
 
 def parse_chunk_header(buf: bytes):
-    """-> (frame_seq, idx, count, payload) or None when not a V1 chunk."""
+    """-> (frame_seq, idx, count, pub_ms, payload) or None when not a V2 chunk."""
     if len(buf) < CHUNK_HEADER_BYTES or buf[:2] != _CHUNK_MAGIC:
         return None
     return (
         int.from_bytes(buf[2:6], "big"),
         int.from_bytes(buf[6:8], "big"),
         int.from_bytes(buf[8:10], "big"),
+        int.from_bytes(buf[10:18], "big"),
         buf[CHUNK_HEADER_BYTES:],
     )
 
@@ -168,6 +144,17 @@ def parse_chunk_header(buf: bytes):
 # signed-wire cap, so size the FEC source symbol to the cap.
 FEC_MAX_SOURCE_BYTES = SIGNED_WIRE_CAP
 FEC_RECOVERY_BUDGET_MS = 200  # reasonable for real-time local Wi-Fi
+
+# Chunks per FEC group. The XOR repair travels as ONE signed control Data that
+# carries, for every source, its full name, cursor, length and 32-byte digest,
+# plus the widest source itself, all under SIGNED_WIRE_CAP. Run against NDNSF's
+# own encoder (aarch64, fleet vehicle ids): 19 sources of 5800-byte chunks leave
+# 32-45 B spare, each further source adds ~121 B, and at 20 flush() throws
+# "signed predictive control Data exceeds wire budget", which fails the whole
+# stream. A 1280x800 q85 frame averaged ~98 KB (17 chunks) on the fleet and a
+# busy scene goes well past 19, so a frame is split across ceil(n/18) groups;
+# 18 leaves room for ECDSA length jitter and 8-character vehicle ids.
+FEC_GROUP_MAX_CHUNKS = 18
 
 # A live subscriber prefetches FUTURE cursors — Interests for frames the camera
 # has not taken yet — which the producer parks until it produces them. So the
@@ -220,6 +207,18 @@ LIVE_INTEREST_LIFETIME_MS = 4000
 # right value tracks the BDP, not the frame rate.
 LIVE_INTEREST_LIMIT = 24
 
+# The subscriber prefetches at most half its window ahead of the newest
+# produced cursor (NDNSF future horizon = min(lookahead, limit) / 2), and the
+# slowest a stream produces items is one chunk per frame, so a future Interest
+# waits at most (LIVE_INTEREST_LIMIT / 2) / fps for its item to exist. Twice that
+# covers RTT and camera jitter. The fixed 4 s ceiling is what one LOST item
+# costs: the ordered drain waits out the whole first-attempt lifetime, measured
+# on the fleet as stalls of exactly 4.06-4.24 s, each one `timeouts` +1.
+# At 30 fps this is 0.8 s; at 6 fps and below it is the old 4 s.
+def live_interest_lifetime_ms(fps: float) -> int:
+    worst_wait_s = (LIVE_INTEREST_LIMIT / 2) / max(1.0, float(fps))
+    return int(min(LIVE_INTEREST_LIFETIME_MS, 2 * worst_wait_s * 1000))
+
 # Mapping blocks must fit ONE link fragment.
 #
 # A Name-Map block is published roughly once per frame (measured: 452 blocks
@@ -239,78 +238,31 @@ LIVE_INTEREST_LIMIT = 24
 # comfortably inside LIVE_INTEREST_LIFETIME_MS) by raising the block count as
 # the capacity falls.
 #
-# NOTE: do NOT lower `signed_wire_cap` to force this — that cap also bounds a
-# pushed FRAME (~7 KB under FRAME_BUDGET), and an over-budget push is rejected.
+# NOTE: do NOT lower `signed_wire_cap` to force this — that cap also bounds
+# every pushed chunk and FEC control packet, and an over-budget push is rejected.
 MAPPING_BLOCK_CAPACITY = 2
 MAPPING_AHEAD_BLOCKS = 16
 
 
-def predictive_data_name(mapping_root: str, mapping_version: int, seq: int) -> str:
-    """Canonical predictive-stream Data name for one pushed sample.
+def _build_fec(scheme: str, max_source_bytes: int, recovery_budget_ms: int):
+    """FEC options for groups of up to FEC_GROUP_MAX_CHUNKS source packets.
 
-    Delegates to NDNSF's ``make_predictive_data_name`` (mirrors the C++
-    ``nsf::makePredictiveDataName``): ``mappingRoot + "v" + Number(version) +
-    SequenceNumber(seq)``. The version is a nonNegativeInteger component, not
-    ASCII digits, so a hand-built f-string name is rejected by the Core as
-    "non-canonical predictive Data name".
+    ``scheme`` is "xor" (one repair per group), "gf256" (two repairs per group)
+    or "none".
     """
-    from ndnsf import make_predictive_data_name
-
-    return make_predictive_data_name(mapping_root, int(mapping_version), int(seq))
-
-
-def make_app_signed_data(
-    name: str, payload: bytes, signing_identity: str = ""
-) -> bytes:
-    """Return the signed NDN Data wire for one frame, app-named + app-signed.
-
-    Uses NDNSF's exact-name signer (``make_signed_data``) so the Data carries the
-    verbatim predictive name — the high-level ``push`` is one-Data-per-call and
-    rejects any name with an appended version/segment. The caller must keep the
-    frame a single packet by downscaling below ``FRAME_BUDGET`` (the Core also
-    enforces ``signed_wire_cap`` and rejects an over-budget push).
-    """
-    from ndnsf import make_signed_data
-
-    return make_signed_data(
-        name,
-        payload,
-        signing_identity=signing_identity,
-        freshness_ms=300,
-    )
-
-
-def _build_fec(scheme: str, group_frames: int, max_source_bytes: int,
-               recovery_budget_ms: int):
-    """FEC options coherent with the flush cadence (``group_frames``).
-
-    ``scheme`` is "auto" (derive from group size), "none", "xor", or "gf256".
-    "auto": a 1-frame group → XOR one-repair; a multi-frame group → GF(256)
-    two-repair over the group.
-
-    ``source_items`` counts the DATA PACKETS a single ``flush()`` binds, which
-    since frame segmentation is ``group_frames * FRAME_MAX_CHUNKS`` -- not
-    ``group_frames``. Sizing it per FRAME made every multi-chunk frame fail to
-    push with "flush group exceeds configured FEC source capacity". A group
-    smaller than the declared capacity is fine; only overflow is an error.
-    """
-    group_items = max(1, group_frames) * FRAME_MAX_CHUNKS
     from ndnsf import LiveStreamFecOptions
 
-    if scheme == "auto":
-        scheme = "xor" if group_frames <= 1 else "gf256"
     if scheme == "none":
         return LiveStreamFecOptions.none()
     if scheme == "xor":
         return LiveStreamFecOptions.xor_one_repair(
-            source_items=group_items,
+            source_items=FEC_GROUP_MAX_CHUNKS,
             max_source_bytes=max_source_bytes,
             recovery_budget_ms=recovery_budget_ms,
         )
     if scheme == "gf256":
-        # GF(256) two-repair needs at least a 2-packet group to be meaningful.
         return LiveStreamFecOptions.gf256_two_repair(
-            source_items=max(2, group_items),
+            source_items=FEC_GROUP_MAX_CHUNKS,
             max_source_bytes=max_source_bytes,
             recovery_budget_ms=recovery_budget_ms,
         )
@@ -373,8 +325,7 @@ def default_video_stream_config(
     data_prefix: str,
     *,
     fps: float,
-    fec_group_frames: int = 1,
-    fec_scheme: str = "auto",
+    fec_scheme: str = "xor",
     fec_max_source_bytes: int = FEC_MAX_SOURCE_BYTES,
     fec_recovery_budget_ms: int = FEC_RECOVERY_BUDGET_MS,
     mapping_block_capacity: int = MAPPING_BLOCK_CAPACITY,
@@ -397,17 +348,13 @@ def default_video_stream_config(
         stream_id=stream_id,
         data_prefix=data_prefix,
         sample_period_ms=1000.0 / max(fps, 1.0),
-        # A sample is one FRAME, which segmentation spreads over up to
-        # FRAME_MAX_CHUNKS Data packets. The seed stays 1 (a flat scene really
-        # does fit in one packet); the hard max is what a busy scene needs.
-        # This was left at (1, 1) when frames became multi-packet.
+        # The predictive path treats each cursor as its own sample; NDNSF
+        # only checks a class's hard max against the FEC source capacity, so
+        # the class spans one FEC group (a frame may span several).
         sample_classes=(
-            SampleClassProfile("video", 1, FRAME_MAX_CHUNKS),
+            SampleClassProfile("video", 1, FEC_GROUP_MAX_CHUNKS),
         ),
-        fec=_build_fec(
-            fec_scheme, fec_group_frames,
-            fec_max_source_bytes, fec_recovery_budget_ms,
-        ),
+        fec=_build_fec(fec_scheme, fec_max_source_bytes, fec_recovery_budget_ms),
         # Wrapper defaults are the recommended starting point, EXCEPT the
         # Name-Map block geometry: the default 16-item block is ~8.7 KB, which
         # fragments 6 ways on a Wi-Fi datagram face and is then all-or-nothing.
@@ -421,9 +368,9 @@ def default_video_stream_config(
 class VideoStreamProducer:
     """One long-lived predictive stream per camera; push one JPEG per frame.
 
-    ``fec_group_frames`` sets both the FEC group size and the flush cadence:
-    a frame is pushed on every ``publish_frame`` and a group is flushed once
-    ``fec_group_frames`` frames have accumulated (1 = flush every frame).
+    Each frame is split into chunks and published as one or more FEC groups
+    (see FEC_GROUP_MAX_CHUNKS), each named, signed, pushed and flushed by ONE
+    NDNSF call with the GIL released.
     """
 
     def __init__(
@@ -434,37 +381,23 @@ class VideoStreamProducer:
         *,
         fps: float = 15.0,
         signing_identity: str = "",
-        fec_group_frames: int = 1,
-        fec_scheme: str = "auto",
+        fec_scheme: str = "xor",
     ) -> None:
-        self._fec_group_frames = max(1, int(fec_group_frames))
         self._config = default_video_stream_config(
-            stream_id, data_prefix, fps=fps,
-            fec_group_frames=self._fec_group_frames, fec_scheme=fec_scheme,
+            stream_id, data_prefix, fps=fps, fec_scheme=fec_scheme,
         )
         self._stream = provider.create_stream(self._config)
         self._descriptor = self._stream.start()
-        self._definition = self._descriptor.definition
         self._signing_identity = signing_identity
         self._seq = 0
         self._frame_seq = 0
-        # Frames pushed but not yet bound into a flushed FEC group.
-        self._pending = 0
         # Frames dropped for needing more than FRAME_MAX_CHUNKS packets. Should
-        # stay 0; a rising count means the encoder is outrunning the declared
-        # stream geometry and FRAME_MAX_CHUNKS needs raising (in step with the
-        # FEC source capacity, which is derived from it).
+        # stay 0; a rising count means the encoder is producing runaway frames.
         self.frames_over_chunk_budget = 0
-        # Rolling publish-path timings. `push` is per DATA PACKET (the handoff
-        # of one signed Data to the local forwarder); `flush` is per FRAME (it
-        # closes the FEC group and emits the group's control packets). These
-        # are the two calls that can block on the local face, so if one
-        # forwarder is slower to drain the app's socket than another it shows
-        # up here and nowhere else -- the video publish loop is self-paced
-        # (`delay = 1/fps - cycle`), so a slower handoff lowers the achieved
-        # frame rate directly rather than queueing.
-        self._push_us = deque(maxlen=4096)
-        self._flush_us = deque(maxlen=1024)
+        # Rolling per-frame publish cost (name + sign + push + flush of every
+        # group). The video loop is self-paced (`delay = 1/fps - cycle`), so
+        # this bounds the achieved frame rate directly rather than queueing.
+        self._publish_us = deque(maxlen=1024)
         self._lock = threading.Lock()
 
     @property
@@ -483,22 +416,19 @@ class VideoStreamProducer:
     def publish_frame(self, jpeg: bytes) -> bool:
         """Publish one frame, split across as many Data packets as it needs.
 
-        A frame larger than one packet is segmented: each chunk is its own
-        signed Data carrying a `parse_chunk_header` prefix, and the consumer
-        reassembles by frame sequence. One Data can hold at most
-        `SIGNED_WIRE_CAP` including name and signature, but a FRAME has no such
-        limit — that is how NDN video is normally carried.
-
-        The flush after the last chunk closes the FEC group on a frame
-        boundary, so parity protects exactly one frame's chunks. That is
-        strictly better than the previous group-of-one-frame, where a
-        single-packet loss was unrecoverable.
+        Each chunk is its own signed Data carrying a `parse_chunk_header`
+        prefix, and the consumer reassembles by frame sequence. The chunks go
+        out in ceil(n / FEC_GROUP_MAX_CHUNKS) near-equal FEC groups, each one
+        `push_signed_batch` call that names, signs, pushes and flushes with the
+        GIL released. The per-chunk Python loop it replaces (make_signed_data +
+        push, 17x per 1280x800 frame, then flush with the GIL held) re-queued
+        for the GIL on every chunk: 96 ms per frame beside one busy Python
+        thread against 8.8 ms batched (aarch64 bench), and the fleet producer
+        capped at ~11.5 fps.
 
         Returns False for an implausibly large frame (`MAX_FRAME_BYTES`), which
         indicates an encoder problem rather than a transport limit, and for one
-        needing more than `FRAME_MAX_CHUNKS` packets -- dropping that frame is
-        far better than pushing it, because an over-capacity flush group fails
-        the push and takes the whole stream down with it.
+        needing more than `FRAME_MAX_CHUNKS` packets.
         """
         if not jpeg or len(jpeg) > MAX_FRAME_BYTES:
             return False
@@ -510,74 +440,44 @@ class VideoStreamProducer:
         if count > FRAME_MAX_CHUNKS:
             self.frames_over_chunk_budget += 1
             return False
+        groups = -(-count // FEC_GROUP_MAX_CHUNKS)
         with self._lock:
             frame_seq = self._frame_seq
-            for idx, chunk in enumerate(chunks):
-                name = predictive_data_name(
-                    self._definition.mapping_root,
-                    self._definition.mapping_version,
-                    self._seq,
+            pub_ms = time.monotonic_ns() // 1_000_000
+            contents = [
+                _chunk_header(frame_seq, idx, count, pub_ms) + chunk
+                for idx, chunk in enumerate(chunks)
+            ]
+            t0 = time.perf_counter()
+            for g in range(groups):
+                part = contents[g * count // groups : (g + 1) * count // groups]
+                self._stream.push_signed_batch(
+                    self._seq, part, self._signing_identity, 300, True,
                 )
-                wire = make_app_signed_data(
-                    name,
-                    _chunk_header(frame_seq, idx, count) + chunk,
-                    self._signing_identity,
-                )
-                # Time ONLY the handoff, not the signing: signing is
-                # stack-independent, the handoff is what differs per forwarder.
-                _t0 = time.perf_counter()
-                self._stream.push(wire)
-                self._push_us.append((time.perf_counter() - _t0) * 1e6)
-                self._seq += 1
+                self._seq += len(part)
+            self._publish_us.append((time.perf_counter() - t0) * 1e6)
             self._frame_seq += 1
-            self._pending += 1
-            if self._pending >= self._fec_group_frames:
-                _t0 = time.perf_counter()
-                self._stream.flush()
-                self._flush_us.append((time.perf_counter() - _t0) * 1e6)
-                self._pending = 0
         return True
 
     def timing_stats(self) -> dict:
-        """Percentiles of the publish-path handoff, in microseconds.
-
-        `push_*` is per Data packet, `flush_*` per frame. Both measure only the
-        call into NDNSF/the local face -- signing is excluded, since it is the
-        same work whichever forwarder is underneath.
-        """
-        def pct(samples, q):
-            if not samples:
-                return 0.0
-            ordered = sorted(samples)
-            idx = min(len(ordered) - 1, int(len(ordered) * q))
-            return round(ordered[idx], 1)
-
+        """Percentiles of the per-frame publish cost, in microseconds."""
         with self._lock:
-            push = list(self._push_us)
-            flush = list(self._flush_us)
+            ordered = sorted(self._publish_us)
+        if not ordered:
+            return {"publish_n": 0}
+
+        def pct(q):
+            return round(ordered[min(len(ordered) - 1, int(len(ordered) * q))], 1)
+
         return {
-            "push_n": len(push),
-            "push_p50_us": pct(push, 0.50),
-            "push_p90_us": pct(push, 0.90),
-            "push_p99_us": pct(push, 0.99),
-            "push_max_us": round(max(push), 1) if push else 0.0,
-            "flush_n": len(flush),
-            "flush_p50_us": pct(flush, 0.50),
-            "flush_p90_us": pct(flush, 0.90),
-            "flush_p99_us": pct(flush, 0.99),
-            "flush_max_us": round(max(flush), 1) if flush else 0.0,
+            "publish_n": len(ordered),
+            "publish_p50_us": pct(0.50),
+            "publish_p90_us": pct(0.90),
+            "publish_p99_us": pct(0.99),
+            "publish_max_us": round(ordered[-1], 1),
         }
 
     def stop(self) -> None:
-        try:
-            with self._lock:
-                # Flush a partial trailing group so its frames still get parity
-                # (and are not held waiting for a group that will never fill).
-                if self._pending:
-                    self._stream.flush()
-                    self._pending = 0
-        except Exception:
-            pass
         try:
             self._stream.stop()
         except Exception:
@@ -593,6 +493,16 @@ class VideoStreamConsumer:
     plain ints updated only from the callback thread; read them after the
     measurement window or guard with your own lock if you read concurrently.
 
+    ``lag_ms`` is how far behind live the stream has fallen since its best
+    delivered frame: producer publish time and local receive time are both
+    monotonic, so their difference carries a constant unknown offset that the
+    running minimum cancels. NDNSF cannot see this lag itself -- it learns the
+    producer's position only from the items it delivers, which are the stale
+    ones -- so the caller must act on it (resubscribe at the live edge).
+
+    Poll ``status()`` rather than asking NDNSF for a status callback: the
+    callback fires on every drained item and takes the GIL each time.
+
     ``prefetch_policy`` defaults to None so NDNSF auto-selects the policy; pin
     a policy (e.g. "adaptive-sample-atomic") only when a bench must be
     reproducible.
@@ -606,8 +516,7 @@ class VideoStreamConsumer:
         *,
         require_full_delivery: bool = False,
         prefetch_policy: Optional[str] = None,
-        on_status: Optional[Callable[[object], None]] = None,
-        interest_lifetime_ms: int = LIVE_INTEREST_LIFETIME_MS,
+        interest_lifetime_ms: Optional[int] = None,
         aggregate_interest_limit: Optional[int] = None,
         fps: Optional[float] = None,
     ) -> None:
@@ -631,6 +540,10 @@ class VideoStreamConsumer:
         # not known before frames arrive, so assume the small-frame case (2);
         # under-estimating only costs pipelining, while over-estimating
         # reproduces the stall above.
+        if interest_lifetime_ms is None:
+            interest_lifetime_ms = (
+                live_interest_lifetime_ms(fps) if fps else LIVE_INTEREST_LIFETIME_MS
+            )
         if aggregate_interest_limit is None:
             if fps:
                 budget = max(1.0, float(fps)) * 2.0 * (interest_lifetime_ms / 1000.0 / 2.0)
@@ -646,6 +559,8 @@ class VideoStreamConsumer:
 
         self.delivered = 0
         self.recovered = 0  # frames reconstructed by FEC rather than fetched
+        self.lag_ms = 0
+        lag_floor = {"ms": None}
 
         # Reassembly of segmented frames, keyed by frame sequence. A frame
         # larger than one Data arrives as several items; `on_frame` must only
@@ -657,14 +572,15 @@ class VideoStreamConsumer:
         self.partial_frames_dropped = 0
 
         def _reassemble(raw, cursor):
+            """-> (frame_seq, jpeg, pub_ms) once a frame is whole, else None."""
             parsed = parse_chunk_header(raw)
             if parsed is None:
                 # Un-segmented publisher (or a foreign item): pass it straight
                 # through, so a consumer keeps working against an old producer.
-                return cursor, raw
-            frame_seq, idx, count, payload = parsed
+                return cursor, raw, None
+            frame_seq, idx, count, pub_ms, payload = parsed
             if count <= 1:
-                return frame_seq, payload
+                return frame_seq, payload, pub_ms
             slot = pending_frames.setdefault(frame_seq, {})
             slot[idx] = payload
             if len(slot) < count:
@@ -674,7 +590,13 @@ class VideoStreamConsumer:
             for stale in [k for k in pending_frames if k < frame_seq - _REASM_KEEP]:
                 del pending_frames[stale]
                 self.partial_frames_dropped += 1
-            return frame_seq, jpeg
+            return frame_seq, jpeg, pub_ms
+
+        def _note_lag(pub_ms):
+            transit = time.monotonic_ns() // 1_000_000 - pub_ms
+            if lag_floor["ms"] is None or transit < lag_floor["ms"]:
+                lag_floor["ms"] = transit
+            self.lag_ms = transit - lag_floor["ms"]
 
         def _on_item(item):
             self.delivered += 1
@@ -686,6 +608,8 @@ class VideoStreamConsumer:
             try:
                 done = _reassemble(item.content, item.cursor)
                 if done is not None:
+                    if done[2] is not None:
+                        _note_lag(done[2])
                     on_frame(done[0], done[1])
             except Exception:
                 pass
@@ -701,9 +625,12 @@ class VideoStreamConsumer:
                 enable_fec_recovery=True,
                 require_full_delivery=require_full_delivery,
                 interest_lifetime_ms=interest_lifetime_ms,
-                on_status=on_status,
             ),
         )
+
+    def status(self):
+        """NDNSF's LiveStreamStatus for this subscription (state, reason, counters)."""
+        return self._subscriber.status()
 
     def stop(self) -> None:
         try:
