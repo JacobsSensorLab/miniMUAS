@@ -208,7 +208,7 @@ impl Fleet {
             },
             {
                 "name": "fleet_set_cell",
-                "description": "Switch every node's fabric cell (`muas-fabric set`): airframes first, GCS last; then a health gate (every node on the cell, /muas multicast toward every other node, forwarder unit active; 300 s). Runs as a job (fleet lock + armed check); stamps the settle clock. Prefer fleet_measure arms for A/B comparisons: they restore the starting cell themselves.",
+                "description": "Switch every node's fabric cell (`muas-fabric set`): airframes first, GCS last; then a health gate (every node on the cell, /muas multicast toward every other node, forwarder unit active, dashboard reporting every vehicle's armed flag; 300 s). Runs as a job (fleet lock + armed check); stamps the settle clock. Prefer fleet_measure arms for A/B comparisons: they restore the starting cell themselves.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {

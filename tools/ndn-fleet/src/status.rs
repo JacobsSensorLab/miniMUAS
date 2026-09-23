@@ -444,9 +444,8 @@ fn last_line(s: &str) -> &str {
     s.trim().lines().last().unwrap_or("")
 }
 
-/// Fleet-level verdict over per-node statuses. `armed` is `None` for the health gate, which does
-/// not probe the dashboard.
-fn assemble(rec: &Recorder, nodes: Vec<NodeStatus>, armed: Option<ArmedProbe>) -> FleetStatus {
+/// Fleet-level verdict over per-node statuses and the dashboard's armed flags.
+fn assemble(rec: &Recorder, nodes: Vec<NodeStatus>, armed: ArmedProbe) -> FleetStatus {
     let mut reasons: Vec<String> = Vec::new();
     for n in &nodes {
         for p in &n.problems {
@@ -477,13 +476,11 @@ fn assemble(rec: &Recorder, nodes: Vec<NodeStatus>, armed: Option<ArmedProbe>) -
     if distinct(|n| n.ndn_fwd_pkg.as_ref()) {
         reasons.push("nodes run different ndn-fwd packages".into());
     }
-    if let Some(a) = &armed {
-        if !a.armed.is_empty() {
-            reasons.push(format!("ARMED: {}", a.armed.join(", ")));
-        }
-        if !a.answered {
-            reasons.push(format!("armed probe unanswered: {}", a.detail));
-        }
+    if !armed.armed.is_empty() {
+        reasons.push(format!("ARMED: {}", armed.armed.join(", ")));
+    }
+    if !armed.answered {
+        reasons.push(format!("armed probe unanswered: {}", armed.detail));
     }
     let verdict = if nodes.iter().any(|n| !n.reachable) {
         "UNREACHABLE"
@@ -497,12 +494,7 @@ fn assemble(rec: &Recorder, nodes: Vec<NodeStatus>, armed: Option<ArmedProbe>) -
         verdict: verdict.into(),
         reasons,
         nodes,
-        armed: armed.unwrap_or_else(|| ArmedProbe {
-            answered: false,
-            vehicles: Vec::new(),
-            armed: Vec::new(),
-            detail: "not probed (health gate)".into(),
-        }),
+        armed,
         since_disturbance_s: rec.seconds_since_disturbance(),
         last_deploy: st.last_deploy,
     }
@@ -511,11 +503,14 @@ fn assemble(rec: &Recorder, nodes: Vec<NodeStatus>, armed: Option<ArmedProbe>) -
 /// Preflight: every node (parallel, one ssh each) and the armed flags, with a verdict.
 pub async fn fleet_status(cfg: &Config, rec: &Recorder) -> Result<FleetStatus> {
     let (nodes, armed) = tokio::join!(probe_nodes(cfg), probe_armed(cfg));
-    Ok(assemble(rec, nodes, Some(armed)))
+    Ok(assemble(rec, nodes, armed))
 }
 
 /// Poll every 10 s until every node runs `expected_cell` with `/muas` multicast toward every
-/// other node and the cell's forwarder unit active. Err with the outstanding reasons on timeout.
+/// other node and the cell's forwarder unit active, AND the dashboard reports every vehicle's
+/// armed flag. Without the last condition a deploy was declared healthy seconds before the
+/// restarted dashboard could see the vehicles, and the next job's I2 check refused twice on
+/// 2026-09-23. Err with the outstanding reasons on timeout.
 pub async fn health_gate(
     cfg: &Config,
     rec: &Recorder,
@@ -525,7 +520,7 @@ pub async fn health_gate(
 ) -> Result<FleetStatus> {
     let started = Instant::now();
     loop {
-        let nodes = probe_nodes(cfg).await;
+        let (nodes, armed) = tokio::join!(probe_nodes(cfg), probe_armed(cfg));
         let mut outstanding = Vec::new();
         for n in &nodes {
             if !n.reachable {
@@ -543,6 +538,9 @@ pub async fn health_gate(
                 outstanding.push(format!("{}: {p}", n.name));
             }
         }
+        if !armed.answered {
+            outstanding.push(format!("dashboard: {}", armed.detail));
+        }
         let waited = started.elapsed();
         if outstanding.is_empty() {
             log(&format!(
@@ -553,7 +551,7 @@ pub async fn health_gate(
                 "health_gate",
                 json!({ "cell": expected_cell, "ok": true, "waited_s": waited.as_secs() }),
             );
-            return Ok(assemble(rec, nodes, None));
+            return Ok(assemble(rec, nodes, armed));
         }
         if waited >= timeout {
             rec.ledger(
