@@ -484,14 +484,24 @@ class VideoStreamProducer:
             pass
 
 
+# The consumer's drain thread takes up to this many queued items per GIL entry.
+# A 1280x800 frame is ~17 items, so a batch holds several frames at most; the
+# bound only keeps one wakeup from monopolising the GIL after a stall.
+DRAIN_BATCH_ITEMS = 256
+# How long take() waits (GIL released) before re-checking for stop().
+DRAIN_WAIT_MS = 200
+
+
 class VideoStreamConsumer:
     """Subscribe once to a producer's descriptor; deliver frames to a sink.
 
-    ``on_frame(cursor, jpeg)`` fires on framework threads as items are
-    verified and admitted (in cursor order once reordering settles). Keep it
-    light — offload heavy decode/inference to a worker queue. Counters are
-    plain ints updated only from the callback thread; read them after the
-    measurement window or guard with your own lock if you read concurrently.
+    ``on_frame(cursor, jpeg)`` fires on this consumer's own drain thread, in
+    cursor order. NDNSF's IO thread only queues verified items natively
+    (``StreamItemQueue``); this thread takes them in batches, one GIL entry per
+    batch. With a per-item Python callback instead, ~35% of the GCS stream IO
+    thread was spent entering Python and building a thread state for every
+    chunk (perf, three live streams, ~250 Data/s ceiling). Keep ``on_frame``
+    light — offload heavy decode/inference to a worker queue.
 
     ``lag_ms`` is how far behind live the stream has fallen since its best
     delivered frame: producer publish time and local receive time are both
@@ -521,8 +531,8 @@ class VideoStreamConsumer:
         fps: Optional[float] = None,
     ) -> None:
         from ndnsf import (
-            LiveStreamItemAdmission,
             PredictiveStreamDescriptor,
+            StreamItemQueue,
             StreamSubscriptionOptions,
         )
 
@@ -598,27 +608,34 @@ class VideoStreamConsumer:
                 lag_floor["ms"] = transit
             self.lag_ms = transit - lag_floor["ms"]
 
-        def _on_item(item):
-            self.delivered += 1
-            # provenance distinguishes a directly-fetched item from one the
-            # bounded FEC recovery rebuilt — the metric that proves the
-            # recovery path is actually saving frames the old path dropped.
-            if "recover" in (item.provenance or ""):
-                self.recovered += 1
-            try:
-                done = _reassemble(item.content, item.cursor)
-                if done is not None:
-                    if done[2] is not None:
-                        _note_lag(done[2])
-                    on_frame(done[0], done[1])
-            except Exception:
-                pass
-            return LiveStreamItemAdmission.accept_item()
+        def _drain():
+            while True:
+                items = self._queue.take(DRAIN_BATCH_ITEMS, DRAIN_WAIT_MS)
+                if not items:
+                    if self._closed:
+                        return
+                    continue
+                for cursor, content, recovered in items:
+                    self.delivered += 1
+                    # FEC-rebuilt rather than fetched: the metric that proves
+                    # the recovery path is saving frames.
+                    if recovered:
+                        self.recovered += 1
+                    try:
+                        done = _reassemble(content, cursor)
+                        if done is not None:
+                            if done[2] is not None:
+                                _note_lag(done[2])
+                            on_frame(done[0], done[1])
+                    except Exception:
+                        pass
 
+        self._closed = False
+        self._queue = StreamItemQueue(capacity=MAX_RETAINED_ITEMS)
         self._subscriber = user.subscribe_stream(
             desc,
             StreamSubscriptionOptions(
-                on_item=_on_item,
+                item_queue=self._queue,
                 start="latest",
                 prefetch_policy=prefetch_policy,
                 aggregate_interest_limit=aggregate_interest_limit,
@@ -627,6 +644,13 @@ class VideoStreamConsumer:
                 interest_lifetime_ms=interest_lifetime_ms,
             ),
         )
+        self._drainer = threading.Thread(target=_drain, name="video-drain", daemon=True)
+        self._drainer.start()
+
+    @property
+    def dropped(self) -> int:
+        """Items the native queue discarded because this consumer fell behind."""
+        return self._queue.dropped
 
     def status(self):
         """NDNSF's LiveStreamStatus for this subscription (state, reason, counters)."""
@@ -637,3 +661,6 @@ class VideoStreamConsumer:
             self._subscriber.stop()
         except Exception:
             pass
+        self._closed = True
+        self._queue.close()
+        self._drainer.join(timeout=2.0)

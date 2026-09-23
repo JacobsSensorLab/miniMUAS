@@ -1658,6 +1658,7 @@ class Dashboard:
             missing=g("terminal_missing_sources"),
             stale_drops=g("stale_ready_drops"),
             lag_ms=consumer.lag_ms,
+            dropped=consumer.dropped,
         )
 
     def _ensure_video_thread(self) -> None:
