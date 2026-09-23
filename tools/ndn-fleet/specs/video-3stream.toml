@@ -1,0 +1,20 @@
+name = "video-3stream"
+description = """
+How much video does the fabric carry, and how smoothly, with all three airframes streaming at \
+once? Aggregate fps/kbps, per-stream p95/max gap and stutters, plus LP repair and reassembly \
+deltas per face. The round-7 protocol of ndn-rs/docs/nfd-divergence-findings.md (640 px, 15 fps, \
+q50, stream transport, 150 s settle, 90 s sample): runs of this spec at two builds are comparable."""
+settle_s = 150
+duration_s = 90
+repeats = 2
+counters = true
+
+[workload]
+kind = "flightcheck"
+video = ["iuas-01", "iuas-02", "wuas-01"]
+width = 640
+fps = 15
+quality = 50
+transport = "stream"
+audio = ""
+expect = ["iuas-01", "iuas-02", "wuas-01"]

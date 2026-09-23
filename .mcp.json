@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "ndn-fleet": {
+      "command": "cargo",
+      "args": ["run", "-q", "--release", "--manifest-path", "tools/ndn-fleet/Cargo.toml", "--", "mcp"]
+    }
+  }
+}

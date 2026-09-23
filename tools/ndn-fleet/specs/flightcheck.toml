@@ -1,0 +1,25 @@
+name = "flightcheck"
+description = """
+Can an operator fly on this build and cell right now? The operator-path verdict: telemetry cadence \
+from every airframe, live video from all three airframes at once at the dashboard's default preset, \
+and a tasked audio capture on the mic airframe, all through the dashboard socket the browser uses. \
+fleet_restore runs this after returning to the known-good cell."""
+settle_s = 150
+duration_s = 180
+repeats = 1
+counters = true
+
+[workload]
+kind = "flightcheck"
+video = ["iuas-01", "iuas-02", "wuas-01"]
+# The dashboard's default preset (dashboard.html VIDEO_PRESET_DEFAULT: "smooth · 640p20", q55):
+# the verdict is about what the operator gets without touching anything.
+width = 640
+fps = 20
+quality = 55
+transport = "stream"
+audio = "iuas-02"
+expect = ["iuas-01", "iuas-02", "wuas-01"]
+
+[criteria]
+verdict = { equals = "FLIGHT-READY" }

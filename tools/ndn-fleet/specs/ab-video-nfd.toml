@@ -1,0 +1,25 @@
+name = "ab-video-nfd"
+description = """
+Is ndn-fwd behind NFD on the operator video path, and by how much? The video-3stream workload on \
+the ndn-fwd wifi and nfd wifi cells, interleaved per repeat so each pair shares a window, each arm \
+settled after its cell switch. Round 7 measured NFD ~31% ahead (40.7 vs 31.1 aggregate fps) with \
+half the p95 gap; this spec re-asks that question at the current build. The starting cell is \
+restored afterwards."""
+settle_s = 150
+duration_s = 90
+repeats = 2
+counters = true
+arms = [
+  { label = "ndn-fwd", cell = "ndn-fwd wifi" },
+  { label = "nfd", cell = "nfd wifi" },
+]
+
+[workload]
+kind = "flightcheck"
+video = ["iuas-01", "iuas-02", "wuas-01"]
+width = 640
+fps = 15
+quality = 50
+transport = "stream"
+audio = ""
+expect = ["iuas-01", "iuas-02", "wuas-01"]

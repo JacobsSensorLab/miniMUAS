@@ -1,0 +1,12 @@
+name = "idle-baseline"
+description = """
+What do the face and CS counters do when no workload runs? 60 s of counters only (telemetry and \
+control traffic, LP acks, background retransmission), the background every other spec's deltas \
+are read against: a dup-rx or gave-up count is only a finding if it exceeds this."""
+settle_s = 150
+duration_s = 60
+repeats = 1
+counters = true
+
+[workload]
+kind = "idle"

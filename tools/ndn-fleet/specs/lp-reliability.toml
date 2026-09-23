@@ -1,0 +1,23 @@
+name = "lp-reliability"
+description = """
+Does NDNLP reliability repair losses on the fast path, and are retransmissions kept away from \
+forwarding? Heavy video (960 px, 30 fps, q75, three streams) to force fragmentation and loss; read \
+the per-face deltas of reliability.fast-retx vs resent (ack-ordering repair vs the 200 ms RTO \
+floor), dup-rx per fast-retx (duplicates a retransmission produced), gave-up per out.data \
+(unrecoverable losses), acks-tx/acks-rx, and reassembly timed-out. Round 7 found the repair \
+mechanism moved ~97% of repairs off the RTO path but too little loss to matter end-to-end; this \
+spec loads the link until it does."""
+settle_s = 150
+duration_s = 120
+repeats = 3
+counters = true
+
+[workload]
+kind = "flightcheck"
+video = ["iuas-01", "iuas-02", "wuas-01"]
+width = 960
+fps = 30
+quality = 75
+transport = "stream"
+audio = ""
+expect = ["iuas-01", "iuas-02", "wuas-01"]

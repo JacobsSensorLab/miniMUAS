@@ -1,0 +1,23 @@
+name = "fabric-bench"
+description = """
+What does the fabric itself carry with the application removed? ndn-iperf with --sign-mode none \
+(no keychain, NDNSF or agent) from an airframe to the GCS: unloaded ndnping RTT/loss, then three \
+concurrent flows for aggregate Mbps and the per-flow spread (fairness). Every forwarder ceiling \
+once blamed on the video path was the application; this separates the two. fabric-bench runs in \
+--no-switch mode: ndn-fleet owns cell changes and the settle clock."""
+settle_s = 150
+duration_s = 30
+repeats = 1
+counters = true
+
+[workload]
+kind = "fabric-bench"
+server = "minidronesys-01"
+client = "minidronesys-03"
+flows = 3
+size = 8192
+window = 64
+ping_count = 100
+
+[criteria]
+"workload.failed_flows" = { max = 0 }

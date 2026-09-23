@@ -17,3 +17,7 @@ __pycache__/
 
 # fabric-bench run artifacts (raw logs are kept locally, not committed)
 tools/fabric-bench/results/
+
+# ndn-fleet run records (tools/ndn-fleet/PROTOCOL.md "Results layout") and its build output
+tools/ndn-fleet/results/
+tools/ndn-fleet/target/

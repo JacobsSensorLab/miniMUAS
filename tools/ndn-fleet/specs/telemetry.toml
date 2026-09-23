@@ -1,0 +1,19 @@
+name = "telemetry"
+description = """
+Does telemetry reach the GCS at cadence from every airframe when nothing else loads the fabric? \
+No video, no payload tasks: rate and gap percentiles per vehicle over 90 s, the floor every \
+payload measurement sits on."""
+settle_s = 150
+duration_s = 90
+repeats = 1
+counters = true
+
+[workload]
+kind = "flightcheck"
+video = []
+audio = ""
+expect = ["iuas-01", "iuas-02", "wuas-01"]
+
+[criteria]
+verdict = { equals = "FLIGHT-READY" }
+"workload.telemetry.*.gaps_over_2s" = { max = 0 }

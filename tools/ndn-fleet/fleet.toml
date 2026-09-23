@@ -1,0 +1,101 @@
+# The miniMUAS fleet: the single inventory ndn-fleet deploys to and measures on.
+# Paths are relative to this file's directory unless absolute.
+
+[fleet]
+ssh_user = "minidronesys"
+# Used only when a node's direct connection fails (campus DNS for node 01 has been flaky).
+jump_host = "minidronesys-03.uom.memphis.edu"
+results_dir = "results"
+# The cell a session must leave the fleet on (PROTOCOL.md I9).
+known_good_cell = "ndn-fwd wifi"
+# The airframe that takes a deploy first (PROTOCOL.md I5).
+canary = "minidronesys-04"
+default_settle_s = 150
+# Journals larger than this are truncated before role services restart (they block agent startup).
+journal_truncate_bytes = 2097152
+journal_glob = "/var/lib/minimuas/log/*.jsonl"
+
+[dashboard]
+host = "minidronesys-03.uom.memphis.edu"
+port = 8080
+
+[deploy]
+config_repo = "/Users/pmle/Documents/Dev/minidronesys-configurations-copy"
+config_branch = "mini-muas-v2"
+pins_file = "nix/ndn-packages/ndn-fwd/default.nix"
+# nixosConfigurations.<node>.config.system.build.toplevel
+flake_attr = "nixosConfigurations.{node}.config.system.build.toplevel"
+build_retries = 3
+# The config flake's `minimuas-src` input is this checkout's GitHub repo.
+minimuas_local = "../.."
+
+# Every repo pinned in pins_file: its fetchFromGitHub block name, GitHub owner, local checkout.
+[[deploy.repo]]
+name = "ndn-fwd"
+owner = "Quarmire"
+local = "../../../ndn-workspace/ndn-fwd"
+
+[[deploy.repo]]
+name = "ndn-rs"
+owner = "Quarmire"
+local = "../../../ndn-workspace/ndn-rs"
+
+[[deploy.repo]]
+name = "ndn-ext"
+owner = "Quarmire"
+local = "../../../ndn-workspace/ndn-ext"
+
+[[deploy.repo]]
+name = "ndn-radio-drivers"
+owner = "Quarmire"
+local = "../../../ndn-workspace/ndn-radio-drivers"
+
+[[deploy.repo]]
+name = "ndn-radio"
+owner = "Quarmire"
+local = "../../../ndn-workspace/ndn-radio"
+
+[[deploy.repo]]
+name = "ndn-embedded"
+owner = "Quarmire"
+local = "../../../ndn-workspace/ndn-embedded"
+
+[workloads]
+flightcheck = "../flightcheck.py"
+fabric_bench = "../fabric-bench/fabric-bench.sh"
+python = "python3"
+
+# Role services, in restart order (PROTOCOL.md I5). Only units present on a node are restarted.
+[restart]
+forwarder = ["muas-fabric-apply"]
+agents = ["muas-v2-agent"]
+control = ["muas-v2-controller", "muas-v2-gcs"]
+dashboard = ["muas-v2-dashboard"]
+
+[[node]]
+name = "minidronesys-01"
+host = "minidronesys-01.uom.memphis.edu"
+addr = "192.168.1.11"
+role = "iuas"
+vehicle = "iuas-01"
+
+[[node]]
+name = "minidronesys-02"
+host = "minidronesys-02.uom.memphis.edu"
+addr = "192.168.1.12"
+role = "wuas"
+vehicle = "wuas-01"
+
+[[node]]
+name = "minidronesys-03"
+host = "minidronesys-03.uom.memphis.edu"
+addr = "192.168.1.13"
+role = "gcs"
+vehicle = "gcs"
+
+[[node]]
+name = "minidronesys-04"
+host = "minidronesys-04.uom.memphis.edu"
+addr = "192.168.1.14"
+role = "iuas"
+vehicle = "iuas-02"
