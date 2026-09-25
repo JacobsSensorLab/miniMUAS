@@ -119,7 +119,7 @@ impl ForwarderHealth {
 pub async fn forwarder_health(cfg: &Config, node: &Node) -> Result<ForwarderHealth> {
     let script = format!(
         "a=$(cat {FABRIC_DIR}/active 2>/dev/null); echo \"active=$a\"; \
-         for u in nfd muas-fabric-ndn-fwd muas-fabric-ndn-fwd-radio; do \
+         for u in {FORWARDER_UNITS}; do \
            echo \"unit $u $(systemctl is-active $u 2>/dev/null)\"; done; \
          case \"$a\" in nfd*) t=nfdc;; *) t=ndn-ctl;; esac; \
          echo '--- strategy'; $t strategy list 2>&1; echo '--- routes'; $t route list 2>&1; true"
@@ -285,11 +285,16 @@ fn parse_survey(text: &str) -> Survey {
     Survey { units, journals }
 }
 
-/// Restart the role services across the whole fleet in the I5 order: oversize journals
-/// truncated first (they blocked agent startup), then forwarder (fabric apply + health) on every
-/// node, then agents, then controller/gcs, then the dashboard. A group starts only when the
-/// previous one is up everywhere — the wrong order produced "Targeted ProviderToken is unknown or
-/// expired" and wiped prefix registrations. Only units present on a node are restarted.
+/// Bring the role services across the whole fleet into the I5 order: oversize journals truncated
+/// first (they blocked agent startup), then forwarder (fabric apply + health) on every node, then
+/// agents, then controller/gcs, then the dashboard. A group starts only when the previous one is
+/// up everywhere — the wrong order produced "Targeted ProviderToken is unknown or expired" and
+/// wiped prefix registrations. Only units present on a node are touched.
+///
+/// Each role unit restarts at most once per deploy: a unit that already (re)started after the
+/// node's activation and after its forwarder's last start is left alone (see `refresh_script`).
+/// Restarting everything unconditionally bounced each role two or three times per deploy
+/// (2026-09-23 17:07–17:12 journals), and every bounce is a window where commands are lost.
 /// Caller holds the lock.
 pub async fn restart_roles(cfg: &Config, rec: &Recorder, job: &JobCtx) -> Result<Value> {
     let mut restarted = false;
@@ -391,11 +396,21 @@ async fn restart_roles_inner(cfg: &Config, job: &JobCtx, restarted: &mut bool) -
             job.log(format!("{group}: no units present on any node"));
             continue;
         }
+        let forwarder = group == "forwarder";
         for (node, units) in &targets {
-            job.log(format!("{group}: restarting {units:?} on {}", node.name));
+            let verb = if forwarder { "ensuring" } else { "refreshing" };
+            job.log(format!("{group}: {verb} {units:?} on {}", node.name));
         }
-        *restarted = true;
-        let scripts: Vec<String> = targets.iter().map(|(_, u)| restart_script(u)).collect();
+        let scripts: Vec<String> = targets
+            .iter()
+            .map(|(_, u)| {
+                if forwarder {
+                    ensure_script(u)
+                } else {
+                    refresh_script(u)
+                }
+            })
+            .collect();
         let outs = status::join_all(
             targets
                 .iter()
@@ -407,21 +422,28 @@ async fn restart_roles_inner(cfg: &Config, job: &JobCtx, restarted: &mut bool) -
         let mut failures = Vec::new();
         for ((node, units), out) in targets.iter().zip(outs) {
             let out = out?;
+            let (bounced, fresh) = parse_refresh(&out.stdout);
             match out.stdout_ok() {
                 Ok(_) => job.log(format!(
-                    "{group}: {} up in {} ms",
+                    "{group}: {} up in {} ms (restarted {bounced:?}, already fresh {fresh:?})",
                     node.name, out.elapsed_ms
                 )),
                 Err(e) => failures.push(format!("{}: {e:#}", node.name)),
             }
-            group_nodes
-                .push(json!({ "node": node.name, "units": units, "restart": out_json(&out) }));
+            *restarted |= !bounced.is_empty();
+            group_nodes.push(json!({
+                "node": node.name,
+                "units": units,
+                "restarted": bounced,
+                "fresh": fresh,
+                "restart": out_json(&out),
+            }));
         }
         if !failures.is_empty() {
             bail!("{group} restart failed: {}", failures.join("; "));
         }
         let mut entry = json!({ "group": group, "nodes": group_nodes });
-        if group == "forwarder" {
+        if forwarder {
             // Fabric apply returning is not enough: the next groups register prefixes and join
             // the /muas sync group, which needs the forwarder up with multicast on /muas.
             let log = |l: &str| job.log(l);
@@ -442,20 +464,84 @@ async fn restart_roles_inner(cfg: &Config, job: &JobCtx, restarted: &mut bool) -
     Ok(json!({ "truncated": truncated, "groups": done }))
 }
 
-/// Restart `units` in order, then wait for each to report active.
-fn restart_script(units: &[&String]) -> String {
-    let list = units
+/// Forwarder daemons a role unit's app face lives on; which one runs depends on the cell.
+const FORWARDER_UNITS: &str = "nfd muas-fabric-ndn-fwd muas-fabric-ndn-fwd-radio";
+
+/// Start (never restart) the forwarder-group units, then wait for each to report active.
+///
+/// `systemctl restart muas-fabric-apply` is not a forwarder restart: muas-fabric.target
+/// Requires= apply and every role unit Requires= the target, so systemd propagates the restart
+/// to all role units on the node at once — on every node in parallel, which is the opposite of
+/// the I5 order (2026-09-23 17:11:43: agents, controller, gcs and dashboard all stopped in the
+/// same second as apply). And apply on a healthy cell only asserts it (its fast path), so the
+/// restart bought nothing. A switch that changed the forwarder already restarted it, and its
+/// ExecStartPost re-applies the /muas setup; `start` still revives an apply that failed.
+fn ensure_script(units: &[&String]) -> String {
+    let list = shell_list(units);
+    format!(
+        "for u in {list}; do sudo -n systemctl start \"$u\" || {{ echo \"start $u failed\" >&2; exit 1; }}; done; {}",
+        wait_active_script(&list)
+    )
+}
+
+/// Restart each unit in order unless it is already fresh, then wait for each to report active.
+///
+/// Fresh = active and entered activation at or after both the node's activation
+/// (`/run/current-system` is re-linked by switch-to-configuration before it starts changed
+/// units) and the last start of any running forwarder (a forwarder restart drops the unit's app
+/// face and every prefix it registered). The check runs on the node right before each unit, after
+/// any job queued on it has finished, so restarts cascaded by an earlier unit in this or a
+/// previous group count: restarting muas-v2-controller restarts gcs and dashboard via PartOf=.
+/// Prints `reference <t>`, then `fresh <unit> <t>` or `restarted <unit>` per unit.
+fn refresh_script(units: &[&String]) -> String {
+    let list = shell_list(units);
+    format!(
+        "ref=$(stat -c %Y /run/current-system) || exit 1; \
+         for f in {FORWARDER_UNITS}; do systemctl is-active -q \"$f\" || continue; \
+           t=$(systemctl show --timestamp=unix -P InactiveExitTimestamp \"$f\"); t=${{t#@}}; \
+           [ -n \"$t\" ] && [ \"$t\" -gt \"$ref\" ] && ref=$t; done; \
+         echo \"reference $ref\"; \
+         for u in {list}; do i=0; while [ -n \"$(systemctl show -P Job \"$u\")\" ]; do \
+             i=$((i+1)); [ $i -ge {UNIT_ACTIVE_S} ] && break; sleep 1; done; \
+           t=$(systemctl show --timestamp=unix -P InactiveExitTimestamp \"$u\"); t=${{t#@}}; \
+           if systemctl is-active -q \"$u\" && [ -n \"$t\" ] && [ \"$t\" -ge \"$ref\" ]; then \
+             echo \"fresh $u $t\"; continue; fi; \
+           sudo -n systemctl restart \"$u\" || {{ echo \"restart $u failed\" >&2; exit 1; }}; \
+           echo \"restarted $u\"; done; {}",
+        wait_active_script(&list)
+    )
+}
+
+fn shell_list(units: &[&String]) -> String {
+    units
         .iter()
         .map(|u| sh_quote(u))
         .collect::<Vec<_>>()
-        .join(" ");
+        .join(" ")
+}
+
+fn wait_active_script(list: &str) -> String {
     let tries = UNIT_ACTIVE_S / 3;
     format!(
-        "for u in {list}; do sudo -n systemctl restart \"$u\" || {{ echo \"restart $u failed\" >&2; exit 1; }}; done; \
-         for u in {list}; do i=0; until systemctl is-active -q \"$u\"; do i=$((i+1)); \
+        "for u in {list}; do i=0; until systemctl is-active -q \"$u\"; do i=$((i+1)); \
            if [ $i -ge {tries} ]; then echo \"$u not active: $(systemctl is-active \"$u\")\" >&2; exit 1; fi; \
            sleep 3; done; echo \"$u active\"; done"
     )
+}
+
+/// (restarted, already fresh) unit names from `refresh_script` output.
+fn parse_refresh(stdout: &str) -> (Vec<String>, Vec<String>) {
+    let mut restarted = Vec::new();
+    let mut fresh = Vec::new();
+    for line in stdout.lines() {
+        let mut words = line.split_whitespace();
+        match (words.next(), words.next()) {
+            (Some("restarted"), Some(u)) => restarted.push(u.to_string()),
+            (Some("fresh"), Some(u)) => fresh.push(u.to_string()),
+            _ => {}
+        }
+    }
+    (restarted, fresh)
 }
 
 #[cfg(test)]

@@ -41,9 +41,12 @@ Workloads are driven through the GCS dashboard WebSocket by `miniMUAS/tools/flig
   `nix flake prefetch`). The pin commit is pushed before building. After rollout every node's
   `/run/current-system` equals the closure built for it, and every node runs the same ndn-fwd
   package path.
-- **I5 — canary first, GCS last, fixed restart order.** Rollout: canary airframe → verify → other
-  airframes → GCS. Then journals >2 MB are truncated and services restarted in order:
-  forwarder (fabric apply + health) → agents → controller/gcs → dashboard.
+- **I5 — canary first, GCS last, fixed restart order, one restart per role.** Rollout: canary
+  airframe → verify → other airframes → GCS. Then journals >2 MB are truncated and services are
+  brought up in order: forwarder (fabric apply started, never restarted + health) → agents →
+  controller/gcs → dashboard. A role unit is restarted only if it has not already started since
+  the node's activation and its forwarder's last start (switch-to-configuration, a PartOf=
+  cascade, or an earlier group may have done it).
 - **I6 — streams are stopped around every sample.** Before a run: all video disabled and the
   dashboard quiet (no frames for 3 s). After: disabled again. A sample whose first frame precedes
   its own enable (backlog) is rejected, not reported.
@@ -126,7 +129,9 @@ jobs/<id>.log
 - I4: bumping a rev without its hash silently rebuilt the old source; a dirty tree cannot be built
   by the fleet.
 - I5: wrong restart order produced "Targeted ProviderToken is unknown or expired" and wiped prefix
-  registrations; oversized journals blocked agent startup.
+  registrations; oversized journals blocked agent startup. Unconditional restarts bounced every
+  role 2–3 times per deploy (a fabric-apply restart cascades to all role units via Requires=),
+  and commands sent while a provider starts are lost.
 - I6: a 40 s quiet gap does not stop streams; one sample reported 40 fps against a 15 fps request
   while draining backlog.
 - I7/I8: counter snapshots, captures and write-ups were ad hoc and irreproducible; "logging

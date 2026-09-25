@@ -72,7 +72,8 @@ pub struct WorkloadsCfg {
     pub python: String,
 }
 
-/// Role services in restart order (PROTOCOL.md I5).
+/// Role services in restart order (PROTOCOL.md I5). `forwarder` units are started, never
+/// restarted; the rest restart only when not already fresh (`cells::refresh_script`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct RestartCfg {
     pub forwarder: Vec<String>,

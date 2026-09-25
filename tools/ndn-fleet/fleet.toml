@@ -69,7 +69,8 @@ flightcheck = "../flightcheck.py"
 fabric_bench = "../fabric-bench/fabric-bench.sh"
 python = "python3"
 
-# Role services, in restart order (PROTOCOL.md I5). Only units present on a node are restarted.
+# Role services, in restart order (PROTOCOL.md I5). Only units present on a node are touched;
+# forwarder units are only started, and a role unit already fresh since activation is skipped.
 [restart]
 forwarder = ["muas-fabric-apply"]
 agents = ["muas-v2-agent"]
