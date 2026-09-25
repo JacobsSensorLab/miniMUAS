@@ -273,10 +273,14 @@ class TelemetryFeed:
                       error=str(exc))
             return None
         d = descriptor.get("definition", {})
+        prefix = str(d.get("semanticDataPrefix", ""))
         # The descriptor comes over the unvalidated segmented plane; refuse one
-        # that points anywhere but this vehicle's own telemetry stream.
+        # that points anywhere but this vehicle's own telemetry stream. NDNSF
+        # appends a session version to the configured data prefix
+        # (".../telemetry/stream/v=<n>"), so the prefix is matched by name.
         if (d.get("provider") != self._provider
-                or d.get("semanticDataPrefix") != self._data_prefix
+                or not (prefix == self._data_prefix
+                        or prefix.startswith(self._data_prefix + "/"))
                 or d.get("streamId") != TELEMETRY_STREAM_ID):
             self._log("telemetry.descriptor_rejected", vehicle=self.vehicle_id,
                       provider=d.get("provider"),
