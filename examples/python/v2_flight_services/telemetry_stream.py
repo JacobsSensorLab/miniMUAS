@@ -78,6 +78,9 @@ RESUBSCRIBE_MIN_S = 3.0
 # Faces are not thread-safe), so keep it short; it runs only on (re)subscribe.
 DESCRIPTOR_TIMEOUT_MS = 800
 WATCH_PERIOD_S = 0.5
+# A healthy feed is otherwise silent in the journal; this makes a PeerGuard
+# that stopped receiving (or a native queue dropping items) visible.
+STATS_PERIOD_S = 60.0
 DRAIN_BATCH_ITEMS = 32
 DRAIN_WAIT_MS = 200
 
@@ -365,12 +368,29 @@ class TelemetryFeed:
             return self._lag_ns / 1e9
 
     def _watch(self) -> None:
+        stats_at = time.monotonic()
         while not self._stop.wait(WATCH_PERIOD_S):
             try:
                 self._tick()
             except Exception as exc:
                 self._log("telemetry.watch_error", vehicle=self.vehicle_id,
                           error=str(exc))
+            if time.monotonic() - stats_at >= STATS_PERIOD_S:
+                stats_at = time.monotonic()
+                self._log_stats()
+
+    def _log_stats(self) -> None:
+        sub = self._sub
+        silent = self.silent_s()
+        lag = self._lag_s()
+        self._log(
+            "telemetry.stats", vehicle=self.vehicle_id,
+            delivered=self.delivered, rejected=self.rejected,
+            resubscribes=self.resubscribes,
+            dropped=sub["queue"].dropped if sub is not None else None,
+            silent_s=None if silent is None else round(silent, 2),
+            lag_ms=None if lag is None else round(lag * 1000),
+        )
 
     def _tick(self) -> None:
         now = time.monotonic()

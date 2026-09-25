@@ -3553,6 +3553,19 @@ def main() -> int:
         except Exception as exc:
             print_json("agent.capability.publish_failed", error=str(exc))
 
+        # Register EVERY service before anything can start the provider
+        # runtime. run(service) only registers one; the per-service registrar
+        # is the supported path for multi-service providers in the python
+        # wrapper. The runtime's start() runs ServiceProvider::init() once,
+        # on whichever call comes first -- run(), create_stream() or
+        # subscribe_stream() -- and init() registers only the services added
+        # so far. The telemetry stream (create_stream) and the peer feeds
+        # (subscribe_stream) used to start here, before this loop: the agent
+        # then served no command at all (fleet 2026-09-25, 48/48 video
+        # commands to iuas-01 timed out; none reached a handler).
+        for service in services:
+            provider._register_service(service)
+
         threading.Thread(target=telemetry_loop, daemon=True).start()
         threading.Thread(target=video_loop, daemon=True).start()
         threading.Thread(target=watchpoint_loop, daemon=True).start()
@@ -3561,11 +3574,6 @@ def main() -> int:
                 feed.start()
             peer_guard.start()
 
-        # Register EVERY service before entering the native loop. run(service)
-        # only registers one; the per-service registrar is the supported path
-        # for multi-service providers in the python wrapper.
-        for service in services:
-            provider._register_service(service)
         # Serve this vehicle's agent journal (events + metrics + logs) over
         # NDN under /muas/v2/<vehicle_id>/journal/<session> so the dashboard's
         # mission bundle sweep can pull the whole flight record without SSH.
