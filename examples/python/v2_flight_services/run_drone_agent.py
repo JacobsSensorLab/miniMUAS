@@ -8,10 +8,15 @@ One NDNSF provider per drone, registering every vehicle service:
   iuas only   : flight/investigate (climb + continuous carrot orbit,
                 streamed guided targets on sim or MAVLink)
 
-Continuous publications (segmented objects, short freshness, latest-wins):
+Telemetry is one NDNSF predictive stream (telemetry_stream.py):
 
-  /muas/v2/<vid>/telemetry/live   1 Hz TelemetrySample (dashboard cards,
-                                  link health = sample age)
+  /muas/v2/<vid>/telemetry/stream      --telemetry-hz TelemetrySample items,
+                                       signed by /muas/v2/<vid>
+  /muas/v2/<vid>/telemetry/descriptor  its PredictiveStreamDescriptor (JSON)
+
+Other continuous publications (segmented objects, short freshness,
+latest-wins):
+
   /muas/v2/<vid>/telemetry/state  CapabilityProfile (once, at startup)
   /muas/v2/<vid>/search/status    1 Hz SearchStatus while a raster runs
   /muas/v2/<vid>/video/<seq>      MJPEG frames while video is enabled
@@ -70,7 +75,7 @@ from contracts import (
     vehicle_sensor_event_name,
     vehicle_sensor_service,
     vehicle_system_service,
-    vehicle_telemetry_live_name,
+    vehicle_telemetry_descriptor_name,
     vehicle_telemetry_state_name,
     vehicle_video_live_name,
     vehicle_video_service,
@@ -86,6 +91,8 @@ from dataplane import (
 )
 from raster import build_raster
 from timesync import ClockMonitor
+from commands import CommandDeduplicator
+from telemetry_stream import TelemetryFeed, TelemetryStreamProducer
 from ndnsf_runtime import (
     add_common_arguments,
     add_ndnsf_path,
@@ -1767,18 +1774,6 @@ def main() -> int:
     min_agl = 3.5 if flight.source == "mavlink" else 0.5
 
     add_ndnsf_path(args.ndnsf_root)
-    # Serve this vehicle's agent journal (events + metrics + logs) over NDN
-    # under /muas/v2/<vehicle_id>/journal/<session> so the dashboard's mission
-    # bundle sweep can pull the whole flight record without SSH.
-    # Late-bound: video_cfg is built below, but the publisher must never fire
-    # a re-sign burst while video is live (it holds the GIL and freezes the
-    # stream -- measured as a 2.11 s stall). Read through a holder so the
-    # thread sees the real dict once it exists.
-    _video_state: dict = {}
-    start_journal_publisher(
-        vehicle_id, args.session,
-        defer_while=lambda: bool(_video_state.get("enabled")),
-    )
     from ndnsf import AckDecision, ServiceProvider, ServiceResponse
 
     provider = ServiceProvider(**provider_kwargs(args, prefix, ""))
@@ -1807,7 +1802,6 @@ def main() -> int:
         # dashboard can subscribe; empty on the segmented path.
         "transport": "segmented", "descriptor": "",
     }
-    _video_state = video_cfg  # journal publisher defers while this is enabled
     # Owns the lifecycle of the predictive video stream (stream transport
     # only). The video/control handler is the sole creator (so the descriptor
     # is ready in its response); the video loop only pushes frames.
@@ -1815,8 +1809,10 @@ def main() -> int:
     video_stream_lock = threading.Lock()
     producers_keepalive: list[object] = []  # frames must outlive handlers
 
-    telemetry_pub = LatestPublisher(
-        vehicle_telemetry_live_name(vehicle_id), freshness_ms=700
+    # Short freshness: a restarted agent's new descriptor (new session epoch)
+    # must win over a cached copy within a second.
+    telemetry_descriptor_pub = LatestPublisher(
+        vehicle_telemetry_descriptor_name(vehicle_id), freshness_ms=1000
     )
     search_pub = LatestPublisher(vehicle_search_status_name(vehicle_id))
     video_status_pub = LatestPublisher(vehicle_video_status_name(vehicle_id))
@@ -2129,13 +2125,22 @@ def main() -> int:
             vehicle_coord_status_name(vehicle_id), freshness_ms=700
         )
 
+        # One stream subscription per peer, on this provider's own runtime
+        # (ServiceProvider.subscribe_stream). Started with PeerGuard, not here:
+        # the descriptor fetch holds the GIL, and nothing may compete with the
+        # provider's startup while the first commands are being served.
+        peer_feeds = {
+            vid: TelemetryFeed(
+                provider, vid, fetch=fetch_segmented,
+                log=lambda event, **kw: print_json("agent." + event, **kw),
+            )
+            for vid in peer_ids
+        }
+
         def _fetch_peer_telemetry(vid: str):
-            try:
-                return json.loads(fetch_segmented(
-                    vehicle_telemetry_live_name(vid), timeout_ms=600
-                ).decode())
-            except Exception:
-                return None
+            # The poll this replaces used freshness 700 ms plus a <=600 ms
+            # fetch, so a peer position up to ~1.3 s old was already in use.
+            return peer_feeds[vid].latest(max_age_s=1.0)
 
         def _fetch_peer_coord(vid: str):
             try:
@@ -2201,10 +2206,31 @@ def main() -> int:
         return True
 
     # ---- telemetry loop ----------------------------------------------------
+    def start_telemetry_stream():
+        """-> producer, or None (logged) so the loop retries later."""
+        try:
+            producer = TelemetryStreamProducer(
+                provider, vehicle_id, hz=args.telemetry_hz,
+                # Same rule as video: the Core rejects a push whose signer is
+                # not the stream's provider identity (/muas/v2/<vid>).
+                signing_identity=prefix,
+            )
+            telemetry_descriptor_pub.publish(producer.descriptor_json)
+            print_json("agent.telemetry.stream_started", hz=args.telemetry_hz)
+            return producer
+        except Exception as exc:
+            print_json("agent.telemetry.stream_start_failed", error=str(exc))
+            return None
+
     def telemetry_loop() -> None:
         period = 1.0 / max(args.telemetry_hz, 0.2)
         clock = ClockMonitor()
+        producer = None
+        retry_at = 0.0
         while True:
+            if producer is None and time.monotonic() >= retry_at:
+                producer = start_telemetry_stream()
+                retry_at = time.monotonic() + 5.0
             try:
                 t = flight.telemetry()
                 c = clock.reading()
@@ -2219,7 +2245,8 @@ def main() -> int:
                     clock_rms_ms=round(c.rms_ms, 3),
                     **{k: v for k, v in t.items()},
                 )
-                telemetry_pub.publish(sample.to_bytes())
+                if producer is not None:
+                    producer.publish(sample.to_bytes())
             except Exception as exc:
                 print_json("agent.telemetry.error", error=str(exc))
             time.sleep(period)
@@ -2521,11 +2548,17 @@ def main() -> int:
             # exists. Sleeping here too would pace the pipeline twice and cap
             # it below the requested rate.
 
+    # Every service handler runs each command once however often it is
+    # delivered: the dashboard re-issues a command until it is answered
+    # (commands.py).
+    executed_once = CommandDeduplicator(log=print_json).wrap
+
     # ---- service: bench/echo (NDNSF latency/throughput instrument) ---------
     # Synthetic workload: sleep delay_ms, return resp_size bytes. Isolates the
     # NDNSF request path (discovery/ACK/ABE/response) from real service work so
     # the benchmark harness can sweep payload size + provider cost cleanly.
     @provider.handler(vehicle_bench_service(vehicle_id))
+    @executed_once
     def bench_echo(payload: bytes) -> bytes:
         resp_size = int.from_bytes(payload[0:4], "big") if len(payload) >= 4 else 64
         delay_ms = int.from_bytes(payload[4:8], "big") if len(payload) >= 8 else 0
@@ -2536,6 +2569,7 @@ def main() -> int:
 
     # ---- service: video/control -------------------------------------------
     @provider.handler(vehicle_video_service(vehicle_id))
+    @executed_once
     def video_control(payload: bytes) -> bytes:
         request = VideoControlRequest.from_bytes(payload)
         transport = request.transport if request.transport in ("segmented", "stream") else "segmented"
@@ -2616,14 +2650,17 @@ def main() -> int:
         ).to_bytes()
 
     @provider.handler(vehicle_flight_service(vehicle_id, "rtl"))
+    @executed_once
     def cmd_rtl(payload: bytes) -> bytes:
         return flight_command("rtl")
 
     @provider.handler(vehicle_flight_service(vehicle_id, "land"))
+    @executed_once
     def cmd_land(payload: bytes) -> bytes:
         return flight_command("land")
 
     @provider.handler(vehicle_flight_service(vehicle_id, "hold"))
+    @executed_once
     def cmd_hold(payload: bytes) -> bytes:
         return flight_command("hold")
 
@@ -2639,6 +2676,7 @@ def main() -> int:
         return AckDecision(status=True)
 
     @provider.handler(vehicle_flight_service(vehicle_id, "takeoff"))
+    @executed_once
     def cmd_takeoff(payload: bytes) -> bytes:
         request = TakeoffRequest.from_bytes(payload)
         if not (min_agl <= request.target_agl_m <= args.max_agl_m):
@@ -2708,6 +2746,7 @@ def main() -> int:
         return AckDecision(status=True)
 
     @provider.handler(sensor_service)
+    @executed_once
     def sensor_capture(payload: bytes) -> bytes:
         req = SensorCaptureRequest.from_bytes(payload)
         reason = _sensor_guard(req)
@@ -2833,6 +2872,7 @@ def main() -> int:
         return AckDecision(status=True)
 
     @provider.handler(shutdown_service)
+    @executed_once
     def cmd_shutdown(payload: bytes) -> bytes:
         reason = _shutdown_guard(payload)  # re-check: state may have changed
         if reason:
@@ -2912,6 +2952,7 @@ def main() -> int:
             return AckDecision(status=True)
 
         @provider.handler(search_service)
+        @executed_once
         def raster_search(payload: bytes) -> bytes:
             request = RasterSearchRequest.from_bytes(payload)
             reason = _search_guard(request)
@@ -3430,6 +3471,7 @@ def main() -> int:
             )
 
         @provider.handler(investigate_service)
+        @executed_once
         def investigate(payload: bytes) -> bytes:
             request = InvestigatePointRequest.from_bytes(payload)
             reason = _investigate_guard(request)
@@ -3515,6 +3557,8 @@ def main() -> int:
         threading.Thread(target=video_loop, daemon=True).start()
         threading.Thread(target=watchpoint_loop, daemon=True).start()
         if peer_guard is not None:
+            for feed in peer_feeds.values():
+                feed.start()
             peer_guard.start()
 
         # Register EVERY service before entering the native loop. run(service)
@@ -3522,6 +3566,19 @@ def main() -> int:
         # for multi-service providers in the python wrapper.
         for service in services:
             provider._register_service(service)
+        # Serve this vehicle's agent journal (events + metrics + logs) over
+        # NDN under /muas/v2/<vehicle_id>/journal/<session> so the dashboard's
+        # mission bundle sweep can pull the whole flight record without SSH.
+        # Started only now: its producer opens a second ndn::Face + KeyChain,
+        # and building that while the provider was being constructed coincided
+        # with a 300 s command blackout on wuas-01 that ended 0.39 s after the
+        # publisher's first refresh rebuilt it (fleet 2026-09-23). It never
+        # re-signs while video is live: the burst holds the GIL and froze the
+        # stream for 2.11 s.
+        start_journal_publisher(
+            vehicle_id, args.session,
+            defer_while=lambda: bool(video_cfg["enabled"]),
+        )
         print_json("agent.starting", role=args.role, services=services)
         provider._native.run()
         return 0

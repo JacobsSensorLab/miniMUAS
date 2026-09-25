@@ -24,6 +24,7 @@ from detector import (
     offset_latlon,
     project_ground,
 )
+from commands import CommandDeduplicator
 from ndnsf_runtime import (
     add_common_arguments,
     add_ndnsf_path,
@@ -146,9 +147,6 @@ def main() -> int:
     start_nfd_counter_scrape(args.nfd_metrics_interval, enabled=args.nfd_metrics)
 
     add_ndnsf_path(args.ndnsf_root)
-    # Serve this provider's journal over NDN so the dashboard's mission-bundle
-    # sweep can pull it without SSH (node id "gcs").
-    start_journal_publisher("gcs", args.session)
     from ndnsf import AckDecision, ServiceProvider, ServiceResponse
 
     detector = detector_from_spec(args.detector)
@@ -464,7 +462,13 @@ def main() -> int:
         )
         return response.to_bytes()
 
+    # Every service handler runs each command once however often it is
+    # delivered: the dashboard re-issues a command until it is answered
+    # (commands.py).
+    executed_once = CommandDeduplicator(log=print_json).wrap
+
     @provider.handler(args.service)
+    @executed_once
     def detect_object(payload: bytes) -> bytes | ServiceResponse:
         # Admission gate: only args.detect_admit requests may be in flight;
         # excess is fast-rejected so a framework thread isn't parked waiting
@@ -486,6 +490,12 @@ def main() -> int:
     with optional_local_nfd(args.start_local_nfd):
         print_json("gcs.provider.starting", service=args.service)
         try:
+            # Serve this provider's journal over NDN so the dashboard's
+            # mission-bundle sweep can pull it without SSH (node id "gcs").
+            # After the provider exists: the journal producer opens a second
+            # ndn::Face, and building it during provider construction coincided
+            # with a 300 s command blackout on an agent (run_drone_agent.py).
+            start_journal_publisher("gcs", args.session)
             return provider.run(args.service)
         finally:
             flush_json_log()

@@ -31,6 +31,7 @@ from contracts import (
 )
 from camera import frame_source_from_spec
 from dataplane import publish_segmented, set_runtime
+from commands import CommandDeduplicator
 from ndnsf_runtime import (
     add_common_arguments,
     add_ndnsf_path,
@@ -245,8 +246,6 @@ def main() -> int:
         )
 
     add_ndnsf_path(args.ndnsf_root)
-    # Serve this provider's journal over NDN for the dashboard bundle sweep.
-    start_journal_publisher(f"{args.vehicle_id}-perception", args.session)
     from ndnsf import AckDecision, ServiceProvider
 
     provider = ServiceProvider(
@@ -347,7 +346,13 @@ def main() -> int:
             )
         return AckDecision(status=True, message=compiled.mode)
 
+    # Every service handler runs each command once however often it is
+    # delivered: the dashboard re-issues a command until it is answered
+    # (commands.py).
+    executed_once = CommandDeduplicator(log=print_json).wrap
+
     @provider.handler(service)
+    @executed_once
     def investigate_point(payload: bytes) -> bytes:
         request = InvestigatePointRequest.from_bytes(payload)
         if investigate_mod is None:
@@ -470,6 +475,11 @@ def main() -> int:
             )
         print_json("iuas.provider.starting", service=service)
         try:
+            # Serve this provider's journal over NDN for the dashboard bundle
+            # sweep. After the provider exists: the journal producer opens a second
+            # ndn::Face, and building it during provider construction coincided
+            # with a 300 s command blackout on an agent (run_drone_agent.py).
+            start_journal_publisher(f"{args.vehicle_id}-perception", args.session)
             return provider.run(service)
         finally:
             flush_json_log()

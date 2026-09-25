@@ -510,9 +510,14 @@ class FlightTaskResult:
 # ---------------------------------------------------------------------------
 
 
-def vehicle_telemetry_live_name(vehicle_id: str) -> str:
-    """Data name where a vehicle publishes its 1 Hz live telemetry sample."""
-    return f"/muas/v2/{vehicle_id}/telemetry/live"
+def vehicle_telemetry_stream_name(vehicle_id: str) -> str:
+    """Data prefix of the vehicle's NDNSF predictive telemetry stream."""
+    return f"/muas/v2/{vehicle_id}/telemetry/stream"
+
+
+def vehicle_telemetry_descriptor_name(vehicle_id: str) -> str:
+    """Data name carrying the telemetry stream's descriptor (JSON)."""
+    return f"/muas/v2/{vehicle_id}/telemetry/descriptor"
 
 
 def vehicle_search_status_name(vehicle_id: str) -> str:

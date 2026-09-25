@@ -44,12 +44,14 @@ import re
 import shutil
 import tempfile
 import threading
+import uuid
 from statistics import median
 from collections import deque
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from commands import is_in_progress, with_command_id
 from contracts import (
     CapabilityProfile,
     DetectionRequest,
@@ -74,7 +76,6 @@ from contracts import (
     vehicle_sensor_service,
     vehicle_system_service,
     vehicle_journal_name,
-    vehicle_telemetry_live_name,
     vehicle_telemetry_state_name,
     vehicle_video_live_name,
     vehicle_video_service,
@@ -88,6 +89,7 @@ from dataplane import (
 )
 from raster import build_raster, estimate_duration_s
 from timesync import ClockMonitor
+from telemetry_stream import TelemetryFeed
 from ndnsf_runtime import (
     add_common_arguments,
     add_ndnsf_path,
@@ -312,22 +314,21 @@ class Dashboard:
         # NDN fetch holds the GIL, so concurrent relay threads starved the
         # asyncio HTTP loop. See _ensure_video_thread / _video_relay_loop.
         self._video_thread = None
-        self.telemetry_age: dict[str, float] = {}
+        # vid -> TelemetryFeed (one NDNSF telemetry stream subscription each)
+        self.telemetry_feeds: dict[str, TelemetryFeed] = {}
         # Link health is measured on OUR monotonic clock only, so it never
         # depends on clock sync. Clock offset comes from chrony on each end
         # (timesync.py), not from differencing wall clocks across the link.
         # vid -> {last_ns, changed_mono, age}
         self.sample_state: dict[str, dict] = {}
         self.clock = ClockMonitor()
-        # first monotonic time we tried to poll each vehicle, so a fleet that
-        # is still coming up doesn't flash "no link" before its first fix
-        self.first_poll: dict[str, float] = {}
+        # when the feeds started, so a fleet that is still coming up doesn't
+        # flash "no link" before its first sample
+        self.telemetry_since = time.monotonic()
 
-    # link is only declared lost after SUSTAINED silence, never on a single
-    # dropped poll: telemetry publishes at 4 Hz and we poll at ~3 Hz, so one
-    # missed fetch is normal jitter, not an offline vehicle. 2.5 s is ~8
-    # consecutive misses — unambiguous silence — which keeps a healthy fleet
-    # from blinking online/offline at the poll rate.
+    # link is only declared lost after SUSTAINED silence: 2.5 s is 10 missed
+    # samples at 4 Hz, well past a single lost sample (fast retransmit after 3
+    # later samples), so a healthy fleet never blinks online/offline.
     STALE_AFTER_S = 2.5
 
     # Resubscribe a stream at the live edge once it has fallen this far behind
@@ -338,6 +339,14 @@ class Dashboard:
     # At most one resubscribe per vehicle per this many seconds, so a stream
     # that cannot keep up degrades to periodic skips instead of thrashing.
     VIDEO_RESUBSCRIBE_MIN_S = 3.0
+
+    # Re-issue an unanswered command this often (commands.py). A healthy
+    # targeted round trip is 50-100 ms and a provider's first request after
+    # start took 11.6 s (fleet 2026-09-25), so 2 s re-issues quickly without
+    # piling duplicates onto a provider that is merely slow.
+    COMMAND_RETRY_S = 2.0
+    # Don't start an attempt that could not complete before the deadline.
+    COMMAND_MIN_ATTEMPT_MS = 500
 
     # ---- mission recorder ----------------------------------------------------
 
@@ -467,15 +476,21 @@ class Dashboard:
             if getattr(self, "_http_ready", False):
                 break
             time.sleep(0.1)
-        # one poller thread PER STREAM: the old single loop fetched both
-        # vehicles' telemetry and the search status serially (800 ms
-        # timeout each) then slept 1 s — a slow vehicle stalled everyone
-        # and markers updated every 2-3 s. Independent threads at ~3 Hz
-        # follow the agents' 4 Hz publications closely.
+        # One telemetry stream subscription per vehicle, each with its own
+        # watch + drain thread, so a vehicle that is down never delays another.
+        self.telemetry_since = time.monotonic()
         for vid in self.vehicles:
-            threading.Thread(
-                target=self._poll_telemetry_forever, args=(vid,), daemon=True
+            self.telemetry_feeds[vid] = TelemetryFeed(
+                self.user, vid, fetch=fetch_segmented,
+                log=lambda event, **kw: print_json("dashboard." + event, **kw),
+                on_sample=lambda payload, _sample, vid=vid: self._on_telemetry(
+                    vid, payload
+                ),
             ).start()
+        threading.Thread(
+            target=self._watch_telemetry_forever, name="telemetry-watch",
+            daemon=True,
+        ).start()
         threading.Thread(target=self._poll_search_forever, daemon=True).start()
         threading.Thread(
             target=self._poll_capabilities_forever, daemon=True
@@ -548,35 +563,6 @@ class Dashboard:
                     pass
             time.sleep(10.0)
 
-    def _poll_telemetry_forever(self, vid: str) -> None:
-        period = 0.3
-        backoff = 0.0
-        while True:
-            t0 = time.monotonic()
-            ok = self._poll_vehicle(vid)
-            if ok:
-                backoff = 0.0
-                time.sleep(max(0.0, period - (time.monotonic() - t0)))
-            else:
-                # Unreachable vehicle: the blocking fetch holds the GIL for its
-                # full 800 ms timeout (ndn-cxx Faces aren't thread-safe, so it
-                # can't be released), and period-minus-elapsed goes negative, so
-                # the old loop re-fetched with NO pause — back-to-back GIL-held
-                # timeouts that starve the asyncio event loop and hang the whole
-                # dashboard. Back off (1→2→5 s), sleeping between attempts so the
-                # loop runs; reset to fast polling the instant it answers again.
-                # Cap at 1.5 s, not 5 s. The pause exists so the GIL-held
-                # fetch can't be re-issued back-to-back and starve the asyncio
-                # loop — any real pause achieves that, and 1.5 s still gives
-                # the loop far more room than it needs. The 5 s cap meant two
-                # consecutive transient failures blacked telemetry out for
-                # ~5.8 s (800 ms timeout + backoff), which is what the field
-                # saw as "telemetry drop-out"; measured worst gap tracked the
-                # cap exactly. Bounding it keeps the worst case ~2.3 s, just
-                # under the UI's 2.5 s stale threshold.
-                backoff = min(1.5, backoff * 2 or 0.5)
-                time.sleep(backoff)
-
     def _poll_search_forever(self) -> None:
         vid = self.args.wuas_id
         while True:
@@ -584,72 +570,65 @@ class Dashboard:
                 self._poll_search(vid)
             time.sleep(0.5)
 
-    def _poll_vehicle(self, vid: str) -> None:
-        try:
-            payload = fetch_segmented(
-                vehicle_telemetry_live_name(vid), timeout_ms=800
-            )
-            sample = TelemetrySample.from_bytes(payload)
+    def _on_telemetry(self, vid: str, payload: bytes) -> None:
+        """One delivered telemetry stream sample (the feed's drain thread)."""
+        sample = TelemetrySample.from_bytes(payload)
+        now = time.monotonic()
+        state = self.sample_state.setdefault(
+            vid, {"last_ns": None, "changed_mono": now, "age": deque(maxlen=31)}
+        )
+        if sample.gps_time_ns != state["last_ns"]:
+            state["last_ns"] = sample.gps_time_ns
+            state["changed_mono"] = now
+        # freshness on the dashboard's own clock: seconds since the
+        # last NEW sample was observed (independent of clock sync)
+        age_s = now - state["changed_mono"]
+        # Node-minus-GCS clock offset from chrony on both ends: each
+        # measures itself against its reference (drones against the GCS),
+        # so the difference is exact to chrony's ~0.1 ms. The old figure,
+        # our clock minus the sample's stamp, was 300-700 ms of sample age
+        # (publish + fetch + poll staleness) read as "clock error".
+        ours = self.clock.reading()
+        clock_ms = (
+            sample.clock_offset_ms - ours.offset_ms
+            if sample.clock_ref and ours.known else None
+        )
+        # With the offset known, our clock minus the stamp is the sample's
+        # true age from publish to delivery. Median: a sample released after
+        # a retransmission carries that stall.
+        if clock_ms is not None:
+            stamp_ms = (gps_time_ns() - sample.gps_time_ns) / 1e6
+            state["age"].append(stamp_ms + clock_ms)
+        sample_dict = json.loads(payload.decode())
+        self.last_sample[vid] = sample_dict
+        self._send_loop({
+            "type": "telemetry",
+            "vehicle": vid,
+            "sample": sample_dict,
+            "age_s": round(age_s, 1),
+            "clock_ms": round(clock_ms, 3) if clock_ms is not None else None,
+            "clock_ref": sample.clock_ref,
+            "clock_rms_ms": sample.clock_rms_ms if sample.clock_rms_ms >= 0 else None,
+            "sample_age_ms": round(median(state["age"])) if state["age"] else None,
+        })
+
+    def _watch_telemetry_forever(self) -> None:
+        """Report a vehicle stale only after SUSTAINED silence (STALE_AFTER_S);
+        until then the UI keeps easing the last-known marker."""
+        while True:
+            time.sleep(1.0)
             now = time.monotonic()
-            state = self.sample_state.setdefault(
-                vid, {"last_ns": None, "changed_mono": now, "age": deque(maxlen=31)}
-            )
-            if sample.gps_time_ns != state["last_ns"]:
-                state["last_ns"] = sample.gps_time_ns
-                state["changed_mono"] = now
-            # freshness on the dashboard's own clock: seconds since the
-            # last NEW sample was observed (independent of clock sync)
-            age_s = now - state["changed_mono"]
-            # Node-minus-GCS clock offset from chrony on both ends: each
-            # measures itself against its reference (drones against the GCS),
-            # so the difference is exact to chrony's ~0.1 ms. The old figure,
-            # our clock minus the sample's stamp, was 300-700 ms of sample age
-            # (publish + fetch + poll staleness) read as "clock error".
-            ours = self.clock.reading()
-            clock_ms = (
-                sample.clock_offset_ms - ours.offset_ms
-                if sample.clock_ref and ours.known else None
-            )
-            # With the offset known, our clock minus the stamp is the sample's
-            # true age from publish to here. Median: one reading carries a
-            # whole poll period of jitter.
-            if clock_ms is not None:
-                stamp_ms = (gps_time_ns() - sample.gps_time_ns) / 1e6
-                state["age"].append(stamp_ms + clock_ms)
-            self.telemetry_age[vid] = now
-            sample_dict = json.loads(payload.decode())
-            self.last_sample[vid] = sample_dict
-            self._send_loop({
-                "type": "telemetry",
-                "vehicle": vid,
-                "sample": sample_dict,
-                "age_s": round(age_s, 1),
-                "clock_ms": round(clock_ms, 3) if clock_ms is not None else None,
-                "clock_ref": sample.clock_ref,
-                "clock_rms_ms": sample.clock_rms_ms if sample.clock_rms_ms >= 0 else None,
-                "sample_age_ms": round(median(state["age"])) if state["age"] else None,
-            })
-            return True
-        except Exception:
-            # A single dropped 0.3 s poll must NOT flip the vehicle offline.
-            # Only surface staleness after SUSTAINED silence (STALE_AFTER_S);
-            # until then the UI keeps easing the last-known marker, so a
-            # healthy fleet holds a steady link instead of flapping at the
-            # poll rate on one contended/timed-out fetch.
-            now = time.monotonic()
-            first = self.first_poll.setdefault(vid, now)
-            last = self.telemetry_age.get(vid)
-            # how long we've been dark: since the last good fix if we've ever
-            # had one, else since we first started polling this vehicle
-            silent_s = (now - last) if last is not None else (now - first)
-            if silent_s < self.STALE_AFTER_S:
-                return False  # transient gap — leave the marker live
-            self._send_loop({
-                "type": "telemetry_stale",
-                "vehicle": vid,
-                "silent_s": None if last is None else round(now - last, 1),
-            })
-            return False
+            for vid, feed in list(self.telemetry_feeds.items()):
+                silent = feed.silent_s()
+                # dark since the last sample, or since the feeds started
+                dark = silent if silent is not None else now - self.telemetry_since
+                if dark < self.STALE_AFTER_S:
+                    continue
+                self._send_loop({
+                    "type": "telemetry_stale",
+                    "vehicle": vid,
+                    "silent_s": None if silent is None else round(silent, 1),
+                })
 
     def _poll_search(self, vid: str) -> None:
         try:
@@ -679,15 +658,23 @@ class Dashboard:
         self, service: str, label: str, payload: bytes,
         on_response, on_timeout, *, timeout_ms: int, **ctx,
     ) -> None:
-        """Submit a request_service_async, recording per-call latency.
+        """Deliver one command at least once, recording its latency.
 
-        Stamps CLOCK_REALTIME before submit and emits a `metric.latency`
-        (stage=service) from the framework callback: on_response records the
-        round trip plus the provider four-point breakdown when the wrapper
-        attaches response.timing; on_timeout records total + status=False.
-        The caller's own callbacks run afterwards, unchanged.
+        NDNSF delivers a request at most once and never retransmits it
+        (commands.py has the fleet measurement), so the same command -- same
+        `command_id`, which vehicles execute once -- is re-issued every
+        COMMAND_RETRY_S until the first response or the deadline. The caller's
+        on_response runs once, for the first response; on_timeout runs once,
+        only after every attempt has expired. Each outcome is logged as
+        `command.ok` / `command.failed` with attempts and latency, and each
+        re-issue as `command.retry`, plus the `metric.latency` (stage=service)
+        record for the winning response.
         """
         sent = metrics.stamp()
+        started = time.monotonic()
+        deadline = started + timeout_ms / 1000.0
+        command_id = uuid.uuid4().hex
+        payload = with_command_id(payload, command_id)
 
         # A named service under a single KNOWN provider (a per-vehicle
         # /muas/v2/<vid>/... command, or the GCS detector /muas/v2/gcs/...) can
@@ -696,36 +683,71 @@ class Dashboard:
         provider = _provider_of(service)
         use_targeted = provider is not None and self._command_mode == "targeted"
         mode = "targeted" if use_targeted else "two-phase"
+        state = {"done": False, "attempts": 0}
+        lock = threading.Lock()
 
         def wrapped_response(response) -> None:
+            if is_in_progress(response):
+                # The vehicle has it and is still executing; keep re-issuing
+                # until a re-issue returns the stored result (commands.py).
+                return
+            with lock:
+                if state["done"]:
+                    return
+                state["done"] = True
+                attempts = state["attempts"]
+            self.event("command.ok", label=label, service=service,
+                       command_id=command_id, attempts=attempts,
+                       latency_ms=round((time.monotonic() - started) * 1000),
+                       status=bool(getattr(response, "status", True)), **ctx)
             metrics.record_service_result(
                 label, sent, response, service=service, mode=mode, **ctx
             )
             on_response(response)
 
         def wrapped_timeout(request_id) -> None:
+            # Each attempt expires at the shared deadline; only the first
+            # expiry at or after it ends the command.
+            with lock:
+                if state["done"] or time.monotonic() < deadline - 0.05:
+                    return
+                state["done"] = True
+                attempts = state["attempts"]
+            self.event("command.failed", label=label, service=service,
+                       command_id=command_id, attempts=attempts,
+                       latency_ms=round((time.monotonic() - started) * 1000), **ctx)
             metrics.record_service_timeout(
                 label, sent, service=service, mode=mode, **ctx
             )
             on_timeout(request_id)
 
-        if use_targeted:
-            self.user.request_service_targeted_async(
-                provider,
-                service,
-                payload,
-                on_response=wrapped_response,
-                on_timeout=wrapped_timeout,
-                timeout_ms=timeout_ms,
-            )
-        else:
-            self.user.request_service_async(
-                service,
-                payload,
-                on_response=wrapped_response,
-                on_timeout=wrapped_timeout,
-                timeout_ms=timeout_ms,
-            )
+        def attempt() -> None:
+            with lock:
+                remaining_ms = int((deadline - time.monotonic()) * 1000)
+                if state["done"] or remaining_ms < self.COMMAND_MIN_ATTEMPT_MS:
+                    return
+                state["attempts"] += 1
+                n = state["attempts"]
+            if n > 1:
+                self.event("command.retry", label=label, service=service,
+                           command_id=command_id, attempt=n, **ctx)
+            if use_targeted:
+                self.user.request_service_targeted_async(
+                    provider, service, payload,
+                    on_response=wrapped_response, on_timeout=wrapped_timeout,
+                    timeout_ms=remaining_ms,
+                )
+            else:
+                self.user.request_service_async(
+                    service, payload,
+                    on_response=wrapped_response, on_timeout=wrapped_timeout,
+                    timeout_ms=remaining_ms,
+                )
+            retry = threading.Timer(self.COMMAND_RETRY_S, attempt)
+            retry.daemon = True
+            retry.start()
+
+        attempt()
 
     # ---- detection fan-out ---------------------------------------------------
 

@@ -27,7 +27,7 @@ from collections import defaultdict
 # did not stop a stream), which is why --stop-before also sends enable:false.
 QUIET_S = 3.0
 STOP_BEFORE_BUDGET_S = 20.0
-STOP_AFTER_BUDGET_S = 10.0
+STOP_AFTER_BUDGET_S = 20.0  # >= the dashboard's 15 s command deadline
 HELLO_BUDGET_S = 10.0
 
 class WS:
@@ -110,20 +110,31 @@ def write_json(path, obj):
     os.replace(tmp, path)
 
 def quiesce(ws, vehicles, budget, armed):
-    """Disable video on every vehicle, then wait until no binary frame has
-    arrived for QUIET_S, giving up after `budget` seconds. -> record dict."""
-    rec = {"vehicles": list(vehicles), "quiet": False, "waited_s": None, "frames_drained": 0}
+    """Disable video on every vehicle; quiet once each vehicle has CONFIRMED the
+    disable and no binary frame has arrived for QUIET_S, giving up after
+    `budget` seconds. -> record dict.
+
+    Frames stopping at the dashboard is not enough: the dashboard stops
+    relaying as soon as it unsubscribes, so a vehicle whose disable was lost
+    kept streaming across runs while this reported quiet (fleet 2026-09-23).
+    The dashboard re-issues each command until answered and reports the
+    outcome as a `command.ok` / `command.failed` event (label "video"); ok
+    means the vehicle executed the disable."""
+    rec = {"vehicles": list(vehicles), "quiet": False, "waited_s": None,
+           "frames_drained": 0, "confirmed": [], "failed": []}
+    pending = set(vehicles)
     sent = time.time(); last_frame = sent
     try:
         for v in vehicles:
             ws.send_json({"cmd": "video", "vehicle": v, "params": {"enable": False}})
         while True:
             now = time.time()
-            if now - last_frame >= QUIET_S:
+            if not pending and now - last_frame >= QUIET_S:
                 rec.update(quiet=True, waited_s=round(now - sent, 2)); return rec
             if now - sent >= budget:
-                rec.update(waited_s=round(now - sent, 2),
-                           error=f"frames still arriving after {budget:.0f}s"); return rec
+                why = (f"stop not confirmed by {','.join(sorted(pending))}" if pending
+                       else f"frames still arriving after {budget:.0f}s")
+                rec.update(waited_s=round(now - sent, 2), error=why); return rec
             try:
                 op, pay = ws.recv()
             except socket.timeout:
@@ -134,13 +145,21 @@ def quiesce(ws, vehicles, budget, armed):
             try: m = json.loads(pay)
             except Exception: continue
             if m.get("type") == "telemetry": note_telemetry(m, armed)
+            if (m.get("type") == "event" and m.get("label") == "video"
+                    and m.get("vehicle") in pending):
+                if m.get("kind") == "command.ok" and m.get("status", True):
+                    pending.discard(m["vehicle"]); rec["confirmed"].append(m["vehicle"])
+                elif m.get("kind") == "command.failed":
+                    pending.discard(m["vehicle"]); rec["failed"].append(m["vehicle"])
+                    rec.update(waited_s=round(time.time() - sent, 2),
+                               error=f"stop failed on {m['vehicle']}"); return rec
     except (OSError, ConnectionError) as e:
         rec.update(waited_s=round(time.time() - sent, 2), error=str(e)); return rec
 
 def quiesce_line(name, r):
     if r["quiet"]:
-        return (f"{name}: video disabled on {','.join(r['vehicles'])}, quiet after "
-                f"{r['waited_s']:.1f}s ({r['frames_drained']} frames drained)")
+        return (f"{name}: video disabled and confirmed by {','.join(r['confirmed'])}, "
+                f"quiet after {r['waited_s']:.1f}s ({r['frames_drained']} frames drained)")
     return f"!! {name}: NOT quiet ({r.get('error')}; {r['frames_drained']} frames drained)"
 
 def probe(a):
