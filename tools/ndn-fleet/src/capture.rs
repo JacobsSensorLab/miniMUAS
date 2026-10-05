@@ -294,7 +294,10 @@ fn collector_script(cap: &Capture, dir: &str) -> String {
     let iface = &cap.iface;
     let pcap = if cap.snaplen > 0 {
         format!(
-            "dumpcap -q -i {iface} -s {snap} -f 'udp port 6363' -w \"$D/wire.pcapng\" 2>>\"$D/dumpcap.err\" &\n\
+            // -B 32 (MiB): with libpcap's 2 MiB default ring the kernel dropped 4-12% of the
+            // packets (dumpcap's own `pcap:` drops, first dry run 2026-10-05), which would
+            // read as wire loss. 32 MiB holds ~10 s of the GCS's ~7 kpkt/s at 200 B.
+            "dumpcap -q -B 32 -i {iface} -s {snap} -f 'udp port 6363' -w \"$D/wire.pcapng\" 2>>\"$D/dumpcap.err\" &\n\
              echo $! > \"$D/dumpcap.pid\"\n",
             snap = cap.snaplen
         )
@@ -348,7 +351,10 @@ done
         "while :; do sleep 1; done\n".into()
     };
     format!(
-        "D={dir}\ncd \"$D\" || exit 1\n\
+        // A transient unit gets systemd's minimal PATH, not the login one: dumpcap, iw, nfdc and
+        // chronyc live in the NixOS system profile (the first dry run found no dumpcap).
+        "PATH=/run/wrappers/bin:/run/current-system/sw/bin:$PATH\nexport PATH\n\
+         D={dir}\ncd \"$D\" || exit 1\n\
          date +%s%N > started_ns\nchronyc -n tracking > chrony-start.txt 2>&1\n\
          stop() {{ [ -f dumpcap.pid ] && kill \"$(cat dumpcap.pid)\" 2>/dev/null; wait; \
          date +%s%N > stopped_ns; chronyc -n tracking > chrony-stop.txt 2>&1; exit 0; }}\n\
@@ -393,7 +399,7 @@ pub async fn start(
         let _ = on_every_node(
             cfg,
             "stopping capture collectors",
-            &format!("systemctl stop {UNIT} 2>/dev/null || true"),
+            &format!("systemctl stop {UNIT} 2>/dev/null || true; rm -rf {dir}"),
             QUICK,
         )
         .await;
@@ -442,9 +448,14 @@ pub async fn collect(
     let id = &run.run_id;
     let dir = format!("{NODE_DIR}/{id}");
     let pack = format!(
+        // Only the journal files written since the collector started: a time slice over the
+        // whole journal opened and merged every file -- 4 GB on minidronesys-02's SD card,
+        // more than 10 minutes and past this timeout; the same slice over the recent files
+        // took 0.18 s. Rotated archives are included (their mtime is their last write).
         "set -eu; cd {dir}; \
-         journalctl -a -o short-unix --no-pager --since @{since} --until @{until} -u nfd -u 'muas-*' | gzip -1 > journal.txt.gz; \
-         journalctl -k -a -o short-unix --no-pager --since @{since} --until @{until} | gzip -1 > kernel.txt.gz; \
+         F=$(find /var/log/journal /run/log/journal -name '*.journal' -newer started_ns 2>/dev/null | sed 's/^/--file=/' | tr '\\n' ' '); \
+         journalctl $F -a -o short-unix --no-pager --since @{since} --until @{until} -u nfd -u 'muas-*' | gzip -1 > journal.txt.gz; \
+         journalctl $F -k -a -o short-unix --no-pager --since @{since} --until @{until} | gzip -1 > kernel.txt.gz; \
          {{ uname -a; iw dev; for i in /sys/class/net/*; do d=$(readlink $i/device/driver 2>/dev/null) && echo \"driver ${{i##*/}} ${{d##*/}}\"; done; \
             cat /var/lib/minimuas/fabric/active; echo; readlink /run/current-system; }} > node.txt 2>&1; \
          for f in wire.pcapng link.txt; do [ -f $f ] && gzip -1 $f; done; \
