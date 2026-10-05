@@ -382,7 +382,10 @@ class VideoStreamProducer:
         fps: float = 15.0,
         signing_identity: str = "",
         fec_scheme: str = "xor",
+        trace: Optional[Callable[[dict], None]] = None,
     ) -> None:
+        # Per-frame record (see FRAME_TRACE_ENV); None costs nothing per frame.
+        self._trace = trace
         self._config = default_video_stream_config(
             stream_id, data_prefix, fps=fps, fec_scheme=fec_scheme,
         )
@@ -448,6 +451,7 @@ class VideoStreamProducer:
                 _chunk_header(frame_seq, idx, count, pub_ms) + chunk
                 for idx, chunk in enumerate(chunks)
             ]
+            first_cursor = self._seq
             t0 = time.perf_counter()
             for g in range(groups):
                 part = contents[g * count // groups : (g + 1) * count // groups]
@@ -455,8 +459,17 @@ class VideoStreamProducer:
                     self._seq, part, self._signing_identity, 300, True,
                 )
                 self._seq += len(part)
-            self._publish_us.append((time.perf_counter() - t0) * 1e6)
+            publish_us = (time.perf_counter() - t0) * 1e6
+            self._publish_us.append(publish_us)
             self._frame_seq += 1
+            if self._trace is not None:
+                self._trace({
+                    "frame": frame_seq, "chunks": count, "groups": groups,
+                    "cursor_first": first_cursor, "cursor_last": self._seq - 1,
+                    "bytes": len(jpeg), "pub_ms": pub_ms,
+                    "published_unix_us": time.time_ns() // 1000,
+                    "publish_us": round(publish_us, 1),
+                })
         return True
 
     def timing_stats(self) -> dict:
@@ -482,6 +495,20 @@ class VideoStreamProducer:
             self._stream.stop()
         except Exception:
             pass
+
+
+# Set to 1 to log one record per frame on both ends (agent.video.frame /
+# dash.video.frame) and the NDNSF subscriber status every second: frame ->
+# cursor range -> wall time, so a freeze seen by the operator can be joined to
+# NDNSF's per-cursor timeline trace, NFD logs and packet captures. Off by
+# default: ~15 records/s per stream.
+FRAME_TRACE_ENV = "MUAS_STREAM_TRACE"
+
+
+def frame_trace_enabled() -> bool:
+    import os
+
+    return os.environ.get(FRAME_TRACE_ENV, "") not in ("", "0", "false", "no")
 
 
 # The consumer's drain thread takes up to this many queued items per GIL entry.
@@ -529,6 +556,7 @@ class VideoStreamConsumer:
         interest_lifetime_ms: Optional[int] = None,
         aggregate_interest_limit: Optional[int] = None,
         fps: Optional[float] = None,
+        trace: Optional[Callable[[dict], None]] = None,
     ) -> None:
         from ndnsf import (
             PredictiveStreamDescriptor,
@@ -578,10 +606,36 @@ class VideoStreamConsumer:
         # once `_REASM_KEEP` newer frames have completed is abandoned, so a
         # permanently-lost chunk cannot pin memory.
         pending_frames: dict = {}
+        # frame_seq -> [first cursor, last cursor, recovered chunks, first
+        # chunk unix us]; filled only when tracing.
+        frame_meta: dict = {}
         _REASM_KEEP = 4
         self.partial_frames_dropped = 0
 
-        def _reassemble(raw, cursor):
+        def _note_chunk(frame_seq, cursor, recovered):
+            meta = frame_meta.get(frame_seq)
+            if meta is None:
+                frame_meta[frame_seq] = [cursor, cursor, int(recovered),
+                                         time.time_ns() // 1000]
+            else:
+                meta[0] = min(meta[0], cursor)
+                meta[1] = max(meta[1], cursor)
+                meta[2] += int(recovered)
+
+        def _emit_trace(frame_seq, count, pub_ms):
+            meta = frame_meta.pop(frame_seq, None)
+            if meta is None:
+                return
+            trace({
+                "frame": frame_seq, "chunks": count,
+                "cursor_first": meta[0], "cursor_last": meta[1],
+                "recovered": meta[2], "pub_ms": pub_ms,
+                "first_chunk_unix_us": meta[3],
+                "complete_unix_us": time.time_ns() // 1000,
+                "lag_ms": self.lag_ms,
+            })
+
+        def _reassemble(raw, cursor, recovered=False):
             """-> (frame_seq, jpeg, pub_ms) once a frame is whole, else None."""
             parsed = parse_chunk_header(raw)
             if parsed is None:
@@ -589,6 +643,8 @@ class VideoStreamConsumer:
                 # through, so a consumer keeps working against an old producer.
                 return cursor, raw, None
             frame_seq, idx, count, pub_ms, payload = parsed
+            if trace is not None:
+                _note_chunk(frame_seq, cursor, recovered)
             if count <= 1:
                 return frame_seq, payload, pub_ms
             slot = pending_frames.setdefault(frame_seq, {})
@@ -599,7 +655,11 @@ class VideoStreamConsumer:
             del pending_frames[frame_seq]
             for stale in [k for k in pending_frames if k < frame_seq - _REASM_KEEP]:
                 del pending_frames[stale]
+                frame_meta.pop(stale, None)
                 self.partial_frames_dropped += 1
+                if trace is not None:
+                    trace({"frame": stale, "abandoned": True,
+                           "complete_unix_us": time.time_ns() // 1000})
             return frame_seq, jpeg, pub_ms
 
         def _note_lag(pub_ms):
@@ -622,10 +682,14 @@ class VideoStreamConsumer:
                     if recovered:
                         self.recovered += 1
                     try:
-                        done = _reassemble(content, cursor)
+                        done = _reassemble(content, cursor, recovered)
                         if done is not None:
                             if done[2] is not None:
                                 _note_lag(done[2])
+                            if trace is not None:
+                                parsed = parse_chunk_header(content)
+                                _emit_trace(done[0], parsed[2] if parsed else 1,
+                                            done[2])
                             on_frame(done[0], done[1])
                     except Exception:
                         pass

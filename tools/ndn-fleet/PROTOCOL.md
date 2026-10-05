@@ -59,6 +59,16 @@ Workloads are driven through the GCS dashboard WebSocket by `miniMUAS/tools/flig
 - **I9 — the fleet is left as found.** An A/B measurement that switches cells restores the cell it
   started from and re-verifies health; `fleet_restore` returns to the known-good cell and runs the
   flight check.
+- **I10 — captures observe the sample, and trace levels never outlive the job.** A spec with a
+  `[capture]` section records, on every node, exactly the sample window: packet headers on the
+  fabric interface (dumpcap), a link/PHY/host sampler, and journal slices. Collectors run on the
+  node as a transient unit (`ndn-fleet-capture`), never through the control ssh session, and are
+  pulled only after the sample; each bundle is size- and sha256-verified before the node copy is
+  deleted. A capture that fails makes the sample INVALID. Trace levels (`capture.nfd_log`,
+  `capture.role_env`) are runtime drop-ins in `/run/systemd/system`, installed before the switch
+  into the arm's cell (so that switch is their only restart), verified in force after it, and
+  removed before the I9 restore switch; `fleet_restore` removes any left by a dead job. A tracing
+  spec is refused when the fleet already sits on its arm's cell.
 
 ## Tools
 
@@ -79,8 +89,8 @@ Mutating (lock + armed check + ledger + disturbance stamp):
 |---|---|
 | `fleet_deploy` | Two-phase. Without `plan_id`: resolves revs (default: current HEAD of every pinned repo), verifies clean + pushed, computes per-repo commit lists and hashes, and returns a plan (id, old→new revs, commits, nodes). With `plan_id`: executes it as a job — edit pins, commit, push, build all closures, canary, rollout, verify, restart order, health gate. |
 | `fleet_set_cell` | `muas-fabric set <cell>` on every node (airframes, then GCS), health gate, disturbance stamp. |
-| `fleet_measure` | Runs a spec (optionally overridden) as a job: per repeat × arm — set cell if the arm needs it, settle, stop streams, counters before, workload, counters after, stop streams, write the run. Arms are interleaved per repeat so each comparison shares a window. Restores the starting cell. |
-| `fleet_restore` | Known-good cell on every node, health gate, flight check verdict. |
+| `fleet_measure` | Runs a spec (optionally overridden) as a job: per repeat × arm — set cell if the arm needs it, settle, stop streams, counters before, capture start (if any), workload, capture stop, counters after, stop streams, capture pull, write the run. Arms are interleaved per repeat so each comparison shares a window. Restores the starting cell. |
+| `fleet_restore` | Removes leftover capture trace drop-ins, known-good cell on every node, health gate, flight check verdict. |
 
 Long operations return `{job_id}` immediately; poll with `fleet_job`.
 
@@ -105,7 +115,20 @@ expect = ["iuas-01", "iuas-02", "wuas-01"]
 ```
 
 A spec is the unit of comparability: two runs of the same spec at different builds are comparable;
-ad-hoc parameters are passed as `overrides` and recorded in the manifest.
+ad-hoc parameters are passed as `overrides` and recorded in the manifest. `capture.<field>` (e.g.
+`capture.nfd_log.Forwarder = "INFO"`) is overridable on a capturing spec: it changes what is
+observed, not the workload.
+
+```toml
+[capture]                  # optional (I10); specs/nfd-wifi-capture.toml is the full example
+iface = "mesh0"            # interface the UDP faces ride
+snaplen = 200              # bytes kept per packet; 0 = no packet capture
+link_interval_ms = 1000    # link/PHY/host sampler period; 0 = off
+[capture.nfd_log]          # nfd.conf log levels while NFD runs in the job ("*" = default_level)
+Forwarder = "DEBUG"
+[capture.role_env]         # environment on every role unit for the job
+NDNSF_TIMELINE_TRACE_SAMPLE_RATE = "1"
+```
 
 ## Results layout (`<results>` = `tools/ndn-fleet/results/` in miniMUAS, not committed)
 
@@ -118,6 +141,9 @@ runs/<id>/counters-{before,after}.json, deltas.json
 runs/<id>/workload.json          flightcheck --json / fabric-bench summary
 runs/<id>/raw/                   stdout/stderr of every command
 runs/<id>/summary.json           the metrics a comparison reads
+runs/<id>/capture/<node>/        wire.pcapng.gz, link.txt.gz (sampler), journal.txt.gz (nfd +
+                                 muas-*), kernel.txt.gz, chrony-{start,stop}.txt, node.txt,
+                                 dumpcap.err (dumpcap's own drop count), started_ns/stopped_ns
 jobs/<id>.log
 ```
 
@@ -138,3 +164,7 @@ jobs/<id>.log
   everything is paramount".
 - I2/I9: the fabric must never be yanked under a flying vehicle, and a session must not leave the
   fleet on an experimental cell.
+- I10: a freeze cannot be attributed from one layer: the operator's report, NDNSF's cursor
+  timeline, NFD's forwarding decisions, the wire and the radio each saw a different part of it.
+  Trace levels distort what they measure (NFD logs synchronously on its one forwarding thread),
+  so they must be scoped to the job and their effect measurable by overriding them off.

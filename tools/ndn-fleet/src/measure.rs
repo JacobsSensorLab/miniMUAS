@@ -11,6 +11,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+use crate::capture;
 use crate::cells;
 use crate::config::Config;
 use crate::counters::{self, NodeCounters};
@@ -73,6 +74,9 @@ pub struct Spec {
     /// matches every key of an object (e.g. `"workload.video.*.fps" = { min = 12 }`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub criteria: BTreeMap<String, Criterion>,
+    /// Packet/link/log capture around every sample (PROTOCOL.md I10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture: Option<capture::Capture>,
 }
 
 fn one() -> u32 {
@@ -243,6 +247,17 @@ impl Spec {
             }
             Workload::Idle {} => {}
         }
+        if let Some(c) = &self.capture {
+            c.validate()
+                .with_context(|| format!("spec `{}`", self.name))?;
+            if c.traces() && self.arms.is_empty() {
+                bail!(
+                    "spec `{}`: capture trace levels take effect on the cell switch into an arm; \
+                     name the arm cell(s)",
+                    self.name
+                );
+            }
+        }
         for (path, c) in &self.criteria {
             if c.min.is_none() && c.max.is_none() && c.equals.is_none() {
                 bail!(
@@ -309,8 +324,10 @@ fn load_spec(cfg: &Config, path: &Path) -> Result<Spec> {
 
 /// Apply ad-hoc `overrides` to `spec` and return the effective spec plus the overrides as
 /// applied, flat (`"workload.fps": 30`), for the manifest. Allowed: `duration_s`, `repeats`,
-/// `settle_s`, and `workload.<param>` either dotted or as a nested `workload` object. The
-/// workload kind, arms and criteria are the spec's identity: changing them is a different spec.
+/// `settle_s`, `workload.<param>` either dotted or as a nested `workload` object, and
+/// `capture.<field>[.<key>]` on a spec that captures (what is observed, e.g. a trace level, is
+/// not the workload). The workload kind, arms and criteria are the spec's identity: changing
+/// them is a different spec.
 pub fn apply_overrides(spec: &Spec, overrides: &Value) -> Result<(Spec, Map<String, Value>)> {
     let mut applied = Map::new();
     match overrides {
@@ -323,6 +340,9 @@ pub fn apply_overrides(spec: &Spec, overrides: &Value) -> Result<(Spec, Map<Stri
                             applied.insert(format!("workload.{wk}"), wv.clone());
                         }
                     }
+                    // Capture overrides reach into maps (`capture.nfd_log.Forwarder`), so a
+                    // nested object flattens to its leaves.
+                    ("capture", Value::Object(c)) => flatten_into("capture", c, &mut applied),
                     _ => {
                         applied.insert(k.clone(), v.clone());
                     }
@@ -337,13 +357,24 @@ pub fn apply_overrides(spec: &Spec, overrides: &Value) -> Result<(Spec, Map<Stri
             "duration_s" | "repeats" | "settle_s" => {
                 value[k.as_str()] = v.clone();
             }
-            _ => match k.strip_prefix("workload.") {
-                Some(param) if param != "kind" && !param.is_empty() => {
+            _ => match (k.strip_prefix("workload."), k.strip_prefix("capture.")) {
+                (Some(param), _) if param != "kind" && !param.is_empty() => {
                     value["workload"][param] = v.clone();
                 }
+                (_, Some(path)) if spec.capture.is_some() && !path.is_empty() => {
+                    let mut at = &mut value["capture"];
+                    for part in path.split('.') {
+                        if !at.is_object() {
+                            bail!("override `{k}`: `{part}` is not inside an object");
+                        }
+                        at = &mut at[part];
+                    }
+                    *at = v.clone();
+                }
                 _ => bail!(
-                    "override `{k}` is not allowed: only duration_s, repeats, settle_s and \
-                     workload.<param> (not kind) — a different workload is a different spec"
+                    "override `{k}` is not allowed: only duration_s, repeats, settle_s, \
+                     workload.<param> (not kind) and, on a capturing spec, capture.<field> — a \
+                     different workload is a different spec"
                 ),
             },
         }
@@ -354,6 +385,18 @@ pub fn apply_overrides(spec: &Spec, overrides: &Value) -> Result<(Spec, Map<Stri
         bail!("overrides: repeats and duration_s must be >= 1");
     }
     Ok((out, applied))
+}
+
+fn flatten_into(prefix: &str, obj: &Map<String, Value>, out: &mut Map<String, Value>) {
+    for (k, v) in obj {
+        let key = format!("{prefix}.{k}");
+        match v {
+            Value::Object(o) => flatten_into(&key, o, out),
+            _ => {
+                out.insert(key, v.clone());
+            }
+        }
+    }
 }
 
 /// Seconds still to wait before a sample may start: I3 requires
@@ -435,6 +478,14 @@ pub async fn run(
         "measure.start",
         json!({"job": job.id, "spec": spec.name, "overrides": applied, "start_cell": start_cell}),
     );
+    let trace = spec.capture.as_ref().filter(|c| c.traces());
+    if trace.is_some() && arms.iter().any(|a| a.cell == start_cell) {
+        bail!(
+            "spec `{}` sets capture trace levels, which take effect on the switch into its arm \
+             cell, but the fleet is already on `{start_cell}`: switch to another cell first",
+            spec.name
+        );
+    }
     let cx = RunCtx {
         cfg,
         rec,
@@ -445,9 +496,13 @@ pub async fn run(
     };
 
     let mut current = start_cell.clone();
+    let mut trace_record = Value::Null;
     let mut samples: Vec<SampleResult> = Vec::new();
     let mut cell_changes = Vec::new();
     let outcome: Result<()> = async {
+        if let Some(c) = trace {
+            trace_record = json!({"installed": capture::install_trace(cfg, job, c).await?});
+        }
         for rep in 1..=spec.repeats {
             for i in arm_order(&arms, rep, &start_cell) {
                 let arm = &arms[i];
@@ -459,6 +514,11 @@ pub async fn run(
                     let r = cells::set_cell_all(cfg, rec, job, &arm.cell).await?;
                     cell_changes.push(json!({"from": current, "to": arm.cell, "result": r}));
                     current = arm.cell.clone();
+                    if let Some(c) = trace {
+                        let v = capture::verify_trace(cfg, c).await?;
+                        job.log(format!("capture: trace in force on `{}`", arm.cell));
+                        trace_record[format!("verified:{}", arm.cell)] = v;
+                    }
                 }
                 let first = sample(&cx, arm, rep, 1, None).await?;
                 let retry = (!first.valid).then(|| first.run_id.clone());
@@ -475,15 +535,26 @@ pub async fn run(
     }
     .await;
 
-    // I9: whatever happened, put the starting cell back.
+    // I10: trace drop-ins come off BEFORE the restore switch, so that switch restarts every
+    // unit without them.
     let mut restore_err = None;
+    if trace.is_some() {
+        match capture::remove_trace(cfg, job).await {
+            Ok(v) => trace_record["removed"] = v,
+            Err(e) => restore_err = Some(format!("{e:#}")),
+        }
+    }
+    // I9: whatever happened, put the starting cell back.
     let restored = if current != start_cell {
         job.log(format!("restoring starting cell `{start_cell}` (I9)"));
         match cells::set_cell_all(cfg, rec, job, &start_cell).await {
             Ok(r) => json!({"cell": start_cell, "result": r}),
             Err(e) => {
                 let msg = format!("{e:#}");
-                restore_err = Some(msg.clone());
+                restore_err = Some(match restore_err.take() {
+                    Some(prev) => format!("{prev}; {msg}"),
+                    None => msg.clone(),
+                });
                 json!({"cell": start_cell, "error": msg})
             }
         }
@@ -521,6 +592,7 @@ pub async fn run(
         "arms": aggregate_arms(&samples),
         "cell_changes": cell_changes,
         "restored": restored,
+        "capture_trace": trace_record,
     });
     rec.ledger(
         "measure.done",
@@ -533,6 +605,9 @@ pub async fn run(
 /// The caller holds the fleet lock.
 pub async fn restore(cfg: &Config, rec: &Recorder, job: &JobCtx) -> Result<Value> {
     let good = cfg.fleet.known_good_cell.clone();
+    // A capture job that died mid-run leaves its runtime drop-ins; the switch below restarts
+    // the units without them.
+    let trace_removed = capture::remove_trace(cfg, job).await?;
     let status = status::fleet_status(cfg, rec).await?;
     let off: Vec<String> = status
         .nodes
@@ -569,6 +644,7 @@ pub async fn restore(cfg: &Config, rec: &Recorder, job: &JobCtx) -> Result<Value
         "cell": good,
         "was": off,
         "set_cell": set_cell,
+        "trace_removed": trace_removed,
         "run_id": s.run_id,
         "verdict": s.verdict,
         "valid": s.valid,
@@ -645,6 +721,7 @@ struct Measured {
     streams_after: Value,
     workload: Value,
     deltas: Option<Value>,
+    capture: Value,
 }
 
 /// One sample of `cx.spec` on `arm`: settle, identity, stop streams, counters before, workload,
@@ -711,6 +788,7 @@ async fn sample(
     cx.rec
         .write_json(&format!("{rel}/summary.json"), &summary)?;
     manifest["t0"] = m.t0;
+    manifest["capture"] = m.capture;
     manifest["streams"] = json!({"before": m.streams_before, "after": m.streams_after});
     manifest["finished_unix_ms"] = json!(state::now_ms());
     manifest["error"] = json!(error);
@@ -758,7 +836,24 @@ async fn measure_into(cx: &RunCtx<'_>, rel: &str, run_id: &str, m: &mut Measured
     } else {
         None
     };
-    m.workload = run_workload(cx, rel, run_id).await?;
+    let mut running = match &cx.spec.capture {
+        Some(c) => Some(capture::start(cx.cfg, cx.rec, cx.job, c, run_id).await?),
+        None => None,
+    };
+    let workload = run_workload(cx, rel, run_id).await;
+    if let Some(r) = running.as_mut() {
+        let stopped = capture::stop(cx.cfg, cx.job, r).await;
+        if workload.is_err() || stopped.is_err() {
+            // Keep what was captured for the post-mortem; the sample is INVALID either way.
+            m.capture = match capture::collect(cx.cfg, cx.rec, cx.job, r, rel).await {
+                Ok(v) => v,
+                Err(e) => json!({"error": format!("{e:#}")}),
+            };
+            running = None;
+        }
+        stopped?;
+    }
+    m.workload = workload?;
     let after = if cx.spec.counters {
         Some(snapshot(cx, rel, "after").await?)
     } else {
@@ -774,6 +869,9 @@ async fn measure_into(cx: &RunCtx<'_>, rel: &str, run_id: &str, m: &mut Measured
         let d = counters::delta(&b, &a);
         cx.rec.write_json(&format!("{rel}/deltas.json"), &d)?;
         m.deltas = Some(d);
+    }
+    if let Some(r) = running {
+        m.capture = capture::collect(cx.cfg, cx.rec, cx.job, &r, rel).await?;
     }
     Ok(())
 }
@@ -1662,6 +1760,24 @@ mod tests {
         }
         let idle = find_spec(&cfg, "idle-baseline").unwrap();
         assert!(apply_overrides(&idle, &json!({"workload.fps": 30})).is_err());
+
+        // Capture overrides reach into its maps (nested or dotted), and only on a capturing
+        // spec: on any other spec they would be a silently ignored observation request.
+        let cap = find_spec(&cfg, "nfd-wifi-capture").unwrap();
+        let (s, applied) = apply_overrides(
+            &cap,
+            &json!({"capture": {"nfd_log": {"Forwarder": "INFO"}}, "capture.snaplen": 0}),
+        )
+        .unwrap();
+        let c = s.capture.unwrap();
+        assert_eq!(c.nfd_log["Forwarder"], "INFO");
+        assert_eq!(c.snaplen, 0);
+        assert_eq!(c.role_env, cap.capture.unwrap().role_env, "untouched");
+        assert_eq!(
+            Value::Object(applied),
+            json!({"capture.nfd_log.Forwarder": "INFO", "capture.snaplen": 0})
+        );
+        assert!(apply_overrides(&spec, &json!({"capture.snaplen": 0})).is_err());
     }
 
     #[test]

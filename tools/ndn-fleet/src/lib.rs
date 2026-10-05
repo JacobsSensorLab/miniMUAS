@@ -3,6 +3,7 @@
 //! The MCP server (`ndn-fleet mcp`) and the CLI are thin fronts over the same operations; the
 //! operations enforce the protocol's invariants, so neither front can skip a step.
 
+pub mod capture;
 pub mod cells;
 pub mod config;
 pub mod counters;

@@ -90,6 +90,7 @@ from dataplane import (
 from raster import build_raster, estimate_duration_s
 from timesync import ClockMonitor
 from telemetry_stream import TelemetryFeed
+from video_stream import frame_trace_enabled
 from ndnsf_runtime import (
     add_common_arguments,
     add_ndnsf_path,
@@ -1575,7 +1576,14 @@ class Dashboard:
             # lifetime are sized from the item rate. A fixed depth over-reaches
             # at low rates and every prefetch Interest expires before its frame
             # exists.
-            consumer = VideoStreamConsumer(self.user, descriptor_json, on_frame, fps=fps)
+            trace = (
+                (lambda record, vid=vid: print_json(
+                    "dash.video.frame", vehicle=vid, **record))
+                if frame_trace_enabled() else None
+            )
+            consumer = VideoStreamConsumer(
+                self.user, descriptor_json, on_frame, fps=fps, trace=trace,
+            )
             holder["consumer"] = consumer
             self.video_subs[vid] = {
                 "consumer": consumer, "descriptor": descriptor_json, "fps": fps,
@@ -1662,7 +1670,10 @@ class Dashboard:
             return
 
         key = (state_s, reason_s)
-        if key == sub["log_key"] and now - sub["log_t"] < 10.0:
+        # Traced runs log every second: the counters are the time series that
+        # shows a head-of-line stall (next_cursor stuck while ready_q grows).
+        if (key == sub["log_key"] and now - sub["log_t"] < 10.0
+                and not frame_trace_enabled()):
             return
         sub["log_key"], sub["log_t"] = key, now
         self.event(

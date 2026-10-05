@@ -1,0 +1,58 @@
+name = "nfd-wifi-capture"
+description = """
+Where do operator-video freezes and packet losses originate on the nfd wifi stack? The \
+video-3stream workload on `nfd wifi` with every layer recorded on every node for the exact sample \
+window: packet headers on the fabric interface (dumpcap, 200 B: IP/UDP/NDNLP and the NDN name of \
+first fragments), a 1 Hz link/PHY/host sampler (iw station/survey, driver procfs/debugfs incl. \
+retries, MAC drops, AMPDU reorder time-outs, AQM drops, qdisc, UDP socket drops, per-thread CPU, \
+NFD face counters), and journal slices with NFD forwarding/NDNLP traces, NDNSF's per-cursor \
+stream timeline (every cursor, not 1 in 10) and per-frame records on producer and consumer. Clocks \
+are chrony-synced (offsets recorded at start and stop). `capture.*` overrides lighten the trace \
+to measure its own effect."""
+settle_s = 150
+duration_s = 120
+repeats = 3
+counters = true
+
+[[arms]]
+label = "nfd"
+cell = "nfd wifi"
+
+[workload]
+kind = "flightcheck"
+video = ["iuas-01", "iuas-02", "wuas-01"]
+width = 640
+fps = 15
+quality = 50
+transport = "stream"
+audio = ""
+expect = ["iuas-01", "iuas-02", "wuas-01"]
+
+[capture]
+iface = "mesh0"
+snaplen = 200
+link_interval_ms = 1000
+
+# nfd.conf module names. Forwarder DEBUG is one line per Interest/Data decision with face ids:
+# what tells "NFD dropped it" from "it never arrived". The NDNLP modules log loss detection,
+# retransmission, give-up and reassembly time-outs; the transports log send errors (ENOBUFS).
+[capture.nfd_log]
+"*" = "INFO"
+Forwarder = "DEBUG"
+GenericLinkService = "DEBUG"
+LpReliability = "DEBUG"
+LpReassembler = "DEBUG"
+LpFragmenter = "DEBUG"
+Transport = "DEBUG"
+UnicastUdpTransport = "DEBUG"
+FaceManager = "DEBUG"
+FaceTable = "DEBUG"
+FaceSystem = "DEBUG"
+
+# Every cursor in NDNSF's stream timeline (fleet default samples 1 in 10), the stream facade's
+# lifecycle, and the miniMUAS per-frame records + per-second subscriber status.
+[capture.role_env]
+NDNSF_TIMELINE_TRACE = "1"
+NDNSF_TIMELINE_TRACE_SAMPLE_RATE = "1"
+NDN_LOG = "ndn_service_framework.TimelineTrace=DEBUG:ndn_service_framework.StreamFacade=TRACE"
+MUAS_STREAM_TRACE = "1"

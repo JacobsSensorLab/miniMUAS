@@ -2298,7 +2298,7 @@ def main() -> int:
                 video_cfg["descriptor"] = ""
                 return
             try:
-                from video_stream import VideoStreamProducer
+                from video_stream import VideoStreamProducer, frame_trace_enabled
 
                 producer = VideoStreamProducer(
                     provider,
@@ -2313,6 +2313,10 @@ def main() -> int:
                     # (/muas/v2/<vid>); the stream's data_prefix underneath it
                     # is not a key. Same rule the bench already follows.
                     signing_identity=prefix,
+                    trace=(
+                        (lambda record: print_json("agent.video.frame", **record))
+                        if frame_trace_enabled() else None
+                    ),
                 )
                 video_stream["producer"] = producer
                 video_stream["key"] = key

@@ -143,6 +143,75 @@ async fn run(command: &mut Command, shown: String, timeout: Duration) -> Result<
     }
 }
 
+/// Run `cmd` on `node` with its stdout written to `dest` instead of captured: binary-safe, for
+/// pulling files (`Output::stdout` stays empty). Same jump-host fallback as [`ssh`]; a retry
+/// truncates `dest` first.
+pub async fn ssh_to_file(
+    cfg: &Config,
+    node: &Node,
+    cmd: &str,
+    dest: &Path,
+    timeout: Duration,
+) -> Result<Output> {
+    let direct = ssh_once_to_file(cfg, &node.host, cmd, dest, timeout, false).await?;
+    if direct.status != Some(SSH_CONNECT_FAILURE) {
+        return Ok(direct);
+    }
+    ssh_once_to_file(cfg, &node.addr, cmd, dest, timeout, true).await
+}
+
+async fn ssh_once_to_file(
+    cfg: &Config,
+    target: &str,
+    cmd: &str,
+    dest: &Path,
+    timeout: Duration,
+    jump: bool,
+) -> Result<Output> {
+    let mut args = ssh_base(cfg, jump);
+    args.push(format!("{}@{}", cfg.fleet.ssh_user, target));
+    args.push(cmd.to_string());
+    let via = if jump { "-J <jump> " } else { "" };
+    let shown = format!(
+        "ssh {via}{}@{target} {} > {}",
+        cfg.fleet.ssh_user,
+        sh_quote(cmd),
+        dest.display()
+    );
+    let file =
+        std::fs::File::create(dest).with_context(|| format!("creating {}", dest.display()))?;
+    let started = Instant::now();
+    let child = Command::new("ssh")
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(file))
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .with_context(|| format!("spawning `{shown}`"))?;
+    let out = tokio::time::timeout(timeout, child.wait_with_output()).await;
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    Ok(match out {
+        Ok(out) => {
+            let out = out.with_context(|| format!("waiting for `{shown}`"))?;
+            Output {
+                command: shown,
+                status: out.status.code(),
+                stdout: String::new(),
+                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+                elapsed_ms,
+            }
+        }
+        Err(_) => Output {
+            command: shown,
+            status: None,
+            stdout: String::new(),
+            stderr: format!("timed out after {}s", timeout.as_secs()),
+            elapsed_ms,
+        },
+    })
+}
+
 /// Quote `s` for a POSIX shell (single quotes, embedded quotes escaped).
 pub fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))

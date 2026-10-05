@@ -221,19 +221,20 @@ impl Fleet {
             },
             {
                 "name": "fleet_measure",
-                "description": "Run a measurement spec (see fleet_specs) as a job (fleet lock + armed check). For each repeat, arms interleaved so each comparison shares a window: set the arm's cell if needed; WAIT for the settle clock (now - last disturbance >= settle_s; never measures inside churn); STOP all video streams and wait for a quiet dashboard; snapshot counters on every node; run the workload; snapshot counters again; stop streams again; write runs/<id>/ (manifest with fleet identity + deploy in force, counters before/after, DELTAS, workload JSON, raw outputs, summary). Samples draining a backlog are rejected. Restores the starting cell at the end. Returns the run ids in the job result.",
+                "description": "Run a measurement spec (see fleet_specs) as a job (fleet lock + armed check). For each repeat, arms interleaved so each comparison shares a window: set the arm's cell if needed; WAIT for the settle clock (now - last disturbance >= settle_s; never measures inside churn); STOP all video streams and wait for a quiet dashboard; snapshot counters on every node; run the workload (inside a per-node packet/link/log capture when the spec has [capture], PROTOCOL.md I10: trace drop-ins installed before the arm's cell switch, verified, removed before the restore); snapshot counters again; stop streams again; pull the capture; write runs/<id>/ (manifest with fleet identity + deploy in force, counters before/after, DELTAS, workload JSON, raw outputs, summary). Samples draining a backlog are rejected. Restores the starting cell at the end. Returns the run ids in the job result.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "spec": { "type": "string", "description": "spec name from fleet_specs" },
                         "overrides": {
                             "type": "object",
-                            "description": "ad-hoc changes for this run, recorded in the manifest. Allowed: duration_s, repeats, settle_s, and workload parameters as {\"workload\": {\"fps\": 10}} or \"workload.fps\": 10. Arms, workload kind and criteria are the spec's identity and cannot be overridden (use another spec).",
+                            "description": "ad-hoc changes for this run, recorded in the manifest. Allowed: duration_s, repeats, settle_s, workload parameters as {\"workload\": {\"fps\": 10}} or \"workload.fps\": 10, and on a spec with [capture] its fields, e.g. {\"capture\": {\"nfd_log\": {\"Forwarder\": \"INFO\"}}} (what is observed, not the workload). Arms, workload kind and criteria are the spec's identity and cannot be overridden (use another spec).",
                             "properties": {
                                 "duration_s": { "type": "integer", "minimum": 1 },
                                 "repeats": { "type": "integer", "minimum": 1 },
                                 "settle_s": { "type": "integer", "minimum": 0 },
-                                "workload": { "type": "object" }
+                                "workload": { "type": "object" },
+                                "capture": { "type": "object" }
                             }
                         },
                         "assume_disarmed": { "type": "boolean", "description": ASSUME_DISARMED }
