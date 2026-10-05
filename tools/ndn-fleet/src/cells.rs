@@ -66,7 +66,7 @@ pub fn muas_strategy(text: &str) -> Option<String> {
 /// Distinct nexthop faces of `/muas`, from `ndn-ctl route list` (`/muas  <faceid>  <cost>`) or
 /// `nfdc route list` (`prefix=/muas nexthop=<faceid> origin=…`). A RIB lists one face once per
 /// origin (static + app), so rows would overcount and hide a missing neighbour.
-pub fn muas_nexthops(text: &str) -> usize {
+pub fn muas_nexthop_ids(text: &str) -> BTreeSet<u64> {
     muas_rows(text)
         .filter_map(|l| {
             let mut tokens = l.split_whitespace().skip(1);
@@ -76,8 +76,29 @@ pub fn muas_nexthops(text: &str) -> usize {
                 .or_else(|| tokens.next())
                 .and_then(|f| f.parse::<u64>().ok())
         })
-        .collect::<BTreeSet<_>>()
-        .len()
+        .collect()
+}
+
+/// Face ids in `ndn-ctl face list` / `nfdc face list` (both start a face with `faceid=<id>`).
+pub fn face_ids(text: &str) -> BTreeSet<u64> {
+    text.lines()
+        .filter_map(|l| l.trim_start().strip_prefix("faceid="))
+        .filter_map(|r| r.split_whitespace().next()?.parse().ok())
+        .collect()
+}
+
+/// `/muas` nexthops as (live, dead): a route can name a face that does not exist. ndn-fwd adds
+/// the TOML routes whether or not the TOML peer face could be created, and does not retry a
+/// face whose creation failed: minidronesys-02 booted 6 s before its Wi-Fi associated
+/// (2026-10-05), all three `failed to create UDP face`, and it sat with three nexthops in its
+/// route list and no face behind any of them. Every Interest it originated went nowhere; its
+/// agent crash-looped on the controller fetch while the route count said healthy.
+pub fn muas_nexthops(routes: &str, faces: &str) -> (usize, Vec<u64>) {
+    let live = face_ids(faces);
+    let (ok, dead): (Vec<u64>, Vec<u64>) = muas_nexthop_ids(routes)
+        .into_iter()
+        .partition(|f| live.contains(f));
+    (ok.len(), dead)
 }
 
 /// One node's forwarder, as the canary check and the restart order need it.
@@ -88,7 +109,10 @@ pub struct ForwarderHealth {
     pub unit: Option<String>,
     pub unit_state: Option<String>,
     pub muas_strategy: Option<String>,
+    /// `/muas` nexthops whose face exists.
     pub muas_nexthops: usize,
+    /// `/muas` nexthops naming a face that no longer exists.
+    pub dead_nexthops: Vec<u64>,
 }
 
 impl ForwarderHealth {
@@ -96,6 +120,7 @@ impl ForwarderHealth {
     /// NDNSF SVS sync group partitions (ndn-rs pin comment: `[[strategy]]` boot config).
     pub fn ok(&self) -> bool {
         self.unit_state.as_deref() == Some("active")
+            && self.dead_nexthops.is_empty()
             && self
                 .muas_strategy
                 .as_deref()
@@ -104,13 +129,14 @@ impl ForwarderHealth {
 
     fn summary(&self) -> String {
         format!(
-            "{}: cell={} {}={} /muas={} nexthops={}",
+            "{}: cell={} {}={} /muas={} nexthops={} dead={:?}",
             self.node,
             self.cell.as_deref().unwrap_or("?"),
             self.unit.as_deref().unwrap_or("?"),
             self.unit_state.as_deref().unwrap_or("?"),
             self.muas_strategy.as_deref().unwrap_or("none"),
-            self.muas_nexthops
+            self.muas_nexthops,
+            self.dead_nexthops
         )
     }
 }
@@ -122,12 +148,15 @@ pub async fn forwarder_health(cfg: &Config, node: &Node) -> Result<ForwarderHeal
          for u in {FORWARDER_UNITS}; do \
            echo \"unit $u $(systemctl is-active $u 2>/dev/null)\"; done; \
          case \"$a\" in nfd*) t=nfdc;; *) t=ndn-ctl;; esac; \
-         echo '--- strategy'; $t strategy list 2>&1; echo '--- routes'; $t route list 2>&1; true"
+         echo '--- strategy'; $t strategy list 2>&1; echo '--- routes'; $t route list 2>&1; \
+         echo '--- faces'; $t face list 2>&1; true"
     );
     let out = remote::ssh(cfg, node, &script, QUICK).await?;
     let text = out.stdout_ok()?;
     let (head, rest) = text.split_once("--- strategy").unwrap_or((text, ""));
-    let (strategy, routes) = rest.split_once("--- routes").unwrap_or((rest, ""));
+    let (strategy, rest) = rest.split_once("--- routes").unwrap_or((rest, ""));
+    let (routes, faces) = rest.split_once("--- faces").unwrap_or((rest, ""));
+    let (muas_nexthops, dead_nexthops) = muas_nexthops(routes, faces);
     let cell = head
         .lines()
         .find_map(|l| l.strip_prefix("active="))
@@ -148,7 +177,8 @@ pub async fn forwarder_health(cfg: &Config, node: &Node) -> Result<ForwarderHeal
         unit: unit.map(str::to_string),
         unit_state,
         muas_strategy: muas_strategy(strategy),
-        muas_nexthops: muas_nexthops(routes),
+        muas_nexthops,
+        dead_nexthops,
     })
 }
 
@@ -565,7 +595,18 @@ mod tests {
             /muas                                                 3       0\n\
             /muas/v2/wuas-01                                      3      10\n\
             /muas/v2/controller                                 257       0\n";
-        assert_eq!(muas_nexthops(ndnctl_routes), 3);
+        assert_eq!(muas_nexthop_ids(ndnctl_routes).len(), 3);
+        // minidronesys-02 on 2026-10-05: the routes still named faces 2-4, the face table held
+        // only on-demand faces the listener re-created for incoming traffic.
+        let ndnctl_faces = "faceid=5  ?  on-demand  local  point-to-point\n  remote: internal://internal\n\
+            faceid=97  UDP  on-demand  non-local  point-to-point\n  remote: udp4://192.168.1.13:6363\n\
+            faceid=96  UDP  on-demand  non-local  point-to-point\n  remote: udp4://192.168.1.14:6363\n";
+        assert_eq!(
+            muas_nexthops(ndnctl_routes, ndnctl_faces),
+            (0, vec![2, 3, 4])
+        );
+        let healthy = format!("{ndnctl_faces}faceid=2  UDP  permanent\nfaceid=3  UDP  permanent\n");
+        assert_eq!(muas_nexthops(ndnctl_routes, &healthy), (2, vec![4]));
 
         let nfdc_strategy = "prefix=/ strategy=/localhost/nfd/strategy/best-route/v=5\n\
             prefix=/muas/v2 strategy=/localhost/nfd/strategy/best-route/v=5\n\
@@ -579,7 +620,7 @@ mod tests {
             prefix=/muas nexthop=263 origin=static cost=100 flags=child-inherit expires=never\n\
             prefix=/muas/v2 nexthop=264 origin=app cost=0 flags=child-inherit expires=never\n";
         assert_eq!(
-            muas_nexthops(nfdc_routes),
+            muas_nexthop_ids(nfdc_routes).len(),
             2,
             "one face listed per origin counts once"
         );

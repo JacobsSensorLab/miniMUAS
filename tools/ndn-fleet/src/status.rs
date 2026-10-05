@@ -39,7 +39,9 @@ pub struct NodeStatus {
     /// Loaded units only (fabric + role units) → `ActiveState`.
     pub units: BTreeMap<String, String>,
     pub muas_strategy: Option<String>,
+    /// `/muas` nexthops whose face exists; `dead_nexthops` name faces that do not.
     pub muas_nexthops: usize,
+    pub dead_nexthops: Vec<u64>,
     pub oversize_journals: Vec<(String, u64)>,
     pub uptime_s: Option<u64>,
     /// Node clock − local clock (ms), midpoint estimate.
@@ -129,9 +131,11 @@ for f in desired good active; do echo "@$f $(cat /var/lib/minimuas/fabric/$f 2>/
 systemctl show -p Id,LoadState,ActiveState {units} 2>/dev/null | sed 's/^/@unit /'
 case "$(cat /var/lib/minimuas/fabric/active 2>/dev/null)" in
   nfd*) nfdc strategy list 2>/dev/null | grep -E 'prefix=/muas[[:space:]]' | sed 's/^/@strategy /'
-        nfdc route list 2>/dev/null | grep -E 'prefix=/muas[[:space:]]' | sed 's/^/@route /' ;;
+        nfdc route list 2>/dev/null | grep -E 'prefix=/muas[[:space:]]' | sed 's/^/@route /'
+        nfdc face list 2>/dev/null | grep -oE '^faceid=[0-9]+' | sed 's/^/@face /' ;;
   *) ndn-ctl strategy list 2>/dev/null | grep -E '^/muas[[:space:]]' | sed 's/^/@strategy /'
-     ndn-ctl route list 2>/dev/null | grep -E '^/muas[[:space:]]' | sed 's/^/@route /' ;;
+     ndn-ctl route list 2>/dev/null | grep -E '^/muas[[:space:]]' | sed 's/^/@route /'
+     ndn-ctl face list 2>/dev/null | grep -oE '^faceid=[0-9]+' | sed 's/^/@face /' ;;
 esac
 for j in {glob}; do [ -f "$j" ] || continue; s=$(stat -c %s "$j"); [ "$s" -gt {limit} ] && echo "@journal $j $s"; done
 echo "@uptime $(cut -d' ' -f1 /proc/uptime)"
@@ -153,6 +157,7 @@ fn parse_status(cfg: &Config, node: &Node, text: &str, local_ms: (u64, u64)) -> 
         units: BTreeMap::new(),
         muas_strategy: None,
         muas_nexthops: 0,
+        dead_nexthops: Vec::new(),
         oversize_journals: Vec::new(),
         uptime_s: None,
         clock_offset_ms: None,
@@ -162,7 +167,8 @@ fn parse_status(cfg: &Config, node: &Node, text: &str, local_ms: (u64, u64)) -> 
     let nonempty = |s: &str| (!s.is_empty()).then(|| s.to_string());
     let (mut t0, mut t1, mut host) = (None::<i64>, None::<i64>, None::<String>);
     let mut unit: (Option<String>, Option<String>, Option<String>) = (None, None, None);
-    let (mut strategy_rows, mut route_rows) = (String::new(), String::new());
+    let (mut strategy_rows, mut route_rows, mut face_rows) =
+        (String::new(), String::new(), String::new());
     let flush_unit = |unit: &mut (Option<String>, Option<String>, Option<String>),
                       units: &mut BTreeMap<String, String>| {
         if let (Some(id), Some(load), Some(active)) = (unit.0.take(), unit.1.take(), unit.2.take())
@@ -205,6 +211,10 @@ fn parse_status(cfg: &Config, node: &Node, text: &str, local_ms: (u64, u64)) -> 
                 route_rows.push_str(rest);
                 route_rows.push('\n');
             }
+            "face" => {
+                face_rows.push_str(rest);
+                face_rows.push('\n');
+            }
             "journal" => {
                 if let Some((path, size)) = rest.rsplit_once(' ') {
                     st.oversize_journals
@@ -217,7 +227,7 @@ fn parse_status(cfg: &Config, node: &Node, text: &str, local_ms: (u64, u64)) -> 
     }
     flush_unit(&mut unit, &mut st.units);
     st.muas_strategy = cells::muas_strategy(&strategy_rows);
-    st.muas_nexthops = cells::muas_nexthops(&route_rows);
+    (st.muas_nexthops, st.dead_nexthops) = cells::muas_nexthops(&route_rows, &face_rows);
 
     // The node stamped t0 after local l0 and t1 before local l1, so the true offset lies in
     // [t1 − l1, t0 − l0]; report its midpoint and half-width, flag only a certain violation.
@@ -274,6 +284,12 @@ fn fabric_problems(cfg: &Config, st: &NodeStatus) -> Vec<String> {
         Some(s) => p.push(format!("/muas strategy is {s}, not multicast")),
         None => p.push("/muas has no strategy entry".into()),
     }
+    if !st.dead_nexthops.is_empty() {
+        p.push(format!(
+            "/muas routes to face(s) {:?} that no longer exist (dropped face, routes kept)",
+            st.dead_nexthops
+        ));
+    }
     let want = cfg.nodes.len().saturating_sub(1);
     if st.muas_nexthops < want {
         p.push(format!(
@@ -320,6 +336,7 @@ async fn probe_node(cfg: &Config, node: &Node) -> NodeStatus {
                 units: BTreeMap::new(),
                 muas_strategy: None,
                 muas_nexthops: 0,
+                dead_nexthops: Vec::new(),
                 oversize_journals: Vec::new(),
                 uptime_s: None,
                 clock_offset_ms: None,
@@ -635,6 +652,10 @@ mod tests {
         s += &format!("@strategy {strategy}\n");
         for r in routes {
             s += &format!("@route {r}\n");
+        }
+        // Every routed face exists, as on a healthy node.
+        for id in cells::muas_nexthop_ids(&routes.join("\n")) {
+            s += &format!("@face faceid={id}\n");
         }
         s += "@journal /var/lib/minimuas/log/gcs-dashboard.jsonl 4698873\n@uptime 177625.57\n";
         s += &format!("@t1 {}\n", t.1);
