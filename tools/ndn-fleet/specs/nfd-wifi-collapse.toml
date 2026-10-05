@@ -1,0 +1,31 @@
+name = "nfd-wifi-collapse"
+description = """
+Does one vehicle's preset increase collapse every stream on `nfd wifi`, and how long does it take \
+to recover? The window is recorded idle by ndn-fleet while an external driver replays the \
+operator sequence through the dashboard (analysis/collapse_driver.py): all three vehicles at \
+smooth 640p20, one switched to detail 1280p15 and back, all off, all on again at 640p20 before the \
+fabric has recovered, all off, then the drain. Logging stays light so it cannot cause what it \
+measures: NFD at its own config, NDNSF's stream timeline at its default 1 in 10 cursors, plus the \
+miniMUAS per-frame records and the stream facade's lifecycle, all to RAM. The capture records forwarding state at start and stop, per-second \
+UDP socket queues and forwarder RSS, and packet headers on every node."""
+settle_s = 150
+duration_s = 480
+repeats = 1
+counters = true
+
+[[arms]]
+label = "nfd"
+cell = "nfd wifi"
+
+[workload]
+kind = "idle"
+
+[capture]
+iface = "mesh0"
+snaplen = 200
+link_interval_ms = 1000
+
+[capture.role_env]
+MUAS_STREAM_TRACE = "1"
+NDNSF_TIMELINE_TRACE = "1"
+NDN_LOG = "ndn_service_framework.TimelineTrace=DEBUG:ndn_service_framework.StreamFacade=INFO"
