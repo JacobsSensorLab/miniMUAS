@@ -1262,6 +1262,9 @@ async fn build_all(
         })
         .collect();
     let mut args = vec!["build", "--no-link", "--print-out-paths"];
+    if let Some(store) = &cfg.deploy.build_store {
+        args.extend(["--store", store.as_str(), "--eval-store", "auto"]);
+    }
     args.extend(installables.iter().map(String::as_str));
     let total = cfg.deploy.build_retries + 1;
     for attempt in 1..=total {
@@ -1304,11 +1307,24 @@ async fn current_system(cfg: &Config, node: &Node) -> Option<String> {
     out.ok().then(|| out.stdout.trim().to_string())
 }
 
-/// Copy the closure, falling back through the jump host (node 01's campus DNS has been dead).
+/// Copy the closure (from `deploy.build_store` when set, else the local store), falling back
+/// through the jump host (node 01's campus DNS has been dead).
 async fn copy_closure(cfg: &Config, job: &JobCtx, node: &Node, sys: &str) -> Result<Vec<Value>> {
     let user = &cfg.fleet.ssh_user;
     let direct_to = format!("ssh://{user}@{}", node.host);
-    let direct = remote::local("nix", &["copy", "--to", &direct_to, sys], None, &[], COPY).await?;
+    let from: Vec<&str> = match &cfg.deploy.build_store {
+        Some(store) => vec!["--from", store.as_str()],
+        None => Vec::new(),
+    };
+    let copy_args = |to: &str| {
+        let mut a = vec!["copy"];
+        a.extend(&from);
+        a.extend(["--to", to, sys]);
+        a.into_iter().map(String::from).collect::<Vec<String>>()
+    };
+    let args = copy_args(&direct_to);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let direct = remote::local("nix", &args, None, &[], COPY).await?;
     let mut outs = vec![out_json(&direct)];
     if direct.ok() {
         return Ok(outs);
@@ -1321,14 +1337,9 @@ async fn copy_closure(cfg: &Config, job: &JobCtx, node: &Node, sys: &str) -> Res
     ));
     let opts = format!("-J {user}@{} -o ConnectTimeout=10", cfg.fleet.jump_host);
     let jump_to = format!("ssh://{user}@{}", node.addr);
-    let jumped = remote::local(
-        "nix",
-        &["copy", "--to", &jump_to, sys],
-        None,
-        &[("NIX_SSHOPTS", &opts)],
-        COPY,
-    )
-    .await?;
+    let args = copy_args(&jump_to);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let jumped = remote::local("nix", &args, None, &[("NIX_SSHOPTS", &opts)], COPY).await?;
     outs.push(out_json(&jumped));
     jumped.stdout_ok()?;
     Ok(outs)

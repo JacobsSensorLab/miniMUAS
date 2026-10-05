@@ -26,6 +26,10 @@ pins_file = "nix/ndn-packages/ndn-fwd/default.nix"
 # nixosConfigurations.<node>.config.system.build.toplevel
 flake_attr = "nixosConfigurations.{node}.config.system.build.toplevel"
 build_retries = 3
+# Build in, and copy each node's closure from, the builder's store: the operator Mac has a few GB
+# free and the closures were garbage-collected from it (2026-10-05); copying them back first
+# would fill the disk. Evaluation stays local (.drv files and sources only).
+build_store = "ssh-ng://eu.nixbuild.net"
 # The config flake's `minimuas-src` input is this checkout's GitHub repo.
 minimuas_local = "../.."
 # Paths no fleet derivation reads: minimuas/v2.nix copies examples/python/v2_flight_services

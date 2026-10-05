@@ -46,6 +46,12 @@ pub struct DeployCfg {
     /// `{node}` is replaced by the node name.
     pub flake_attr: String,
     pub build_retries: u32,
+    /// Store the fleet closures are built in and copied from (e.g. `ssh-ng://eu.nixbuild.net`).
+    /// Unset: the local store. Set: evaluation stays local (only .drv files and sources land
+    /// here), outputs stay on the builder, and each node is fed builder -> node, so a deploy
+    /// never needs room for whole NixOS closures on the operator's disk.
+    #[serde(default)]
+    pub build_store: Option<String>,
     /// Local miniMUAS checkout: the repo behind the config flake's `minimuas-src` input.
     #[serde(default)]
     pub minimuas_local: Option<PathBuf>,
