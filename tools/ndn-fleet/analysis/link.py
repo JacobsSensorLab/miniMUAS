@@ -217,6 +217,28 @@ def nfd_faces(text: str) -> Dict[str, Dict[str, float]]:
     return out
 
 
+def sockets(text: str) -> Dict[str, float]:
+    """`ss -u -a -n -m -p sport = :6363`: the forwarder's UDP sockets. A full send queue
+    (t near tb) is where an unbounded user-space send backlog starts; d counts datagrams the
+    socket dropped on receive."""
+    out = {"tx_queue_max": 0.0, "tx_queue_sum": 0.0, "rx_queue_max": 0.0, "drops": 0.0}
+    for m in re.finditer(r"skmem:\(r(\d+),rb\d+,t(\d+),tb\d+,.*?d(\d+)\)", text):
+        r, t, d = (float(x) for x in m.groups())
+        out["tx_queue_max"] = max(out["tx_queue_max"], t)
+        out["tx_queue_sum"] += t
+        out["rx_queue_max"] = max(out["rx_queue_max"], r)
+        out["drops"] += d
+    return out
+
+
+def process_rss_kb(text: str) -> Dict[str, float]:
+    """`<pid> Name: x VmRSS: n kB` lines -> {name: rss kB} (largest per name)."""
+    out: Dict[str, float] = {}
+    for m in re.finditer(r"Name: (\S+) VmRSS: (\d+) kB", text):
+        out[m.group(1)] = max(out.get(m.group(1), 0.0), float(m.group(2)))
+    return out
+
+
 def nfd_face_remotes(text: str) -> Dict[int, str]:
     """`nfdc face list` -> {faceid: remote URI}."""
     out: Dict[int, str] = {}
@@ -274,6 +296,8 @@ def summarize_node(path: str) -> dict:
                         if k.startswith("sta.") and k.endswith(".aqm")},
             "nfd_faces": nfd_faces(s.get("nfd.faces", "")),
             "nfd_status": nfd_status(s.get("nfd.status", "")),
+            "sockets": sockets(s.get("sockets", "")),
+            "rss_kb": process_rss_kb(s.get("mem", "")),
         }
         cpu = cpu_total(s.get("cpu", ""))
         tk = tasks(s.get("tasks", ""))
@@ -295,8 +319,14 @@ def summarize_node(path: str) -> dict:
     delta = _delta(_flat(first), _flat(last))
     names = {tid: comm for tid, (comm, _) in task_prev.items()}
     hot = sorted(busiest.items(), key=lambda kv: -kv[1])[:8]
+    peak = lambda key: max((x.get(key, 0.0) for x in series), default=0.0)
     return {
         "ticks": len(series),
+        "peaks": {
+            "udp_tx_queue_bytes_max": peak("sockets.tx_queue_max"),
+            "udp_tx_queue_bytes_sum_max": peak("sockets.tx_queue_sum"),
+            "forwarder_rss_kb_max": max(peak("rss_kb.nfd"), peak("rss_kb.ndn-fwd")),
+        },
         "window_s": (t_last - t_first) / 1e9,
         "delta": delta,
         "last": _flat(last),

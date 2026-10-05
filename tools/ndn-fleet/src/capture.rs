@@ -296,6 +296,11 @@ pub struct Running {
     pub stopped_unix_s: Option<u64>,
 }
 
+/// Shell function `forwarding <file>`: the forwarder's whole state (faces with what each id
+/// points to, FIB, RIB, strategy choices, CS, status, channels), for whichever forwarder the
+/// cell runs. Face ids change on every forwarder restart, so the capture records its own.
+const FORWARDING_FN: &str = r###"forwarding() { { echo "# $(hostname) $(date -u +%FT%TZ) cell=$(cat /var/lib/minimuas/fabric/active)"; if systemctl is-active -q nfd; then for c in status 'face list' 'fib list' 'route list' 'strategy list' 'cs info' 'channel list'; do echo "## nfdc $c"; nfdc $c; done; else for c in status 'face list' 'fib list' 'route list' 'strategy list' 'cs info'; do echo "## ndn-ctl $c"; ndn-ctl $c; done; fi; } > "$1" 2>&1; }"###;
+
 fn collector_script(cap: &Capture, dir: &str) -> String {
     let iface = &cap.iface;
     let pcap = if cap.snaplen > 0 {
@@ -331,6 +336,8 @@ while :; do
     s qdisc tc -s qdisc show dev {iface}
     s snmp grep -E '^(Ip|Udp):' /proc/net/snmp
     s udp grep -hi ':18EB ' /proc/net/udp /proc/net/udp6
+    s sockets ss -u -a -n -m -p sport = :6363
+    s mem sh -c 'for p in $0; do printf "%s " "$p"; grep -E "^(Name|VmRSS):" /proc/$p/status 2>/dev/null | tr -s "\t " " " | tr "\n" " "; echo; done' "$PIDS"
     s softnet cat /proc/net/softnet_stat
     s cpu grep '^cpu' /proc/stat
     s tasks cat $TASKS
@@ -362,9 +369,10 @@ done
         "PATH=/run/wrappers/bin:/run/current-system/sw/bin:$PATH\nexport PATH\n\
          D={dir}\ncd \"$D\" || exit 1\n\
          for f in {RUN_DIR}/*.log; do [ -f \"$f\" ] && : > \"$f\"; done\n\
-         date +%s%N > started_ns\nchronyc -n tracking > chrony-start.txt 2>&1\n\
+         {FORWARDING_FN}\n\
+         date +%s%N > started_ns\nchronyc -n tracking > chrony-start.txt 2>&1\nforwarding forwarding-start.txt\n\
          stop() {{ [ -f dumpcap.pid ] && kill \"$(cat dumpcap.pid)\" 2>/dev/null; wait; \
-         date +%s%N > stopped_ns; chronyc -n tracking > chrony-stop.txt 2>&1; exit 0; }}\n\
+         date +%s%N > stopped_ns; chronyc -n tracking > chrony-stop.txt 2>&1; forwarding forwarding-stop.txt; exit 0; }}\n\
          trap stop TERM INT\n{pcap}{sampler}"
     )
 }

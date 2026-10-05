@@ -453,6 +453,8 @@ def main():
             "sta_aqm": {k[8:]: v for k, v in dl.items() if k.startswith("sta_aqm.") and v},
             "survey": {k[7:]: v for k, v in dl.items() if k.startswith("survey.")},
             "busiest_threads": s["busiest_threads"],
+            "peaks": s.get("peaks", {}),
+            "udp_socket_drops_ss": dl.get("sockets.drops"),
         }
 
     # --- app / NDNSF per stream, freezes ----------------------------------------------
@@ -578,6 +580,8 @@ def render_md(r: dict) -> str:
                      f"rx drop misc {c.get('rx_drop_misc')}, signal {c.get('signal_dbm')} dBm, tx rate {c.get('tx_bitrate_mbps')} Mb/s")
         o.append(f"- **UDP receive-buffer drops: {v['udp_rcvbuf_drop_pct']} % of datagrams delivered to the host** (snmp {v['udp_snmp']})")
         o.append(f"- qdisc {v['qdisc']}; netdev {v['netdev']}; softnet {v['softnet']}")
+        if v.get("peaks"):
+            o.append(f"- peaks: {v['peaks']}; forwarder socket drops (ss) {v.get('udp_socket_drops_ss')}")
         if v["driver"]:
             o.append(f"- driver (rtl88x2eu) {v['driver']}")
         if v["mac80211_aqm"] or v["sta_aqm"]:

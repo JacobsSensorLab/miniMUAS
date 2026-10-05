@@ -142,7 +142,10 @@ runs/<id>/workload.json          flightcheck --json / fabric-bench summary
 runs/<id>/raw/                   stdout/stderr of every command
 runs/<id>/summary.json           the metrics a comparison reads
 runs/<id>/capture/<node>/        wire.pcapng.gz, link.txt.gz (sampler), journal.txt.gz (nfd +
-                                 muas-*), kernel.txt.gz, chrony-{start,stop}.txt, node.txt,
+                                 muas-*), log-<unit>.log.gz (traced units' stderr: NFD, NDNSF),
+                                 forwarding-{start,stop}.txt (faces + what each id points to,
+                                 FIB, RIB, strategy choice, CS, status), kernel.txt.gz,
+                                 chrony-{start,stop}.txt, node.txt,
                                  dumpcap.err (dumpcap's own drop count), started_ns/stopped_ns
 jobs/<id>.log
 ```
