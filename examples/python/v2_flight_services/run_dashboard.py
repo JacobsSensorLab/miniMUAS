@@ -90,7 +90,7 @@ from dataplane import (
 from raster import build_raster, estimate_duration_s
 from timesync import ClockMonitor
 from telemetry_stream import TelemetryFeed
-from video_stream import frame_trace_enabled
+from video_stream import frame_trace_enabled, trace_writer
 from ndnsf_runtime import (
     add_common_arguments,
     add_ndnsf_path,
@@ -1577,7 +1577,7 @@ class Dashboard:
             # at low rates and every prefetch Interest expires before its frame
             # exists.
             trace = (
-                (lambda record, vid=vid: print_json(
+                (lambda record, vid=vid: trace_writer().emit(
                     "dash.video.frame", vehicle=vid, **record))
                 if frame_trace_enabled() else None
             )
@@ -1669,15 +1669,8 @@ class Dashboard:
             ).start()
             return
 
-        key = (state_s, reason_s)
-        # Traced runs log every second: the counters are the time series that
-        # shows a head-of-line stall (next_cursor stuck while ready_q grows).
-        if (key == sub["log_key"] and now - sub["log_t"] < 10.0
-                and not frame_trace_enabled()):
-            return
-        sub["log_key"], sub["log_t"] = key, now
-        self.event(
-            "video.stream_status", vehicle=vid,
+        fields = dict(
+            vehicle=vid,
             state=state_s, reason=reason_s,
             delivered=g("delivered"), rejected=g("rejected"),
             timeouts=g("timeouts"), nacks=g("nacks"),
@@ -1693,6 +1686,15 @@ class Dashboard:
             lag_ms=consumer.lag_ms,
             dropped=consumer.dropped,
         )
+        # Traced runs record every second, through the trace writer: the counters are the
+        # time series that shows a head-of-line stall (next_cursor stuck while ready_q grows).
+        if frame_trace_enabled():
+            trace_writer().emit("dash.video.stream_status", **fields)
+        key = (state_s, reason_s)
+        if key == sub["log_key"] and now - sub["log_t"] < 10.0:
+            return
+        sub["log_key"], sub["log_t"] = key, now
+        self.event("video.stream_status", **fields)
 
     def _ensure_video_thread(self) -> None:
         """Start the single shared relay thread if it isn't already running.

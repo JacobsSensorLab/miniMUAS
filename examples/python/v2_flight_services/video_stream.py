@@ -511,6 +511,58 @@ def frame_trace_enabled() -> bool:
     return os.environ.get(FRAME_TRACE_ENV, "") not in ("", "0", "false", "no")
 
 
+class TraceWriter:
+    """Trace records off the hot path: a bounded queue and one writer thread.
+
+    Records must never be written from the thread that delivers or publishes frames.
+    `print_json` fsyncs every line into the role's JSONL journal on the SD card, and journald
+    itself falls seconds behind under a capture's NFD trace: routed through it, the per-frame
+    record stalled the dashboard's drain thread ~1 s at a time and manufactured the very
+    freezes it was meant to explain (capture dry run 2026-10-05: items admitted by NDNSF 0.5-3 s
+    before the drain took them, while NDNSF reported nothing pending). Records go to stdout
+    only, as one JSON line each; when the queue is full a record is dropped and counted, and
+    the count rides on the next record written.
+    """
+
+    def __init__(self, capacity: int = 20000) -> None:
+        import queue
+
+        self._q: "queue.Queue" = queue.Queue(maxsize=capacity)
+        self._full = queue.Full
+        self.dropped = 0
+        threading.Thread(target=self._run, name="trace-writer", daemon=True).start()
+
+    def emit(self, event: str, **fields) -> None:
+        """Queue one record, stamped now (`emit_unix_us`): it is written later."""
+        fields["emit_unix_us"] = time.time_ns() // 1000
+        try:
+            self._q.put_nowait((event, fields))
+        except self._full:
+            self.dropped += 1
+
+    def _run(self) -> None:
+        import sys
+
+        while True:
+            event, fields = self._q.get()
+            if self.dropped:
+                fields = {**fields, "trace_dropped": self.dropped}
+            sys.stdout.write(json.dumps({"event": event, **fields}, sort_keys=True) + "\n")
+            if self._q.empty():
+                sys.stdout.flush()
+
+
+_TRACE_WRITER: "Optional[TraceWriter]" = None
+
+
+def trace_writer() -> TraceWriter:
+    """The process's one TraceWriter (created on first use)."""
+    global _TRACE_WRITER
+    if _TRACE_WRITER is None:
+        _TRACE_WRITER = TraceWriter()
+    return _TRACE_WRITER
+
+
 # The consumer's drain thread takes up to this many queued items per GIL entry.
 # A 1280x800 frame is ~17 items, so a batch holds several frames at most; the
 # bound only keeps one wakeup from monopolising the GIL after a stall.

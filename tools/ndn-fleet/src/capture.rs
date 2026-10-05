@@ -8,6 +8,12 @@
 //! starts the forwarder and restarts every role unit anyway -- is the only restart, and are
 //! removed before the I9 restore switch, which restarts them clean. A reboot also clears them.
 //!
+//! A traced unit's stderr (where NFD and ndn-cxx -- hence NDNSF -- log) goes to a RAM file under
+//! `/run/ndn-fleet-capture`, not to journald: at trace level journald fell 3 s behind on the
+//! GCS's SD card, and a logger that cannot write blocks the thread that logged, i.e. NFD's
+//! forwarding thread and NDNSF's IO thread -- the code being measured. Each sample truncates
+//! the files at its start and packs them with the bundle.
+//!
 //! Collectors run on the node as a transient systemd unit, not inside an ssh session: the
 //! sample must not depend on the control link (minidronesys-02 is reachable only over the Wi-Fi
 //! being measured), and nothing is pulled until the sample is over.
@@ -180,7 +186,7 @@ awk {awk} "$conf" > {RUN_DIR}/nfd.conf
 cat >> {RUN_DIR}/nfd.conf <<'NDNFLEETLOG'
 {block}NDNFLEETLOG
 mkdir -p /run/systemd/system/nfd.service.d
-printf '[Service]\nExecStart=\nExecStart=%s -c %s\n' "$bin" {RUN_DIR}/nfd.conf > /run/systemd/system/nfd.service.d/{DROP_IN}
+printf '[Service]\nExecStart=\nExecStart=%s -c %s\nStandardError=append:{RUN_DIR}/nfd.log\n' "$bin" {RUN_DIR}/nfd.conf > /run/systemd/system/nfd.service.d/{DROP_IN}
 echo "nfd $bin -c {RUN_DIR}/nfd.conf (from $conf)"
 "#,
             awk = sh_quote(NFD_LOG_STRIP_AWK)
@@ -197,7 +203,7 @@ echo "nfd $bin -c {RUN_DIR}/nfd.conf (from $conf)"
             s.push_str(&format!(
                 "if systemctl cat {u} >/dev/null 2>&1; then \
                  mkdir -p /run/systemd/system/{u}.d; \
-                 printf '%s\\n' '[Service]'{lines} > /run/systemd/system/{u}.d/{DROP_IN}; \
+                 printf '%s\\n' '[Service]'{lines} 'StandardError=append:{RUN_DIR}/{unit}.log' > /run/systemd/system/{u}.d/{DROP_IN}; \
                  echo \"env {unit}\"; fi\n"
             ));
         }
@@ -355,6 +361,7 @@ done
         // chronyc live in the NixOS system profile (the first dry run found no dumpcap).
         "PATH=/run/wrappers/bin:/run/current-system/sw/bin:$PATH\nexport PATH\n\
          D={dir}\ncd \"$D\" || exit 1\n\
+         for f in {RUN_DIR}/*.log; do [ -f \"$f\" ] && : > \"$f\"; done\n\
          date +%s%N > started_ns\nchronyc -n tracking > chrony-start.txt 2>&1\n\
          stop() {{ [ -f dumpcap.pid ] && kill \"$(cat dumpcap.pid)\" 2>/dev/null; wait; \
          date +%s%N > stopped_ns; chronyc -n tracking > chrony-stop.txt 2>&1; exit 0; }}\n\
@@ -458,6 +465,7 @@ pub async fn collect(
          journalctl $F -k -a -o short-unix --no-pager --since @{since} --until @{until} | gzip -1 > kernel.txt.gz; \
          {{ uname -a; iw dev; for i in /sys/class/net/*; do d=$(readlink $i/device/driver 2>/dev/null) && echo \"driver ${{i##*/}} ${{d##*/}}\"; done; \
             cat /var/lib/minimuas/fabric/active; echo; readlink /run/current-system; }} > node.txt 2>&1; \
+         for f in {RUN_DIR}/*.log; do [ -s \"$f\" ] && gzip -1 -c \"$f\" > \"log-${{f##*/}}.gz\"; done; \
          for f in wire.pcapng link.txt; do [ -f $f ] && gzip -1 $f; done; \
          cd {NODE_DIR}; tar -cf {id}.tar {id}; \
          echo \"$(stat -c %s {id}.tar) $(sha256sum {id}.tar | cut -d' ' -f1)\""

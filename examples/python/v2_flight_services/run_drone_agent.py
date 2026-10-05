@@ -2298,7 +2298,11 @@ def main() -> int:
                 video_cfg["descriptor"] = ""
                 return
             try:
-                from video_stream import VideoStreamProducer, frame_trace_enabled
+                from video_stream import (
+                    VideoStreamProducer,
+                    frame_trace_enabled,
+                    trace_writer,
+                )
 
                 producer = VideoStreamProducer(
                     provider,
@@ -2314,7 +2318,7 @@ def main() -> int:
                     # is not a key. Same rule the bench already follows.
                     signing_identity=prefix,
                     trace=(
-                        (lambda record: print_json("agent.video.frame", **record))
+                        (lambda record: trace_writer().emit("agent.video.frame", **record))
                         if frame_trace_enabled() else None
                     ),
                 )
