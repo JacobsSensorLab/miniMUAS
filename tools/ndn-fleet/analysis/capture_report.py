@@ -500,7 +500,40 @@ def main():
         json.dump(report, f, indent=1, default=str)
     with open(os.path.join(cap, "report.md"), "w") as f:
         f.write(render_md(report))
+    with open(os.path.join(cap, "README.md"), "w") as f:
+        f.write(README)
     print(render_md(report))
+
+
+README = """# Reading this capture
+
+One directory per node (`minidronesys-03` is the GCS: NDNSF users = dashboard, NFD access
+point side; `-01/-02/-04` are the vehicles iuas-01, wuas-01, iuas-02: NDNSF providers). Cell:
+`nfd wifi` (NFD 24.07, unicast UDP faces, NDNLP reliability on, MTU 1452). Every file covers
+the same sample window. `report.md` is the summary, `report.json` everything behind it.
+
+| file | what |
+|---|---|
+| `wire.pcapng.gz` | UDP/6363 on `mesh0`, first 200 B of each datagram (IP/UDP/NDNLP header and the NDN name of unfragmented packets and first fragments). `dumpcap.err` ends with dumpcap's own drop count (0 = complete). |
+| `log-nfd.log.gz` | NFD's own log: `nfd.Forwarder` DEBUG (every Interest/Data decision with face ids), NDNLP (`LpReliability`, `LpReassembler`, `GenericLinkService`), transports. |
+| `log-muas-v2-*.log.gz` | ndn-cxx log of the role process, i.e. NDNSF: `StreamFacade` (`STREAM_FUTURE_INTEREST`, `STREAM_ITEM_ADMITTED` with the Data's wire sha256, `STREAM_FAST_RETRANSMIT`, lifecycle) and `TimelineTrace` (`NDNSF_TIMELINE`, every cursor; provider: `payload-interest-arrived`, `signed-and-materialized`, `data-put`). |
+| `journal.txt.gz` | journald for `nfd` and `muas-*`: the JSON events -- `dash.video.frame` (per delivered frame: cursor range, first-chunk and completion wall time, FEC-recovered chunks), `agent.video.frame` (per published frame: cursor range, wall time, publish cost), `dash.video.stream_status` (NDNSF `LiveStreamStatus` every second: `next_cursor`, `ready_q`, `in_flight`, timeouts, nacks). |
+| `link.txt.gz` | 1 Hz sampler, `@@ <unix ns>` per tick: `iw` station/survey, rtl88x2eu procfs (vehicles) or mac80211/mt76 debugfs (GCS), qdisc, `/proc/net/snmp` (UDP `RcvbufErrors`), softnet, per-thread CPU, `nfdc face list`/`status`. |
+| `kernel.txt.gz` | kernel log for the window. |
+| `chrony-start.txt`, `chrony-stop.txt` | each node's clock offset (vehicles sync to the GCS; sub-ms). |
+
+Joining across layers. A predictive-stream item is the Data
+`/muas/v2/<vid>/NDNSF/STREAM-MAP/<stream>/v/<epoch>/seq=<cursor>`; the same `<cursor>` is the
+`sequence=` of the StreamFacade lines, the last component of the NDNSF_TIMELINE `requestId`
+(`/NDNSF/STREAM/TIMELINE/<stream>/<epoch>/<cursor>`, NonNegativeInteger), the `cursor_first..
+cursor_last` of the frame records, and in the pcap the name of the Data's fragment 0 (later
+fragments share its NDNLP Sequence range). Use each record's own timestamp (NFD/ndn-cxx line
+prefix, `timestamp_us`, `*_unix_us`, `emit_unix_us`, packet time), not journald's receive
+time, which can lag under load.
+
+Faces: `nfdc face list` in `link.txt.gz` maps NFD face ids to peers (`udp4://192.168.1.1x`);
+any other face id is a local application (the NDNSF process on that node).
+"""
 
 
 def _share(drops, delivered):
