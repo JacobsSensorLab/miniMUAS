@@ -65,6 +65,26 @@ def item_key(name):
     return (m.group(2), int(m.group(3))) if m else None
 
 
+class Occurrences(defaultdict):
+    """item -> every time it was seen. Cursors restart with every stream session (a preset
+    change, a re-enable) and not every source names the epoch (StreamFacade lines carry only
+    stream and sequence), so the first time a (stream, cursor) was seen can belong to an earlier
+    session: the joins take the occurrence nearest the moment being explained."""
+
+    def __init__(self):
+        super().__init__(list)
+
+    def add(self, key, t):
+        self[key].append(t)
+
+    def near(self, key, t, horizon):
+        ts = self.get(key)
+        if not ts:
+            return None
+        best = min(ts, key=lambda x: abs(x - t))
+        return best if abs(best - t) <= horizon else None
+
+
 # ---------------------------------------------------------------------------
 # per node parsing
 # ---------------------------------------------------------------------------
@@ -78,16 +98,16 @@ class NodeLogs:
         self.lp = Counter()  # LpReliability/Reassembler/GLS message class -> count
         self.lp_by_face = defaultdict(Counter)
         self.unsolicited_by_face = Counter()
-        self.app_in_interest = {}  # item -> first t (Interest from a local app face)
-        self.app_out_data = {}  # item -> first t (Data handed to a local app face)
-        self.peer_in_data = {}  # item -> first t (Data from a peer face)
-        self.peer_in_interest = {}  # item -> first t (Interest from a peer face)
+        self.app_in_interest = Occurrences()  # Interest from a local app face
+        self.app_out_data = Occurrences()  # Data handed to a local app face
+        self.peer_in_data = Occurrences()  # Data from a peer face
+        self.peer_in_interest = Occurrences()  # Interest from a peer face
         self.out_interest_faces = defaultdict(set)  # (item, nonce) -> faces it went out on
         self.finalize = defaultdict(Counter)  # stream -> satisfied/unsatisfied
-        self.admitted = {}  # item -> t (NDNSF consumer admitted)
+        self.admitted = Occurrences()  # NDNSF consumer admitted
         self.fast_retx = defaultdict(list)  # stream -> [t]
-        self.future_interest = {}  # item -> first t
-        self.provider = defaultdict(dict)  # event -> {item: t}
+        self.future_interest = Occurrences()
+        self.provider = defaultdict(Occurrences)  # event -> item -> [t]
         self.dash_frames = defaultdict(list)  # vehicle -> [frame record]
         self.agent_frames = []  # [frame record]
         self.stream_status = defaultdict(list)  # vehicle -> [status]
@@ -115,7 +135,7 @@ class NodeLogs:
                 tl = journal.timeline(text)
                 if tl and tl.get("role") == "provider" and tl.get("cursor") is not None:
                     ts = int(tl.get("timestamp_us", 0)) / 1e6
-                    self.provider[tl["event"]].setdefault((tl["stream"], tl["cursor"]), ts)
+                    self.provider[tl["event"]].add((tl["stream"], tl["cursor"]), ts)
 
     def _json(self, jt, ev):
         e = ev.get("event", "")
@@ -142,14 +162,14 @@ class NodeLogs:
             return
         local = face is not None and face not in self.peer_faces
         if op == "onIncomingInterest":
-            (self.app_in_interest if local else self.peer_in_interest).setdefault(key, t)
+            (self.app_in_interest if local else self.peer_in_interest).add(key, t)
         elif op == "onOutgoingInterest":
             n = re.search(r"nonce=(\w+)", text)
             self.out_interest_faces[(key, n.group(1) if n else "")].add(face)
         elif op == "onIncomingData" and not local:
-            self.peer_in_data.setdefault(key, t)
+            self.peer_in_data.add(key, t)
         elif op == "onOutgoingData" and local:
-            self.app_out_data.setdefault(key, t)
+            self.app_out_data.add(key, t)
         elif op == "onInterestFinalize":
             self.finalize[key[0]]["satisfied" if text.endswith("satisfied") and
                                   not text.endswith("unsatisfied") else "unsatisfied"] += 1
@@ -171,11 +191,11 @@ class NodeLogs:
             return
         key = (stream, int(seq))
         if kind == "STREAM_ITEM_ADMITTED":
-            self.admitted.setdefault(key, t)
+            self.admitted.add(key, t)
         elif kind == "STREAM_FAST_RETRANSMIT":
             self.fast_retx[stream].append(t)
         elif kind == "STREAM_FUTURE_INTEREST":
-            self.future_interest.setdefault(key, t)
+            self.future_interest.add(key, t)
 
 
 # ---------------------------------------------------------------------------
@@ -205,31 +225,36 @@ def attribute(freeze, gcs: NodeLogs, prod: NodeLogs, wire_idx, vid, stream):
     prev, nxt, gap = freeze
     t0 = prev["complete_unix_us"] / 1e6
     cursors = range(int(nxt["cursor_first"]), int(nxt["cursor_last"]) + 1)
+    h = gap + 30.0
     # The cursor that completed last is what held the frame back (delivery is in order).
     worst, worst_t = None, -1.0
     for c in cursors:
-        t = gcs.admitted.get((stream, c))
+        t = gcs.admitted.near((stream, c), t0, h)
         if t is not None and t > worst_t:
             worst, worst_t = c, t
     c = worst if worst is not None else int(nxt["cursor_first"])
     key = (stream, c)
-    pub = next((f for f in prod.agent_frames
-                if int(f["cursor_first"]) <= c <= int(f["cursor_last"])), None)
+    covering = [f for f in prod.agent_frames if int(f["cursor_first"]) <= c <= int(f["cursor_last"])]
+    pub = min(covering, key=lambda f: abs(f["published_unix_us"] / 1e6 - t0), default=None)
+    if pub is not None and abs(pub["published_unix_us"] / 1e6 - t0) > h:
+        pub = None
     w = wire_idx.get(key, {})
+    near = lambda occ, k=key: occ.near(k, t0, h)
+    wire_t = lambda name: w.near(name, t0, h) if w else None
     hops = [
         ("producer published frame", pub and pub["published_unix_us"] / 1e6),
-        ("producer NDNSF signed", prod.provider.get("signed-and-materialized", {}).get(key)),
-        ("GCS NDNSF expressed Interest (NFD app-face in)", gcs.app_in_interest.get(key)),
-        ("GCS wire: Interest out", w.get("gcs_tx_interest")),
-        ("producer wire: Interest in", w.get("prod_rx_interest")),
-        ("producer NFD: Interest from peer", prod.peer_in_interest.get(key)),
-        ("producer NDNSF: Interest arrived", prod.provider.get("payload-interest-arrived", {}).get(key)),
-        ("producer NDNSF: Data put", prod.provider.get("data-put", {}).get(key)),
-        ("producer wire: Data out (first frag)", w.get("prod_tx_data")),
-        ("GCS wire: Data in (last frag of first copy)", w.get("gcs_rx_data")),
-        ("GCS NFD: Data from peer", gcs.peer_in_data.get(key)),
-        ("GCS NFD: Data to NDNSF (app face)", gcs.app_out_data.get(key)),
-        ("GCS NDNSF admitted item", gcs.admitted.get(key)),
+        ("producer NDNSF signed", near(prod.provider["signed-and-materialized"])),
+        ("GCS NDNSF expressed Interest (NFD app-face in)", near(gcs.app_in_interest)),
+        ("GCS wire: Interest out", wire_t("gcs_tx_interest")),
+        ("producer wire: Interest in", wire_t("prod_rx_interest")),
+        ("producer NFD: Interest from peer", near(prod.peer_in_interest)),
+        ("producer NDNSF: Interest arrived", near(prod.provider["payload-interest-arrived"])),
+        ("producer NDNSF: Data put", near(prod.provider["data-put"])),
+        ("producer wire: Data out (first frag)", wire_t("prod_tx_data")),
+        ("GCS wire: Data in (last frag of first copy)", wire_t("gcs_rx_data")),
+        ("GCS NFD: Data from peer", near(gcs.peer_in_data)),
+        ("GCS NFD: Data to NDNSF (app face)", near(gcs.app_out_data)),
+        ("GCS NDNSF admitted item", near(gcs.admitted)),
         ("dashboard drain took first chunk", nxt["first_chunk_unix_us"] / 1e6),
         ("dashboard frame complete", nxt["complete_unix_us"] / 1e6),
     ]
@@ -298,8 +323,9 @@ def classify(present, gap):
 
 
 def wire_index(gcs_dgrams, prod_dgrams, gcs_addr, prod_addr):
-    """item -> first times on the wire at both ends (Interest GCS->producer, Data back)."""
-    idx = defaultdict(dict)
+    """item -> hop -> every time on the wire at both ends (Interest GCS->producer, Data back);
+    per-hop lists are Occurrences-shaped, see Occurrences."""
+    idx = defaultdict(Occurrences)
     # Data fragments carry the name only in fragment 0; later fragments share the Sequence
     # range [seq0, seq0 + count).
     def data_times(dgrams, src, dst, key_name):
@@ -321,26 +347,22 @@ def wire_index(gcs_dgrams, prod_dgrams, gcs_addr, prod_addr):
                     rec[1] = max(rec[1], d.t_us / 1e6)
         for (k, _s0), (got, t, n) in last.items():
             if got >= n:
-                prev = idx[k].get(key_name)
-                if prev is None or t < prev:
-                    idx[k][key_name] = t
-        for s0, (k, _n) in frag0.items():
-            pass
+                idx[k].add(key_name, t)
 
     for d in gcs_dgrams:
         if d.src == gcs_addr and d.dst == prod_addr and d.kind == "interest":
             k = item_key(d.name)
             if k:
-                idx[k].setdefault("gcs_tx_interest", d.t_us / 1e6)
+                idx[k].add("gcs_tx_interest", d.t_us / 1e6)
     for d in prod_dgrams:
         if d.src == gcs_addr and d.dst == prod_addr and d.kind == "interest":
             k = item_key(d.name)
             if k:
-                idx[k].setdefault("prod_rx_interest", d.t_us / 1e6)
+                idx[k].add("prod_rx_interest", d.t_us / 1e6)
         if d.src == prod_addr and d.dst == gcs_addr and d.kind == "data" and d.frag_index == 0:
             k = item_key(d.name)
             if k:
-                idx[k].setdefault("prod_tx_data", d.t_us / 1e6)
+                idx[k].add("prod_tx_data", d.t_us / 1e6)
     data_times(gcs_dgrams, prod_addr, gcs_addr, "gcs_rx_data")
     return idx
 
@@ -407,7 +429,12 @@ def main():
     # --- multicast amplification (GCS forwarder) -----------------------------------------
     g = logs[gcs["name"]]
     fanout = Counter(len(f) for f in g.out_interest_faces.values())
+    # Measured from NFD's Forwarder DEBUG lines only: a spec that keeps NFD at its own log
+    # level (nfd-wifi-collapse, so the trace cannot cause what it measures) has none, and a 0
+    # there would read as "no amplification".
+    traced = bool(g.out_interest_faces) or bool(g.fwd)
     report["gcs_interest_fanout"] = {
+        "traced": traced,
         "item_interests": sum(fanout.values()),
         "faces_per_interest": dict(sorted(fanout.items())),
         "interest_loops": g.fwd.get("onInterestLoop", 0),
@@ -469,8 +496,9 @@ def main():
         pub_ts = sorted(f["published_unix_us"] / 1e6 for f in pl.agent_frames) if pl else []
         pub_gaps = [b - a for a, b in zip(pub_ts, pub_ts[1:])]
         stream = vid
-        admitted = [k for k in g.admitted if k[0] == stream]
-        provided = [k for k in (pl.provider.get("signed-and-materialized", {}) if pl else {}) if k[0] == stream]
+        # occurrences, not distinct cursors: every session numbers its cursors from the start
+        admitted = [t for k, ts in g.admitted.items() if k[0] == stream for t in ts]
+        provided = [t for k, ts in (pl.provider["signed-and-materialized"].items() if pl else ()) if k[0] == stream for t in ts]
         widx = wire_index(dgrams[gcs["name"]], dgrams[prod["name"]], gcs["addr"], prod["addr"]) if prod else {}
         span = (done[-1]["complete_unix_us"] - done[0]["complete_unix_us"]) / 1e6 if len(done) > 1 else 0
         report["streams"][vid] = {
@@ -568,9 +596,12 @@ def render_md(r: dict) -> str:
                  f"{bk.get('interest', {}).get('loss_pct')} | {rt.get('retransmitted_pct')} / {rt.get('sent_4x_pct')} | "
                  f"{dly['p50']} / {dly['p99']} / {dly['max']} | {v['max_loss_burst']['datagrams']} in {v['max_loss_burst']['ms']} ms |")
     fo = r["gcs_interest_fanout"]
-    o += ["", "## GCS forwarder: Interest fan-out and duplicates",
-          f"- stream-item Interests sent: {fo['item_interests']}; peer faces per Interest: {fo['faces_per_interest']}",
-          f"- Interest loops (duplicate nonce back): {fo['interest_loops']}; unsolicited Data dropped: {fo['unsolicited_data']} (by face {fo['unsolicited_by_face']})"]
+    o += ["", "## GCS forwarder: Interest fan-out and duplicates"]
+    if fo.get("traced", True):
+        o += [f"- stream-item Interests sent: {fo['item_interests']}; peer faces per Interest: {fo['faces_per_interest']}",
+              f"- Interest loops (duplicate nonce back): {fo['interest_loops']}; unsolicited Data dropped: {fo['unsolicited_data']} (by face {fo['unsolicited_by_face']})"]
+    else:
+        o.append("- not measured: this capture kept NFD's Forwarder module below DEBUG")
     o += ["", "## Link / PHY / host deltas over the window"]
     for n, v in r["link"].items():
         o.append(f"### {n} ({v['window_s']} s)")
