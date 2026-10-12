@@ -48,6 +48,46 @@ the run order and the doctrine.
       radio for the mission).
 - [ ] Event log quiet.
 
+## NDN stack comparison (C++ NFD vs Rust ndn-fwd) — field day 2026-10-13
+
+The objective is quantitative metrics for both stacks. Fly through the
+dashboard as usual; the comparison comes from what the fleet records
+while you do.
+
+- **Which stack is live:** header tag `stack NFD` / `stack ndn-fwd`
+  (yellow while settling, red `MIXED` if nodes disagree) and the
+  "Network stack" panel (cell per node).
+- **Switching:** only between sorties, every vehicle landed and
+  disarmed. Use the `→ nfd wifi` / `→ ndn-fwd wifi` buttons in the
+  Network stack panel. The dashboard refuses unless every vehicle has
+  fresh telemetry that says disarmed and not busy. Vehicles switch first;
+  the GCS switches last, and the page drops for ~25–30 s while the
+  dashboard restarts, then reconnects by itself. A whole switch took
+  37–57 s on the ground (2026-10-12). If a vehicle does not accept, the
+  GCS is not switched and the panel says which vehicle; fix it and switch
+  again.
+- **Settling:** after a switch, wait until the panel's 150 s countdown
+  ends before flying. Data recorded while settling is reported
+  separately, not as either stack.
+- **Sorties are not identical, so mix them up:** fly each stack more
+  than once, with similar video load and distances, so the report can
+  compare like with like.
+- **Recorded automatically on every node (nothing to start):** radio
+  link per peer, forwarder CPU and memory, UDP drops and queues, face
+  counters, packet headers (`/var/lib/minimuas/recorder/`); on the GCS
+  also GPS position and a 1 Hz NDN ping to every vehicle. The dashboard
+  recording (`/var/lib/minimuas/replays/`) holds telemetry with
+  per-sample latency, video stats, command latency and the stack of
+  every node.
+- **End of day:** before pulling batteries, use the dashboard's
+  companion shutdown on each vehicle (a clean poweroff keeps the last
+  recordings; enabled in the access policy 2026-10-12, not yet exercised
+  on the fleet). Shut the GCS down last.
+- **Back on campus:** `ndn-fleet flight collect since=<UTC start of the
+  field day>` (read-only), then
+  `python3 analysis/flight_report.py results/flights/<id>` for the
+  side-by-side report (report.md).
+
 ## Flight test ladder (do not skip rungs)
 
 1. **Manual hop per airframe** (RC only, stack idle): confirms tune,
