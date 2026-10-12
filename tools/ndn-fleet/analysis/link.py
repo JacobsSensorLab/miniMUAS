@@ -1,4 +1,5 @@
-"""Parse the capture's link/PHY/host sampler (`link.txt.gz`): one tick per `@@ <unix ns>` line,
+"""Parse the link/PHY/host sampler (`muas-link-sample`: a capture's `link.txt.gz`, a flight
+recorder's `link/link-*.txt[.gz]`): one tick per `@@ <unix ns>` line,
 then `@ <section>` blocks with the raw output of each probe."""
 
 from __future__ import annotations
@@ -160,6 +161,56 @@ RTL_KEYS = {
     "Rx: AMPDU BA window shift Count": "rx_ba_window_shift",
     "Rx: Duplicate Management Frame Drop Count": "rx_dup_mgmt_drop",
 }
+
+
+def process_ticks(text: str) -> Dict[int, float]:
+    """`tasks` section -> {process id: utime+stime ticks summed over its threads}.
+
+    A thread's stat line carries its process group (field 5), which for a systemd service is
+    the main pid: that is what attributes the forwarder's worker threads to the forwarder.
+    """
+    out: Dict[int, float] = {}
+    for line in text.splitlines():
+        m = re.match(r"(\d+) \((.*)\) (.*)", line)
+        if not m:
+            continue
+        rest = m.group(3).split()
+        if len(rest) > 12:
+            pgrp = _int(rest[2])
+            out[pgrp] = out.get(pgrp, 0.0) + float(_int(rest[11]) + _int(rest[12]))
+    return out
+
+
+def process_names(text: str) -> Dict[int, str]:
+    """`mem` section -> {pid: process name}."""
+    return {int(m.group(1)): m.group(2) for m in re.finditer(r"(\d+) Name: (\S+)", text)}
+
+
+def rtl_link(sections: Dict[str, str]) -> Dict[str, object]:
+    """The rtl88x2eu vehicle radio's view of its link to the AP: signal (dBm and %), PHY rates,
+    retry ratio and throughput (`iw station dump` is empty on this driver)."""
+    out: Dict[str, object] = {}
+    m = re.search(r"rssi:(-?\d+)", sections.get("rtl.rx_signal", ""))
+    if m:
+        out["signal_dbm"] = float(m.group(1))
+    tp = sections.get("rtl.sta_tp_info", "")
+    m = re.search(r"tx_rate : ([^\s,]+).*?rx_rate : ([^\s,]+)", tp)
+    if m:
+        out["tx_rate"], out["rx_rate"] = m.group(1), m.group(2)
+    m = re.search(r"\[TP\] Tx : (\d+)\(Kbps\) Rx : (\d+)\(Kbps\)", tp)
+    if m:
+        out["tp_tx_kbps"], out["tp_rx_kbps"] = float(m.group(1)), float(m.group(2))
+    m = re.search(r"\[([0-9a-f:]{17})\]", tp)
+    if m:
+        out["peer"] = m.group(1)
+    dbg = sections.get("rtl.trx_info_debug", "")
+    m = re.search(r"curr_retry_ratio\s*:\s*(\d+)", dbg)
+    if m:
+        out["retry_ratio"] = float(m.group(1))
+    m = re.search(r"rssi\s*:\s*(\d+) \(%\)", dbg)
+    if m:
+        out["signal_pct"] = float(m.group(1))
+    return out
 
 
 def rtl(sections: Dict[str, str]) -> Dict[str, float]:

@@ -42,11 +42,12 @@ Workloads are driven through the GCS dashboard WebSocket by `miniMUAS/tools/flig
   `/run/current-system` equals the closure built for it, and every node runs the same ndn-fwd
   package path.
 - **I5 — canary first, GCS last, fixed restart order, one restart per role.** Rollout: canary
-  airframe → verify → other airframes → GCS. Then journals >2 MB are truncated and services are
-  brought up in order: forwarder (fabric apply started, never restarted + health) → agents →
+  airframe → verify → other airframes → GCS. Then services are brought up in order: forwarder
+  (fabric apply started, never restarted + health) → agents →
   controller/gcs → dashboard. A role unit is restarted only if it has not already started since
   the node's activation and its forwarder's last start (switch-to-configuration, a PartOf=
-  cascade, or an earlier group may have done it).
+  cascade, or an earlier group may have done it). Role journals (`/var/lib/minimuas/log/*.jsonl`)
+  are flight data and are never truncated or rotated by a deploy.
 - **I6 — streams are stopped around every sample.** Before a run: all video disabled and the
   dashboard quiet (no frames for 3 s). After: disabled again. A sample whose first frame precedes
   its own enable (backlog) is rejected, not reported.
@@ -76,12 +77,13 @@ Read-only (no lock, no armed check):
 
 | tool | purpose |
 |---|---|
-| `fleet_status` | Preflight: per node reachable, system path, ndn-fwd path, cell (desired/good/active), role units active, `/muas` strategy = multicast with 3 nexthops, oversize journals, uptime, clock offset; vehicles' armed flags; seconds since last disturbance; verdict `READY` / `DEGRADED` / `UNREACHABLE` with reasons. |
+| `fleet_status` | Preflight: per node reachable, system path, ndn-fwd path, cell (desired/good/active), role units active, `/muas` strategy = multicast with 3 nexthops, uptime, clock offset; vehicles' armed flags; seconds since last disturbance; verdict `READY` / `DEGRADED` / `UNREACHABLE` with reasons. |
 | `fleet_counters` | Current face/CS counters on every node (parsed), optionally as a delta against a previous snapshot id. |
 | `fleet_logs` | `journalctl -u <unit>` on a node since a time, bounded lines. |
 | `fleet_specs` | The measurement protocols in `specs/*.toml`: name, description, settle, duration, repeats, arms, workload. |
 | `fleet_results` | List runs/deploys, show one, or compare two runs metric by metric. |
 | `fleet_job` | Status, result and log tail of a background job; long-polls up to `wait_s`. |
+| `fleet_flight_collect` | Pulls what the nodes recorded (see "Flights") into `flights/<id>/`. A job, but read-only on the nodes: no lock, no armed check, no settle stamp, safe while vehicles fly. |
 
 Mutating (lock + armed check + ledger + disturbance stamp):
 
@@ -130,6 +132,33 @@ Forwarder = "DEBUG"
 NDNSF_TIMELINE_TRACE_SAMPLE_RATE = "1"
 ```
 
+## Flights (field days)
+
+Every node runs the flight recorder (config repo, always on) under
+`/var/lib/minimuas/recorder/`: `cells.log` (`<unix_ns> <cell>` at start and on every change),
+`link/` (`muas-link-sample` at 1 Hz, the same sampler a capture runs), `wire/` (dumpcap ring,
+snaplen 200, `udp port 6363`), `forwarding/` (`muas-forwarding-snapshot`), `chrony.log`; the
+GCS adds `gps.log` (gpsd TPV) and `ping/ping.jsonl` (1 Hz NDN ping per vehicle). The dashboard
+records every broadcast in `/var/lib/minimuas/replays/dash-*.jsonl`.
+
+```
+ndn-fleet flight collect [since=<UTC time|unix s>] [id=<flight id>]
+python3 analysis/flight_report.py results/flights/<id>
+```
+
+`flight collect` (tool `fleet_flight_collect`) rsyncs, per node, `recorder/`, the role journals
+(`fleet.journal_glob`) and on the GCS `replays/` into `flights/<id>/<node>/{recorder,log,replays}/`
+and writes `manifest.json` (per node and root: files, bytes, mtime span, the cells history,
+errors; one entry per collection). It only lists (`sudo -n find`) and sends (`sudo -n rsync`:
+dumpcap's ring files are 0600 root); it never writes to a node, so it takes no lock and no armed
+check and does not stamp the settle clock. `since` keeps only files modified since that time
+(the GCS held 16 GB of replays on 2026-10-12); a node that cannot be reached is reported and the
+rest is kept: run again with `id=<id>` to fetch only what is new or missing (rsync's size+mtime
+check). `flight_report.py` splits the flight into stack periods from every node's `cells.log`,
+drops each period's first 150 s as settling (I3), and writes `report.md` (nfd vs ndn-fwd side by
+side, broken down by distance from the GCS, altitude and video load), `report.json` and
+`series/<node>.csv`.
+
 ## Results layout (`<results>` = `tools/ndn-fleet/results/` in miniMUAS, not committed)
 
 ```
@@ -141,13 +170,16 @@ runs/<id>/counters-{before,after}.json, deltas.json
 runs/<id>/workload.json          flightcheck --json / fabric-bench summary
 runs/<id>/raw/                   stdout/stderr of every command
 runs/<id>/summary.json           the metrics a comparison reads
-runs/<id>/capture/<node>/        wire.pcapng.gz, link.txt.gz (sampler), journal.txt.gz (nfd +
+runs/<id>/capture/<node>/        wire.pcapng.gz, link.txt.gz (muas-link-sample), journal.txt.gz (nfd +
                                  muas-*), log-<unit>.log.gz (traced units' stderr: NFD, NDNSF),
-                                 forwarding-{start,stop}.txt (faces + what each id points to,
+                                 forwarding-{start,stop}.txt (muas-forwarding-snapshot: faces + what each id points to,
                                  FIB, RIB, strategy choice, CS, status), kernel.txt.gz,
                                  chrony-{start,stop}.txt, node.txt,
                                  dumpcap.err (dumpcap's own drop count), started_ns/stopped_ns
 jobs/<id>.log
+flights/<id>/manifest.json       what each collection fetched, per node and root
+flights/<id>/<node>/             recorder/, log/ (role journals), replays/ (GCS)
+flights/<id>/report.{md,json}, series/<node>.csv   flight_report.py
 ```
 
 ## Why each invariant exists (from the fleet record)
@@ -158,7 +190,10 @@ jobs/<id>.log
 - I4: bumping a rev without its hash silently rebuilt the old source; a dirty tree cannot be built
   by the fleet.
 - I5: wrong restart order produced "Targeted ProviderToken is unknown or expired" and wiped prefix
-  registrations; oversized journals blocked agent startup. Unconditional restarts bounced every
+  registrations. (Deploys used to truncate role journals over 2 MB because a 54 MB journal
+  stalled agent startup; that stall was `publish_journal` re-signing the whole file, which since
+  7ce2450 publishes at most a 512 KB tail, so the journals are kept as flight data.)
+  Unconditional restarts bounced every
   role 2–3 times per deploy (a fabric-apply restart cascades to all role units via Requires=),
   and commands sent while a provider starts are lost.
 - I6: a 40 s quiet gap does not stop streams; one sample reported 40 fps against a 15 fps request

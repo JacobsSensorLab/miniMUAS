@@ -8,6 +8,7 @@ pub mod cells;
 pub mod config;
 pub mod counters;
 pub mod deploy;
+pub mod flight;
 pub mod jobs;
 pub mod mcp;
 pub mod measure;

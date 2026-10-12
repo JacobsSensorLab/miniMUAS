@@ -25,6 +25,7 @@ usage: ndn-fleet [--config <fleet.toml>] <command>
   cell <nfd|ndn-fwd> <wifi|radio> [--assume-disarmed]
   measure <spec> [key=value ...] [--assume-disarmed]   (dotted keys nest: workload.fps=10)
   restore [--assume-disarmed]
+  flight collect [since=<UTC time|unix s>] [id=<flight id>]   pull the recorders (read-only)
   job <id> [--follow]
 
 Mutating commands run as jobs (lock + armed check) and stream the job log to stderr until done.";
@@ -170,6 +171,9 @@ async fn run() -> Result<ExitCode> {
                 "fleet_measure",
                 json!({ "spec": spec, "overrides": overrides, "assume_disarmed": assume_disarmed }),
             )
+        }
+        ["flight", "collect", rest @ ..] => {
+            ("fleet_flight_collect", Value::Object(str_args(rest)?))
         }
         ["restore"] => (
             "fleet_restore",

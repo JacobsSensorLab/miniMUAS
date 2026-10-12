@@ -212,6 +212,67 @@ async fn ssh_once_to_file(
     })
 }
 
+/// Copy `files_from` (paths relative to `src_dir`, one per line) from `node` into `dest` with
+/// rsync, over the same ssh options and jump-host fallback as [`ssh`]. Read-only on the node:
+/// the node's rsync is only the sender. It runs as `sudo -n rsync` because dumpcap creates its
+/// ring files 0600 root. `-t` keeps mtimes, so a re-run skips every file whose size and mtime
+/// already match (rsync's quick check) and only fetches new or grown files; `--partial` keeps
+/// an interrupted large file for the next run to finish. stdout lists each transferred path.
+pub async fn rsync_pull(
+    cfg: &Config,
+    node: &Node,
+    src_dir: &str,
+    files_from: &Path,
+    dest: &Path,
+    timeout: Duration,
+) -> Result<Output> {
+    let direct = rsync_once(cfg, &node.host, src_dir, files_from, dest, timeout, false).await?;
+    if direct.status != Some(SSH_CONNECT_FAILURE) {
+        return Ok(direct);
+    }
+    rsync_once(cfg, &node.addr, src_dir, files_from, dest, timeout, true).await
+}
+
+async fn rsync_once(
+    cfg: &Config,
+    target: &str,
+    src_dir: &str,
+    files_from: &Path,
+    dest: &Path,
+    timeout: Duration,
+    jump: bool,
+) -> Result<Output> {
+    let rsh = std::iter::once("ssh".to_string())
+        .chain(ssh_base(cfg, jump))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let files_from = format!("--files-from={}", files_from.display());
+    let src = format!(
+        "{}@{target}:{}/",
+        cfg.fleet.ssh_user,
+        src_dir.trim_end_matches('/')
+    );
+    let dest = format!("{}/", dest.display());
+    local(
+        "rsync",
+        &[
+            "-rt",
+            "--partial",
+            "--out-format=%n",
+            "--rsync-path=sudo -n rsync",
+            &files_from,
+            "-e",
+            &rsh,
+            &src,
+            &dest,
+        ],
+        None,
+        &[],
+        timeout,
+    )
+    .await
+}
+
 /// Quote `s` for a POSIX shell (single quotes, embedded quotes escaped).
 pub fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))

@@ -964,12 +964,14 @@ fn write_raw(rec: &Recorder, rel: &str, name: &str, o: &remote::Output) {
 /// Repair what jobs abandoned by a dead process left behind, before a new mutation starts.
 ///
 /// Runs that will never get a summary (owning job no longer live) are marked incomplete, so they
-/// are never read as results. For abandoned jobs, the fleet's state is unknown, so the settle clock
-/// restarts (I3); a measurement or restore that died mid-sample may have left video enabled (its
-/// stop-after never ran), so streams are stopped (I6). A job is recorded abandoned only after
-/// this repair; if the repair is itself cut short, the next mutation redoes it. Found in the
-/// field: a CLI measurement killed by its caller's timeout during repeat 3 of `lp-reliability`,
-/// then four recoveries killed between marking and repairing, which lost the repair.
+/// are never read as results. For abandoned mutations, the fleet's state is unknown, so the
+/// settle clock restarts (I3); an abandoned `flight collect` changed nothing on the fleet and
+/// only gets recorded. A measurement or restore that died mid-sample may have left video
+/// enabled (its stop-after never ran), so streams are stopped (I6). A job is recorded abandoned
+/// only after this repair; if the repair is itself cut short, the next mutation redoes it. Found
+/// in the field: a CLI measurement killed by its caller's timeout during repeat 3 of
+/// `lp-reliability`, then four recoveries killed between marking and repairing, which lost the
+/// repair.
 pub async fn recover_abandoned(
     cfg: &Config,
     rec: &Recorder,
@@ -983,7 +985,9 @@ pub async fn recover_abandoned(
     }
     let ids: Vec<&str> = abandoned.iter().map(|j| j.id.as_str()).collect();
     job.log(format!("recovering abandoned job(s) {}", ids.join(", ")));
-    rec.disturb("abandoned", &format!("job(s) {}", ids.join(", ")));
+    if abandoned.iter().any(|j| j.kind != crate::flight::JOB_KIND) {
+        rec.disturb("abandoned", &format!("job(s) {}", ids.join(", ")));
+    }
 
     let sampling = abandoned
         .iter()

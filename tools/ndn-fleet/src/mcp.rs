@@ -18,7 +18,7 @@ use crate::counters::{self, NodeCounters};
 use crate::jobs::{JobCtx, Jobs};
 use crate::remote::{self, sh_quote};
 use crate::state::Recorder;
-use crate::{cells, deploy, measure, results, status};
+use crate::{cells, deploy, flight, measure, results, status};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 const JOB_WAIT_DEFAULT_S: u64 = 30;
@@ -41,7 +41,8 @@ before/after, workload); poll fleet_job.
 5. fleet_results {} / {id} / {compare:[old,new]} — read and compare runs.
 6. fleet_restore {} — known-good cell + health gate + flight check before you leave.
 Long operations return {job_id}; fleet_job {job_id, wait_s} long-polls (<= 55 s per call). \
-Never ssh to the nodes to mutate them yourself.";
+After a field day: fleet_flight_collect {since} (read-only), then analysis/flight_report.py on \
+the flight directory. Never ssh to the nodes to mutate them yourself.";
 
 pub struct Fleet {
     pub cfg: Arc<Config>,
@@ -131,7 +132,7 @@ impl Fleet {
         json!([
             {
                 "name": "fleet_status",
-                "description": "Read-only preflight (no lock). Per node: reachable, /run/current-system, ndn-fwd package, fabric cell desired/good/active, fabric + role units, /muas strategy (must be multicast) and nexthop count (must be >= nodes-1), oversize journals, uptime, clock offset. Fleet: vehicles' armed flags from the dashboard, seconds since the last disturbance (settle clock), last deploy id, and a verdict READY / DEGRADED / UNREACHABLE with every reason. Call first; mutate only from READY or with each DEGRADED reason understood.",
+                "description": "Read-only preflight (no lock). Per node: reachable, /run/current-system, ndn-fwd package, fabric cell desired/good/active, fabric + role units, /muas strategy (must be multicast) and nexthop count (must be >= nodes-1), uptime, clock offset. Fleet: vehicles' armed flags from the dashboard, seconds since the last disturbance (settle clock), last deploy id, and a verdict READY / DEGRADED / UNREACHABLE with every reason. Call first; mutate only from READY or with each DEGRADED reason understood.",
                 "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
             },
             {
@@ -193,8 +194,20 @@ impl Fleet {
                 }
             },
             {
+                "name": "fleet_flight_collect",
+                "description": "Read-only on the nodes (no lock, no armed check, no settle stamp): pulls every node's recorder (/var/lib/minimuas/recorder: cells.log, link sampler, dumpcap ring, forwarding snapshots, chrony; GCS gps.log and ping/) and role journals (/var/lib/minimuas/log/*.jsonl), and the GCS dashboard recordings (/var/lib/minimuas/replays), with rsync into results/flights/<id>/<node>/{recorder,log,replays}/, then writes manifest.json (per node and root: files, bytes, mtime span, cells history, errors). Runs as a job; poll fleet_job. Unreachable nodes are reported, not fatal: call again with the same id to fetch only what is new or missing. Then run analysis/flight_report.py on the flight directory.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "since": { "type": "string", "description": "only files modified since this UTC time (YYYY-MM-DD[THH:MM[:SS]][Z]) or unix seconds; the GCS replays alone held 16 GB on 2026-10-12" },
+                        "id": { "type": "string", "description": "resume into this existing flight (results/flights/<id>) instead of starting a new one" }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            {
                 "name": "fleet_deploy",
-                "description": "Deploy ndn-fwd (and optionally miniMUAS) to the fleet. TWO-PHASE. (1) Without plan_id: read-only PLAN — resolves revs (default: current HEAD of every pinned repo's local checkout), verifies each is clean and pushed, computes old->new revs, commit lists and SRI hashes, and returns the plan with its plan_id. Nothing is changed. (2) With plan_id: EXECUTES that plan as a job (returns job_id): fleet lock + armed check, edit pins (rev+hash together), commit + push the config repo, build every closure, canary airframe -> verify -> other airframes -> GCS, verify /run/current-system and one ndn-fwd path fleet-wide, truncate oversize journals, restart roles in order (forwarder -> agents -> controller/gcs -> dashboard), health gate. Stamps the settle clock. Always read the plan before executing it.",
+                "description": "Deploy ndn-fwd (and optionally miniMUAS) to the fleet. TWO-PHASE. (1) Without plan_id: read-only PLAN — resolves revs (default: current HEAD of every pinned repo's local checkout), verifies each is clean and pushed, computes old->new revs, commit lists and SRI hashes, and returns the plan with its plan_id. Nothing is changed. (2) With plan_id: EXECUTES that plan as a job (returns job_id): fleet lock + armed check, edit pins (rev+hash together), commit + push the config repo, build every closure, canary airframe -> verify -> other airframes -> GCS, verify /run/current-system and one ndn-fwd path fleet-wide, restart roles in order (forwarder -> agents -> controller/gcs -> dashboard), health gate. Stamps the settle clock. Always read the plan before executing it.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -300,6 +313,7 @@ impl Fleet {
                     .map(to_value)
                     .ok_or_else(|| format!("no job '{id}'"))
             }
+            "fleet_flight_collect" => self.flight_collect(args),
             "fleet_deploy" => self.deploy(args).await,
             "fleet_set_cell" => {
                 let cell = req_str(args, "cell")?.to_string();
@@ -371,6 +385,33 @@ impl Fleet {
             let result = op(cfg, rec, job).await;
             drop(lock);
             result
+        });
+        Ok(json!({
+            "job_id": id,
+            "status": "running",
+            "next": format!("poll fleet_job {{\"job_id\": \"{id}\"}} until status is not running"),
+        }))
+    }
+
+    /// Read-only, so a plain job: no lock (I1), no armed check (I2), no settle stamp (I3).
+    fn flight_collect(&self, args: &Value) -> ToolResult {
+        let since = opt_str(args, "since")?
+            .map(flight::parse_since)
+            .transpose()
+            .map_err(err)?;
+        let resume = match opt_str(args, "id")? {
+            Some(id) => {
+                let id = check_id(id)?;
+                if !self.rec.dir().join("flights").join(id).is_dir() {
+                    return Err(format!("no flight '{id}' under flights/ to resume"));
+                }
+                Some(id.to_string())
+            }
+            None => None,
+        };
+        let (cfg, rec) = (self.cfg.clone(), self.rec.clone());
+        let id = self.jobs.spawn(flight::JOB_KIND, move |job| async move {
+            flight::collect(&cfg, &rec, &job, resume, since).await
         });
         Ok(json!({
             "job_id": id,
@@ -634,7 +675,7 @@ mod tests {
         for t in tools {
             assert_eq!(t["inputSchema"]["type"], "object", "{}", t["name"]);
         }
-        assert_eq!(tools.len(), 10);
+        assert_eq!(tools.len(), 11);
 
         // A bad tool argument is a tool error (isError), not a JSON-RPC error.
         let bad = rpc(

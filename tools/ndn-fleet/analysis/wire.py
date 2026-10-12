@@ -11,7 +11,7 @@ import gzip
 import hashlib
 import struct
 from dataclasses import dataclass
-from typing import Iterator, Optional
+from typing import Callable, Iterator, List, Optional
 
 NDN_PORT = 6363
 
@@ -196,52 +196,124 @@ def _ipv4_udp(frame: bytes, linktype: int):
     return src, dst, sport, dport, ulen - 8, frame[u + 8 :]
 
 
-def datagrams(path: str) -> Iterator[Datagram]:
-    """Every UDP/6363 IPv4 datagram in a (gzipped) pcapng file, in file order."""
+def datagrams(path: str, keep: Optional[Callable[[int], bool]] = None,
+              stats: Optional[List[dict]] = None) -> Iterator[Datagram]:
+    """Every UDP/6363 IPv4 datagram in a (gzipped) pcapng file, in file order.
+
+    Reads block by block: a flight recorder's 600 s ring file on the GCS is ~1 GB at video
+    load. `keep(t_us)` skips the decode of datagrams outside the times being analysed.
+    `stats` receives dumpcap's Interface Statistics Block, written when it closes a file:
+    `{"received", "dropped"}` -- packets the kernel dropped before dumpcap, which would read
+    as wire loss. A file still being written has none.
+    """
     opener = gzip.open if path.endswith(".gz") else open
-    with opener(path, "rb") as f:
-        data = f.read()
-    i, endian = 0, "<"
+    endian = "<"
     ifaces: list = []  # (linktype, ticks per second)
-    while i + 12 <= len(data):
-        btype = struct.unpack_from(endian + "I", data, i)[0]
-        if btype == 0x0A0D0D0A:  # Section Header: byte order may change per section
-            magic = data[i + 8 : i + 12]
-            endian = "<" if magic == b"\x4d\x3c\x2b\x1a" else ">"
-            ifaces = []
-        blen = struct.unpack_from(endian + "I", data, i + 4)[0]
-        if blen < 12 or i + blen > len(data):
-            break
-        body = data[i + 8 : i + blen - 4]
-        if btype == 1:  # Interface Description
-            linktype = struct.unpack_from(endian + "H", body, 0)[0]
-            tps = 10**6
-            j = 8
-            while j + 4 <= len(body):
-                code, olen = struct.unpack_from(endian + "HH", body, j)
-                if code == 0:
-                    break
-                if code == 9 and olen >= 1:  # if_tsresol
-                    r = body[j + 4]
-                    tps = 2 ** (r & 0x7F) if r & 0x80 else 10**r
-                j += 4 + ((olen + 3) & ~3)
-            ifaces.append((linktype, tps))
-        elif btype == 6:  # Enhanced Packet
-            iface, th, tl, caplen, _orig = struct.unpack_from(endian + "IIIII", body, 0)
-            frame = body[20 : 20 + caplen]
-            linktype, tps = ifaces[iface] if iface < len(ifaces) else (1, 10**6)
-            ip = _ipv4_udp(frame, linktype)
-            if ip is not None:
-                src, dst, sport, dport, ulen, payload = ip
-                if NDN_PORT in (sport, dport):
-                    ts = (th << 32) | tl
-                    d = Datagram(
-                        t_us=ts * 10**6 // tps, src=src, dst=dst, sport=sport, dport=dport,
-                        length=ulen, digest=hashlib.blake2b(payload, digest_size=12).digest(),
-                    )
-                    decode_lp(d, payload)
-                    yield d
-        i += blen
+    with opener(path, "rb") as f:
+        while True:
+            head = f.read(8)
+            if len(head) < 8:
+                return
+            btype = struct.unpack_from(endian + "I", head, 0)[0]
+            if btype == 0x0A0D0D0A:  # Section Header: byte order may change per section
+                magic = f.read(4)
+                if len(magic) < 4:
+                    return
+                endian = "<" if magic == b"\x4d\x3c\x2b\x1a" else ">"
+                ifaces = []
+                blen = struct.unpack_from(endian + "I", head, 4)[0]
+                if blen < 16:
+                    return
+                rest = f.read(blen - 12)
+                if len(rest) < blen - 12:
+                    return
+                continue
+            blen = struct.unpack_from(endian + "I", head, 4)[0]
+            if blen < 12:
+                return
+            block = f.read(blen - 8)
+            # A ring file the recorder was still writing ends mid-block.
+            if len(block) < blen - 8:
+                return
+            body = block[:-4]
+            if btype == 1:  # Interface Description
+                linktype = struct.unpack_from(endian + "H", body, 0)[0]
+                tps = 10**6
+                j = 8
+                while j + 4 <= len(body):
+                    code, olen = struct.unpack_from(endian + "HH", body, j)
+                    if code == 0:
+                        break
+                    if code == 9 and olen >= 1:  # if_tsresol
+                        r = body[j + 4]
+                        tps = 2 ** (r & 0x7F) if r & 0x80 else 10**r
+                    j += 4 + ((olen + 3) & ~3)
+                ifaces.append((linktype, tps))
+            elif btype == 5 and stats is not None:  # Interface Statistics
+                opts, j = {}, 12
+                while j + 4 <= len(body):
+                    code, olen = struct.unpack_from(endian + "HH", body, j)
+                    if code == 0:
+                        break
+                    if code in (4, 5) and olen == 8:  # isb_ifrecv, isb_ifdrop
+                        opts[code] = struct.unpack_from(endian + "Q", body, j + 4)[0]
+                    j += 4 + ((olen + 3) & ~3)
+                stats.append({"received": opts.get(4), "dropped": opts.get(5)})
+            elif btype == 6:  # Enhanced Packet
+                iface, th, tl, caplen, _orig = struct.unpack_from(endian + "IIIII", body, 0)
+                linktype, tps = ifaces[iface] if iface < len(ifaces) else (1, 10**6)
+                t_us = ((th << 32) | tl) * 10**6 // tps
+                if keep is not None and not keep(t_us):
+                    continue
+                ip = _ipv4_udp(body[20 : 20 + caplen], linktype)
+                if ip is not None:
+                    src, dst, sport, dport, ulen, payload = ip
+                    if NDN_PORT in (sport, dport):
+                        d = Datagram(
+                            t_us=t_us, src=src, dst=dst, sport=sport, dport=dport,
+                            length=ulen, digest=hashlib.blake2b(payload, digest_size=12).digest(),
+                        )
+                        decode_lp(d, payload)
+                        yield d
+
+
+def mac_of_addr(path: str, limit: int = 5000) -> dict:
+    """{IPv4 source address: Ethernet source MAC} from the first `limit` frames of a capture
+    (Ethernet link type only): ties a station in `iw station dump` to a fleet address."""
+    out: dict = {}
+    endian = "<"
+    ifaces: list = []
+    opener = gzip.open if path.endswith(".gz") else open
+    seen = 0
+    with opener(path, "rb") as f:
+        while seen < limit:
+            head = f.read(8)
+            if len(head) < 8:
+                break
+            btype = struct.unpack_from(endian + "I", head, 0)[0]
+            if btype == 0x0A0D0D0A:
+                magic = f.read(4)
+                endian = "<" if magic == b"\x4d\x3c\x2b\x1a" else ">"
+                ifaces = []
+                f.read(struct.unpack_from(endian + "I", head, 4)[0] - 12)
+                continue
+            blen = struct.unpack_from(endian + "I", head, 4)[0]
+            if blen < 12:
+                break
+            block = f.read(blen - 8)
+            if len(block) < blen - 8:
+                break
+            if btype == 1:
+                ifaces.append(struct.unpack_from(endian + "H", block, 0)[0])
+            elif btype == 6:
+                seen += 1
+                iface, _th, _tl, caplen, _orig = struct.unpack_from(endian + "IIIII", block, 0)
+                frame = block[20 : 20 + caplen]
+                if (ifaces[iface] if iface < len(ifaces) else 1) == 1 and len(frame) >= 34 \
+                        and frame[12:14] == b"\x08\x00":
+                    src_ip = ".".join(str(b) for b in frame[26:30])
+                    out.setdefault(src_ip, ":".join("%02x" % b for b in frame[6:12]))
+    return out
 
 
 def dumpcap_drops(err_text: str) -> Optional[int]:

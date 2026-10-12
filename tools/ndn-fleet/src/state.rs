@@ -124,6 +124,7 @@ impl Recorder {
             format!("deploys/{id}.json"),
             format!("deploys/{id}.plan.json"),
             format!("state/snapshots/{id}.json"),
+            format!("flights/{id}"),
         ]
         .iter()
         .any(|rel| self.dir.join(rel).exists())
