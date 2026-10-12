@@ -28,7 +28,7 @@ pub struct FleetCfg {
     pub known_good_cell: String,
     pub canary: String,
     pub default_settle_s: u64,
-    pub journal_truncate_bytes: u64,
+    /// Role journals on every node (unquoted shell glob); `flight collect` pulls them.
     pub journal_glob: String,
 }
 

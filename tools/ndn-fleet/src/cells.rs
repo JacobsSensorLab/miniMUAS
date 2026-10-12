@@ -292,34 +292,24 @@ pub async fn set_cell_all(cfg: &Config, rec: &Recorder, job: &JobCtx, cell: &str
     Ok(json!({ "cell": cell, "switched": switched, "nodes": nodes, "health": health }))
 }
 
-/// What `restart_roles` finds on one node before touching anything.
-struct Survey {
-    units: BTreeSet<String>,
-    /// (path, bytes) of journals over the truncation limit.
-    journals: Vec<(String, u64)>,
+/// Role units present on one node (`systemctl cat` succeeds), surveyed before touching anything.
+fn parse_survey(text: &str) -> BTreeSet<String> {
+    text.lines()
+        .filter_map(|l| l.strip_prefix("unit "))
+        .map(|u| u.trim().to_string())
+        .collect()
 }
 
-fn parse_survey(text: &str) -> Survey {
-    let mut units = BTreeSet::new();
-    let mut journals = Vec::new();
-    for line in text.lines() {
-        if let Some(u) = line.strip_prefix("unit ") {
-            units.insert(u.trim().to_string());
-        } else if let Some(rest) = line.strip_prefix("journal ")
-            && let Some((size, path)) = rest.split_once(' ')
-            && let Ok(size) = size.parse()
-        {
-            journals.push((path.to_string(), size));
-        }
-    }
-    Survey { units, journals }
-}
-
-/// Bring the role services across the whole fleet into the I5 order: oversize journals truncated
-/// first (they blocked agent startup), then forwarder (fabric apply + health) on every node, then
-/// agents, then controller/gcs, then the dashboard. A group starts only when the previous one is
-/// up everywhere — the wrong order produced "Targeted ProviderToken is unknown or expired" and
-/// wiped prefix registrations. Only units present on a node are touched.
+/// Bring the role services across the whole fleet into the I5 order: forwarder (fabric apply +
+/// health) on every node, then agents, then controller/gcs, then the dashboard. A group starts
+/// only when the previous one is up everywhere — the wrong order produced "Targeted
+/// ProviderToken is unknown or expired" and wiped prefix registrations. Only units present on a
+/// node are touched.
+///
+/// Role journals (`/var/lib/minimuas/log/*.jsonl`) are left alone: they are flight data that
+/// `flight collect` pulls. Truncating them here once guarded agent startup, which stalled while
+/// `publish_journal` re-signed the whole file (iuas-02, 54 MB, 2026-09-15); since 7ce2450 it
+/// publishes at most a 512 KB tail, so a journal's size no longer costs the role anything.
 ///
 /// Each role unit restarts at most once per deploy: a unit that already (re)started after the
 /// node's activation and after its forwarder's last start is left alone (see `refresh_script`).
@@ -354,13 +344,8 @@ async fn restart_roles_inner(cfg: &Config, job: &JobCtx, restarted: &mut bool) -
         .map(|u| sh_quote(u))
         .collect::<Vec<_>>()
         .join(" ");
-    // The glob is left unquoted so the node's shell expands it.
     let survey_cmd = format!(
-        "for u in {unit_list}; do systemctl cat \"$u\" >/dev/null 2>&1 && echo \"unit $u\"; done; \
-         for f in {glob}; do [ -f \"$f\" ] || continue; s=$(stat -c %s \"$f\") || continue; \
-           [ \"$s\" -gt {limit} ] && echo \"journal $s $f\"; done; true",
-        glob = cfg.fleet.journal_glob,
-        limit = cfg.fleet.journal_truncate_bytes,
+        "for u in {unit_list}; do systemctl cat \"$u\" >/dev/null 2>&1 && echo \"unit $u\"; done; true"
     );
     let surveyed = status::join_all(
         nodes
@@ -377,47 +362,12 @@ async fn restart_roles_inner(cfg: &Config, job: &JobCtx, restarted: &mut bool) -
         surveys.insert(node.name.clone(), parse_survey(text));
     }
 
-    let mut truncated = Vec::new();
-    let with_journals: Vec<&&Node> = nodes
-        .iter()
-        .filter(|n| !surveys[&n.name].journals.is_empty())
-        .collect();
-    let truncate_cmds: Vec<String> = with_journals
-        .iter()
-        .map(|n| {
-            let files = surveys[&n.name]
-                .journals
-                .iter()
-                .map(|(p, _)| sh_quote(p))
-                .collect::<Vec<_>>()
-                .join(" ");
-            format!("sudo -n truncate -s 0 -- {files}")
-        })
-        .collect();
-    let truncations = status::join_all(
-        with_journals
-            .iter()
-            .zip(&truncate_cmds)
-            .map(|(n, cmd)| remote::ssh(cfg, n, cmd, QUICK)),
-    )
-    .await;
-    for (node, out) in with_journals.iter().zip(truncations) {
-        let out = out?;
-        let journals = &surveys[&node.name].journals;
-        out.stdout_ok()
-            .with_context(|| format!("{}: truncating journals", node.name))?;
-        for (path, size) in journals {
-            job.log(format!("{}: truncated {path} ({size} bytes)", node.name));
-        }
-        truncated.push(json!({ "node": node.name, "journals": journals }));
-    }
-
     let mut done = Vec::new();
     for (group, units) in groups {
         let targets: Vec<(&Node, Vec<&String>)> = nodes
             .iter()
             .map(|n| {
-                let present = &surveys[&n.name].units;
+                let present = &surveys[&n.name];
                 (*n, units.iter().filter(|u| present.contains(*u)).collect())
             })
             .filter(|(_, u): &(&Node, Vec<&String>)| !u.is_empty())
@@ -491,7 +441,7 @@ async fn restart_roles_inner(cfg: &Config, job: &JobCtx, restarted: &mut bool) -
         }
         done.push(entry);
     }
-    Ok(json!({ "truncated": truncated, "groups": done }))
+    Ok(json!({ "groups": done }))
 }
 
 /// Forwarder daemons a role unit's app face lives on; which one runs depends on the cell.

@@ -42,7 +42,6 @@ pub struct NodeStatus {
     /// `/muas` nexthops whose face exists; `dead_nexthops` name faces that do not.
     pub muas_nexthops: usize,
     pub dead_nexthops: Vec<u64>,
-    pub oversize_journals: Vec<(String, u64)>,
     pub uptime_s: Option<u64>,
     /// Node clock − local clock (ms), midpoint estimate.
     pub clock_offset_ms: Option<i64>,
@@ -120,8 +119,6 @@ fn role_units(cfg: &Config) -> impl Iterator<Item = &String> {
 /// One script, one ssh: tagged `@key value` lines. `@t0`/`@t1` bracket it for the clock offset.
 fn status_script(cfg: &Config) -> String {
     let units = watched_units(cfg).join(" ");
-    let glob = &cfg.fleet.journal_glob;
-    let limit = cfg.fleet.journal_truncate_bytes;
     format!(
         r#"echo "@t0 $(date +%s%3N)"
 echo "@host $(hostname)"
@@ -137,7 +134,6 @@ case "$(cat /var/lib/minimuas/fabric/active 2>/dev/null)" in
      ndn-ctl route list 2>/dev/null | grep -E '^/muas[[:space:]]' | sed 's/^/@route /'
      ndn-ctl face list 2>/dev/null | grep -oE '^faceid=[0-9]+' | sed 's/^/@face /' ;;
 esac
-for j in {glob}; do [ -f "$j" ] || continue; s=$(stat -c %s "$j"); [ "$s" -gt {limit} ] && echo "@journal $j $s"; done
 echo "@uptime $(cut -d' ' -f1 /proc/uptime)"
 echo "@t1 $(date +%s%3N)"
 "#
@@ -158,7 +154,6 @@ fn parse_status(cfg: &Config, node: &Node, text: &str, local_ms: (u64, u64)) -> 
         muas_strategy: None,
         muas_nexthops: 0,
         dead_nexthops: Vec::new(),
-        oversize_journals: Vec::new(),
         uptime_s: None,
         clock_offset_ms: None,
         clock_uncertainty_ms: None,
@@ -215,12 +210,6 @@ fn parse_status(cfg: &Config, node: &Node, text: &str, local_ms: (u64, u64)) -> 
                 face_rows.push_str(rest);
                 face_rows.push('\n');
             }
-            "journal" => {
-                if let Some((path, size)) = rest.rsplit_once(' ') {
-                    st.oversize_journals
-                        .push((path.to_string(), size.parse().unwrap_or(0)));
-                }
-            }
             "uptime" => st.uptime_s = rest.parse::<f64>().ok().map(|s| s as u64),
             _ => {}
         }
@@ -259,12 +248,6 @@ fn parse_status(cfg: &Config, node: &Node, text: &str, local_ms: (u64, u64)) -> 
         _ => {}
     }
     st.problems.extend(fabric_problems(cfg, &st));
-    for (path, size) in &st.oversize_journals {
-        st.problems.push(format!(
-            "journal {path} is {size} B (> {} B; blocks agent startup)",
-            cfg.fleet.journal_truncate_bytes
-        ));
-    }
     for u in role_units(cfg) {
         if let Some(state) = st.units.get(u)
             && state != "active"
@@ -337,7 +320,6 @@ async fn probe_node(cfg: &Config, node: &Node) -> NodeStatus {
                 muas_strategy: None,
                 muas_nexthops: 0,
                 dead_nexthops: Vec::new(),
-                oversize_journals: Vec::new(),
                 uptime_s: None,
                 clock_offset_ms: None,
                 clock_uncertainty_ms: None,
@@ -657,7 +639,7 @@ mod tests {
         for id in cells::muas_nexthop_ids(&routes.join("\n")) {
             s += &format!("@face faceid={id}\n");
         }
-        s += "@journal /var/lib/minimuas/log/gcs-dashboard.jsonl 4698873\n@uptime 177625.57\n";
+        s += "@uptime 177625.57\n";
         s += &format!("@t1 {}\n", t.1);
         s
     }
@@ -694,7 +676,6 @@ mod tests {
         assert_eq!(st.clock_uncertainty_ms, Some(200));
         let p = st.problems.join(" | ");
         assert!(p.contains("role unit muas-v2-dashboard is failed"), "{p}");
-        assert!(p.contains("gcs-dashboard.jsonl"), "{p}");
         assert!(
             !p.contains("clock"),
             "an uncertain offset is not flagged: {p}"

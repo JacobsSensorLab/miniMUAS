@@ -11,8 +11,7 @@ known_good_cell = "ndn-fwd wifi"
 # The airframe that takes a deploy first (PROTOCOL.md I5).
 canary = "minidronesys-04"
 default_settle_s = 150
-# Journals larger than this are truncated before role services restart (they block agent startup).
-journal_truncate_bytes = 2097152
+# Role journals: flight data, pulled by `flight collect` and never truncated (PROTOCOL.md I5).
 journal_glob = "/var/lib/minimuas/log/*.jsonl"
 
 [dashboard]
