@@ -60,7 +60,7 @@ pub struct Capture {
     /// i.e. the name of an unfragmented packet or first fragment). 0 = no packet capture.
     #[serde(default = "default_snaplen")]
     pub snaplen: u32,
-    /// Link/PHY/host sampler period. 0 = no sampler.
+    /// Link/PHY/host sampler (`muas-link-sample`) period. 0 = no sampler.
     #[serde(default = "default_interval")]
     pub link_interval_ms: u64,
     /// NFD log levels by module as nfd.conf names them (`*` = `default_level`), in force while
@@ -296,11 +296,6 @@ pub struct Running {
     pub stopped_unix_s: Option<u64>,
 }
 
-/// Shell function `forwarding <file>`: the forwarder's whole state (faces with what each id
-/// points to, FIB, RIB, strategy choices, CS, status, channels), for whichever forwarder the
-/// cell runs. Face ids change on every forwarder restart, so the capture records its own.
-const FORWARDING_FN: &str = r###"forwarding() { { echo "# $(hostname) $(date -u +%FT%TZ) cell=$(cat /var/lib/minimuas/fabric/active)"; if systemctl is-active -q nfd; then for c in status 'face list' 'fib list' 'route list' 'strategy list' 'cs info' 'channel list'; do echo "## nfdc $c"; nfdc $c; done; else for c in status 'face list' 'fib list' 'route list' 'strategy list' 'cs info'; do echo "## ndn-ctl $c"; ndn-ctl $c; done; fi; } > "$1" 2>&1; }"###;
-
 fn collector_script(cap: &Capture, dir: &str) -> String {
     let iface = &cap.iface;
     let pcap = if cap.snaplen > 0 {
@@ -315,64 +310,29 @@ fn collector_script(cap: &Capture, dir: &str) -> String {
     } else {
         String::new()
     };
+    // The node's recorder runs the same sampler and snapshot scripts (flight-metrics contract
+    // A), so a capture's link.txt and forwarding-*.txt and a flight's recorder/link/ and
+    // recorder/forwarding/ have one format and one implementation (analysis/link.py reads
+    // both). The sampler runs in the foreground until the unit's SIGTERM, like the loop it
+    // replaced; `stop` then runs from the trap.
     let sampler = if cap.link_interval_ms > 0 {
         format!(
-            r#"PIDS=$(for u in nfd muas-fabric-ndn-fwd muas-fabric-ndn-fwd-radio muas-v2-agent muas-v2-dashboard muas-v2-gcs muas-v2-controller; do systemctl show -P MainPID "$u" 2>/dev/null; done | grep -v '^0$' | tr '\n' ' ')
-echo "$PIDS" > "$D/pids"
-# One `cat` for every thread of the forwarder and role processes: a cat per thread (~100 on
-# the GCS) took 0.77 s of every tick. The thread set is fixed for the sample.
-TASKS=$(for p in $PIDS; do ls -d /proc/$p/task/*/stat 2>/dev/null; done | tr '\n' ' ')
-DBG=$(ls -d /sys/kernel/debug/ieee80211/*/netdev:{iface} 2>/dev/null | head -n1)
-PHY=${{DBG%/netdev:*}}
-RTL=/proc/net/rtl88x2eu/{iface}
-s() {{ echo "@ $1"; shift; "$@" 2>&1; }}
-while :; do
-  t0=$(date +%s%N)
-  {{
-    echo "@@ $t0"
-    s station iw dev {iface} station dump
-    s survey iw dev {iface} survey dump
-    s netdev grep -H . /sys/class/net/{iface}/statistics/rx_packets /sys/class/net/{iface}/statistics/tx_packets /sys/class/net/{iface}/statistics/rx_dropped /sys/class/net/{iface}/statistics/tx_dropped /sys/class/net/{iface}/statistics/rx_errors /sys/class/net/{iface}/statistics/tx_errors
-    s qdisc tc -s qdisc show dev {iface}
-    s snmp grep -E '^(Ip|Udp):' /proc/net/snmp
-    s udp grep -hi ':18EB ' /proc/net/udp /proc/net/udp6
-    s sockets ss -u -a -n -m -p sport = :6363
-    s mem sh -c 'for p in $0; do printf "%s " "$p"; grep -E "^(Name|VmRSS):" /proc/$p/status 2>/dev/null | tr -s "\t " " " | tr "\n" " "; echo; done' "$PIDS"
-    s softnet cat /proc/net/softnet_stat
-    s cpu grep '^cpu' /proc/stat
-    s tasks cat $TASKS
-    if [ -d "$RTL" ]; then for f in trx_info rx_stat rx_signal sta_tp_info trx_info_debug; do [ -r "$RTL/$f" ] && s "rtl.$f" cat "$RTL/$f"; done; fi
-    if [ -n "$PHY" ]; then
-      [ -r "$PHY/aqm" ] && s mac80211.aqm cat "$PHY/aqm"
-      [ -r "$PHY/mt76/xmit-queues" ] && s mt76.xmit-queues cat "$PHY/mt76/xmit-queues"
-      for st in "$DBG"/stations/*; do [ -d "$st" ] || continue; m=${{st##*/}}
-        [ -r "$st/aqm" ] && s "sta.$m.aqm" cat "$st/aqm"
-        [ -r "$st/airtime" ] && s "sta.$m.airtime" cat "$st/airtime"
-      done
-    fi
-    if systemctl is-active -q nfd; then s nfd.faces nfdc face list; s nfd.status nfdc status; fi
-    if systemctl is-active -q muas-fabric-ndn-fwd; then s fwd.faces ndn-ctl face list; fi
-  }} >> "$D/link.txt"
-  # Paced to the period, not period + work: a tick costs ~0.3 s on the GCS.
-  left=$(( {period_ms} - ($(date +%s%N) - t0) / 1000000 ))
-  [ "$left" -gt 0 ] && sleep "$(awk -v ms="$left" 'BEGIN{{printf "%.3f", ms/1000}}')"
-done
-"#,
+            "muas-link-sample {iface} \"$D/link.txt\" {period_ms}\n",
             period_ms = cap.link_interval_ms
         )
     } else {
         "while :; do sleep 1; done\n".into()
     };
     format!(
-        // A transient unit gets systemd's minimal PATH, not the login one: dumpcap, iw, nfdc and
-        // chronyc live in the NixOS system profile (the first dry run found no dumpcap).
+        // A transient unit gets systemd's minimal PATH, not the login one: dumpcap, iw, nfdc,
+        // chronyc and the muas-* scripts live in the NixOS system profile (the first dry run
+        // found no dumpcap).
         "PATH=/run/wrappers/bin:/run/current-system/sw/bin:$PATH\nexport PATH\n\
          D={dir}\ncd \"$D\" || exit 1\n\
          for f in {RUN_DIR}/*.log; do [ -f \"$f\" ] && : > \"$f\"; done\n\
-         {FORWARDING_FN}\n\
-         date +%s%N > started_ns\nchronyc -n tracking > chrony-start.txt 2>&1\nforwarding forwarding-start.txt\n\
+         date +%s%N > started_ns\nchronyc -n tracking > chrony-start.txt 2>&1\nmuas-forwarding-snapshot forwarding-start.txt\n\
          stop() {{ [ -f dumpcap.pid ] && kill \"$(cat dumpcap.pid)\" 2>/dev/null; wait; \
-         date +%s%N > stopped_ns; chronyc -n tracking > chrony-stop.txt 2>&1; forwarding forwarding-stop.txt; exit 0; }}\n\
+         date +%s%N > stopped_ns; chronyc -n tracking > chrony-stop.txt 2>&1; muas-forwarding-snapshot forwarding-stop.txt; exit 0; }}\n\
          trap stop TERM INT\n{pcap}{sampler}"
     )
 }
@@ -398,7 +358,11 @@ pub async fn start(
     let dir = format!("{NODE_DIR}/{run_id}");
     let script = collector_script(cap, &dir);
     let launch = format!(
-        "set -eu; systemctl stop {UNIT} 2>/dev/null || true; systemctl reset-failed {UNIT} 2>/dev/null || true; \
+        // The collectors' scripts come with the node recorder (contract A); a node deployed
+        // before it would otherwise fail inside the unit, after the cell switch.
+        "set -eu; for c in muas-link-sample muas-forwarding-snapshot; do command -v $c >/dev/null || \
+           {{ echo \"$c is not installed: deploy the recorder config first\" >&2; exit 1; }}; done; \
+         systemctl stop {UNIT} 2>/dev/null || true; systemctl reset-failed {UNIT} 2>/dev/null || true; \
          mkdir -p {dir}; cat > {dir}/collect.sh <<'NDNFLEETCOLLECT'\n{script}NDNFLEETCOLLECT\n\
          systemd-run --unit={UNIT} --collect --quiet --property=KillMode=control-group sh {dir}/collect.sh; \
          sleep 1; systemctl is-active -q {UNIT} || {{ journalctl -u {UNIT} -n 20 --no-pager >&2; exit 1; }}; \
