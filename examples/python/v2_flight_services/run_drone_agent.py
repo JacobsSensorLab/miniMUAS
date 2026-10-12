@@ -3,7 +3,9 @@
 
 One NDNSF provider per drone, registering every vehicle service:
 
-  wuas + iuas : flight/rtl, flight/land, flight/hold, video/control
+  wuas + iuas : flight/rtl, flight/land, flight/hold, flight/takeoff,
+                video/control, sensor/capture, system/shutdown,
+                system/fabric (operator NDN stack switch, fabric.py)
   wuas only   : flight/raster-search (lawnmower + capture-per-point)
   iuas only   : flight/investigate (climb + continuous carrot orbit,
                 streamed guided targets on sim or MAVLink)
@@ -92,6 +94,15 @@ from dataplane import (
 from raster import build_raster
 from timesync import ClockMonitor
 from commands import CommandDeduplicator
+from fabric import (
+    CELLS as FABRIC_CELLS,
+    SWITCH_DELAY_S,
+    ActiveCell,
+    add_fabric_arguments,
+    launch_switch,
+    read_active,
+    unit_state,
+)
 from telemetry_stream import TelemetryFeed, TelemetryStreamProducer
 from ndnsf_runtime import (
     add_common_arguments,
@@ -454,6 +465,8 @@ _TASK_TIER = {
     "investigate": AVOID_WORK,
     "sensor-capture": AVOID_WORK,
     "takeoff": AVOID_NAV,
+    # a stack switch only runs on a landed, disarmed vehicle
+    "fabric-switch": AVOID_IDLE,
 }
 
 
@@ -1053,6 +1066,13 @@ class SimFlightBackend:
             self._target = (self._lat, self._lon, self._agl)
             self._yaw_cmd = None
         return True
+
+    def confirm_guided(self, *, timeout_s: float = 8.0) -> bool:
+        # Same contract as MavlinkFlightBackend.confirm_guided. The kinematic
+        # sim cannot lose its guided target, so engaging it once (hold() sets
+        # GUIDED with a live target at the current position) is the check.
+        self.hold()
+        return self.mode == "GUIDED"
 
     def telemetry(self) -> dict:
         lat, lon, agl = self.position()
@@ -1694,6 +1714,7 @@ def build_parser() -> argparse.ArgumentParser:
         "journald + the page cache). Unwritable directory just disables "
         "it. Empty string disables explicitly.",
     )
+    add_fabric_arguments(parser)
     return parser
 
 
@@ -2225,6 +2246,8 @@ def main() -> int:
     def telemetry_loop() -> None:
         period = 1.0 / max(args.telemetry_hz, 0.2)
         clock = ClockMonitor()
+        fabric_cell = ActiveCell(args.fabric_dir)
+        last_fabric = None
         producer = None
         retry_at = 0.0
         while True:
@@ -2234,6 +2257,10 @@ def main() -> int:
             try:
                 t = flight.telemetry()
                 c = clock.reading()
+                fabric = fabric_cell.get()
+                if fabric != last_fabric:
+                    print_json("agent.fabric.cell", **fabric)
+                    last_fabric = fabric
                 sample = TelemetrySample(
                     vehicle_id=vehicle_id,
                     gps_time_ns=gps_time_ns(),
@@ -2243,6 +2270,7 @@ def main() -> int:
                     clock_ref=c.ref,
                     clock_offset_ms=round(c.offset_ms, 3),
                     clock_rms_ms=round(c.rms_ms, 3),
+                    fabric=fabric,
                     **{k: v for k, v in t.items()},
                 )
                 if producer is not None:
@@ -2916,11 +2944,130 @@ def main() -> int:
             status="accepted", message="syncing and powering off in 3 s",
         ).to_bytes()
 
+    # ---- service: system/fabric (operator NDN stack switch) -----------------
+    # Field days compare the two NDN stacks (fabric.py); between sorties the
+    # operator switches every node's fabric cell from the dashboard, the only
+    # control surface in the field. The dashboard already refuses unless every
+    # vehicle's telemetry is fresh, disarmed and idle; this handler re-checks
+    # against the vehicle's OWN autopilot and task state at delivery time,
+    # which is the authoritative copy (muas-fabric checks armed a third time).
+    fabric_service = vehicle_system_service(vehicle_id, "fabric")
+    # muas-fabric-apply has TimeoutStartSec=600 on the nodes; the armed probe
+    # comes before it. busy is held no longer than this.
+    FABRIC_SWITCH_WATCH_S = 660.0
+
+    def _fabric_guard(cell: str) -> str:
+        """Empty string when the switch is permitted, else the refusal."""
+        if cell not in FABRIC_CELLS:
+            return f"unknown cell {cell!r} (expected one of {sorted(FABRIC_CELLS)})"
+        if not os.access(args.fabric_cli, os.X_OK):
+            return f"{args.fabric_cli} is not installed on this node"
+        if flight.telemetry().get("armed"):
+            return "refused: vehicle is ARMED"
+        if busy["task"]:
+            return f"refused: busy:{busy['task']}"
+        return ""
+
+    def _run_fabric_switch(cell: str, claim: dict, claimed: threading.Event) -> None:
+        # Claim busy on THIS thread (set_busy is an atomic check-and-set, and
+        # only the owner may release it), so takeoff and missions are refused
+        # until the switch has started: it stops this agent, which must never
+        # happen in the middle of a takeoff.
+        claim["ok"] = set_busy("fabric-switch")
+        if not claim["ok"]:
+            claimed.set()
+            return
+        try:
+            # Scheduled now, started fabric.SWITCH_DELAY_S later: the reply
+            # has to cross the forwarder the switch tears down, and a vehicle
+            # that cannot even schedule it must refuse, so the GCS stays put.
+            unit, error = launch_switch(cell, args.fabric_cli)
+            claim.update(unit=unit, error=error)
+            claimed.set()
+            print_json(
+                "agent.fabric.switch_scheduled",
+                cell=cell, unit=unit, delay_s=SWITCH_DELAY_S, error=error or None,
+            )
+            if error:
+                return
+            time.sleep(SWITCH_DELAY_S + 1.0)
+            deadline = time.monotonic() + FABRIC_SWITCH_WATCH_S
+            state = unit_state(unit)
+            while state in ("activating", "active") and time.monotonic() < deadline:
+                busy_touch()
+                time.sleep(2.0)
+                state = unit_state(unit)
+            # A switch that goes ahead stops this agent before here (fabric.py).
+            # Reaching here means muas-fabric refused (armed probe) or failed
+            # and reverted; `journalctl -u <unit>` has its report.
+            print_json(
+                "agent.fabric.switch_finished",
+                cell=cell, unit=unit, unit_state=state,
+                active=read_active(args.fabric_dir)["cell"],
+            )
+        finally:
+            set_busy("")
+            claimed.set()  # never leave the handler waiting
+
+    @provider.ack_handler(fabric_service)
+    def ack_fabric(payload: bytes) -> AckDecision:
+        # Gate in cmd_fabric, not here (same reason as ack_shutdown): a
+        # negative AckDecision is dropped by the NDNSF consumer, so a refusal
+        # would reach the dashboard as a bare timeout with no reason.
+        return AckDecision(status=True)
+
+    @provider.handler(fabric_service)
+    @executed_once
+    def cmd_fabric(payload: bytes) -> bytes:
+        try:
+            cell = str(json.loads(payload.decode() or "{}").get("cell", ""))
+        except Exception:
+            cell = ""
+
+        def result(status: str, message: str) -> bytes:
+            print_json(
+                "agent.system.fabric", cell=cell, status=status, message=message
+            )
+            flush_json_log()
+            return FlightCommandResult(
+                vehicle_id=vehicle_id, command="fabric",
+                status=status, message=message,
+            ).to_bytes()
+
+        reason = _fabric_guard(cell)
+        if reason:
+            return result("rejected", reason)
+        active = read_active(args.fabric_dir)["cell"]
+        if active == cell:
+            # Nothing to switch. Never run muas-fabric anyway: even for the
+            # active cell it restarts muas-fabric-apply, which bounces every
+            # role unit. A re-issue that reaches the agent restarted by its own
+            # switch (the dedup memory went with the old process) lands here.
+            return result("accepted", f"already on '{cell}'")
+        claim: dict = {}
+        claimed = threading.Event()
+        threading.Thread(
+            target=_run_fabric_switch, args=(cell, claim, claimed),
+            name="fabric-switch", daemon=True,
+        ).start()
+        claimed.wait()
+        if not claim["ok"]:
+            return result("rejected", f"refused: busy:{busy['task']}")
+        error = claim.get("error", "the switch thread failed before scheduling")
+        if error:
+            return result("rejected", f"could not schedule the switch: {error}")
+        return result(
+            "accepted",
+            f"switching '{active}' -> '{cell}' in {SWITCH_DELAY_S:g} s "
+            f"({claim['unit']})",
+        )
+
     services = [
         vehicle_bench_service(vehicle_id),
         vehicle_video_service(vehicle_id),
         vehicle_sensor_service(vehicle_id),
         vehicle_system_service(vehicle_id, "shutdown"),
+        fabric_service,
         vehicle_flight_service(vehicle_id, "rtl"),
         vehicle_flight_service(vehicle_id, "land"),
         vehicle_flight_service(vehicle_id, "hold"),
@@ -3328,6 +3475,15 @@ def main() -> int:
             if not flight.ensure_airborne(agl):
                 status, note, mode = (
                     "failed", "could not reach approach altitude", pattern
+                )
+            elif not flight.confirm_guided():
+                # Same guard as the raster: airborne != flyable. In the 2026-08
+                # field failure a mission "completed" without moving until
+                # GUIDED was cycled by hand; an orbit or dip-flyover streams
+                # goto targets exactly like the sweep, so it fails the same way.
+                print_json("agent.investigate.guided_failed", task_id=task_id)
+                status, note, mode = (
+                    "failed", "flight controller did not engage GUIDED", pattern
                 )
             elif pattern == "flyover":
                 mode = "dip-flyover"

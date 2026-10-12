@@ -602,6 +602,10 @@ class TelemetrySample:
     clock_ref: str = ""
     clock_offset_ms: float = 0.0
     clock_rms_ms: float = -1.0
+    # This node's NDN fabric cell (fabric.read_active): {"cell": "nfd wifi" |
+    # "ndn-fwd wifi" | None, "since_unix": mtime of the cell's `active` file},
+    # so every sample says which stack carried it and since when.
+    fabric: dict = field(default_factory=dict)
 
     def to_bytes(self) -> bytes:
         return encode_dataclass(self)
@@ -633,6 +637,7 @@ class TelemetrySample:
             clock_ref=str(value.get("clock_ref", "")),
             clock_offset_ms=float(value.get("clock_offset_ms", 0.0)),
             clock_rms_ms=float(value.get("clock_rms_ms", -1.0)),
+            fabric=dict(value.get("fabric") or {}),
         )
 
 

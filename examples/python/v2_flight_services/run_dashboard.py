@@ -57,6 +57,7 @@ from contracts import (
     DetectionRequest,
     DetectionResponse,
     FrameRef,
+    FlightCommandResult,
     GeoPoint,
     InvestigatePointRequest,
     Pose,
@@ -87,6 +88,7 @@ from dataplane import (
     parse_frame,
     set_runtime,
 )
+import fabric
 from raster import build_raster, estimate_duration_s
 from timesync import ClockMonitor
 from telemetry_stream import TelemetryFeed
@@ -179,6 +181,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="/var/lib/minimuas/log",
         help="Directory for the fsync-per-line metrics/event journal "
         "(empty string disables).",
+    )
+    fabric.add_fabric_arguments(parser)
+    parser.add_argument(
+        "--fabric-switch-file",
+        default="/var/lib/minimuas/dashboard/fabric-switch.json",
+        help="The stack switch in progress. The GCS switch restarts this "
+        "process, so the switch's outcome (fabric.switch.done/failed) is "
+        "decided by the next process from this file.",
     )
     return parser
 
@@ -326,6 +336,16 @@ class Dashboard:
         # when the feeds started, so a fleet that is still coming up doesn't
         # flash "no link" before its first sample
         self.telemetry_since = time.monotonic()
+        # NDN stack (fabric cell) state and the operator's stack switch. The
+        # GCS's own cell comes from its state file; each vehicle's from the
+        # `fabric` tag on its telemetry (fabric.py).
+        self.gcs_fabric = fabric.ActiveCell(args.fabric_dir)
+        self.fabric_lock = threading.Lock()
+        # the vehicle round of the switch in progress (this process only)
+        self.fabric_round: fabric.VehicleRound | None = None
+        # the switch in progress, mirrored to --fabric-switch-file: survives
+        # the dashboard restart the GCS's own switch causes
+        self.fabric_switch: dict | None = self._load_fabric_switch()
 
     # link is only declared lost after SUSTAINED silence: 2.5 s is 10 missed
     # samples at 4 Hz, well past a single lost sample (fast retransmit after 3
@@ -348,6 +368,24 @@ class Dashboard:
     COMMAND_RETRY_S = 2.0
     # Don't start an attempt that could not complete before the deadline.
     COMMAND_MIN_ATTEMPT_MS = 500
+
+    # Telemetry must be this fresh for a vehicle to be allowed to change
+    # stacks: the same bound that declares its link lost (10 missed samples
+    # at 4 Hz). An `armed` reading older than that is not knowledge of the
+    # aircraft's state, and a vehicle that has gone quiet for longer would
+    # likely miss the switch command too and stay on the old stack.
+    FABRIC_FRESH_S = STALE_AFTER_S
+    # A vehicle answers system/fabric before it switches (it replies, then
+    # switches 2 s later), so this only has to cover delivery and re-issues,
+    # like the shutdown command.
+    FABRIC_VEHICLE_TIMEOUT_MS = 15000
+    # From the request until every node reports the new cell with fresh
+    # telemetry. muas-fabric set takes 30-75 s per node (vehicles and GCS run
+    # concurrently), then the role units restart and telemetry resubscribes;
+    # ndn-fleet's own post-switch health gate allows 300 s.
+    FABRIC_CONVERGE_S = 300.0
+    # Periodic rebroadcast of the fabric record (also sent on every change).
+    FABRIC_BROADCAST_S = 10.0
 
     # ---- mission recorder ----------------------------------------------------
 
@@ -423,40 +461,48 @@ class Dashboard:
             frames = list(self.video_slots.values())
             self.video_slots.clear()
             for frame in frames:
-                clients = list(self.clients)
-                if not clients:
-                    continue
-                results = await asyncio.gather(
-                    *(self._safe_send_bytes(ws, frame) for ws in clients),
-                    return_exceptions=True,
-                )
-                for ws, ok in zip(clients, results):
-                    if ok is not True:
-                        self.clients.discard(ws)
+                await self._send_all(frame)
             await asyncio.sleep(0)  # yield so HTTP handlers never starve
 
-    async def _safe_send_bytes(self, ws, frame: bytes) -> bool:
+    # A send that has not completed in this long is a stalled client. Before
+    # dict broadcasts had a bound, one slow WS held every message behind it:
+    # two simultaneous 4.8 s telemetry gaps with two clients (2026-10-06).
+    SEND_TIMEOUT_S = 2.0
+
+    async def _send_one(self, ws, message) -> bool:
         try:
-            await asyncio.wait_for(ws.send_bytes(frame), timeout=2.0)
+            if isinstance(message, bytes):
+                send = ws.send_bytes(message)
+            else:
+                send = ws.send_str(message)
+            await asyncio.wait_for(send, timeout=self.SEND_TIMEOUT_S)
             return True
         except Exception:
             return False
+
+    async def _send_all(self, message) -> None:
+        """Send to every client concurrently; drop and close any that fail or
+        stall, so no client ever delays another. Closing (not just forgetting)
+        a stalled client makes its page reconnect and get a fresh hello,
+        instead of sitting connected and silently starved."""
+        clients = list(self.clients)
+        if not clients:
+            return
+        results = await asyncio.gather(
+            *(self._send_one(ws, message) for ws in clients)
+        )
+        for ws, ok in zip(clients, results):
+            if not ok and ws in self.clients:
+                self.clients.discard(ws)
+                print_json("dash.ws.dropped", reason="send failed or stalled",
+                           timeout_s=self.SEND_TIMEOUT_S)
+                asyncio.ensure_future(ws.close())
 
     async def broadcast(self, payload) -> None:
         if isinstance(payload, dict):
             self._record(payload)
         message = json.dumps(payload) if isinstance(payload, dict) else payload
-        dead = []
-        for ws in self.clients:
-            try:
-                if isinstance(message, bytes):
-                    await ws.send_bytes(message)
-                else:
-                    await ws.send_str(message)
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self.clients.discard(ws)
+        await self._send_all(message)
 
     def event(self, kind: str, **fields) -> None:
         record = {"type": "event", "kind": kind, "t": time.time(), **fields}
@@ -501,6 +547,9 @@ class Dashboard:
         ).start()
         threading.Thread(
             target=self._watch_video_subs_forever, name="video-watch", daemon=True
+        ).start()
+        threading.Thread(
+            target=self._watch_fabric_forever, name="fabric-watch", daemon=True
         ).start()
         while True:
             time.sleep(3600)
@@ -595,11 +644,15 @@ class Dashboard:
             if sample.clock_ref and ours.known else None
         )
         # With the offset known, our clock minus the stamp is the sample's
-        # true age from publish to delivery. Median: a sample released after
-        # a retransmission carries that stall.
+        # true age from publish to delivery. `age_ms` is this sample's (the
+        # per-sample series the stack comparison needs); `sample_age_ms` the
+        # median, since a sample released after a retransmission carries that
+        # stall and the tile should not flicker with it.
+        age_ms = None
         if clock_ms is not None:
             stamp_ms = (gps_time_ns() - sample.gps_time_ns) / 1e6
-            state["age"].append(stamp_ms + clock_ms)
+            age_ms = stamp_ms + clock_ms
+            state["age"].append(age_ms)
         sample_dict = json.loads(payload.decode())
         self.last_sample[vid] = sample_dict
         self._send_loop({
@@ -607,6 +660,7 @@ class Dashboard:
             "vehicle": vid,
             "sample": sample_dict,
             "age_s": round(age_s, 1),
+            "age_ms": round(age_ms, 1) if age_ms is not None else None,
             "clock_ms": round(clock_ms, 3) if clock_ms is not None else None,
             "clock_ref": sample.clock_ref,
             "clock_rms_ms": sample.clock_rms_ms if sample.clock_rms_ms >= 0 else None,
@@ -2041,6 +2095,8 @@ class Dashboard:
                     )
                 else:
                     self._system_shutdown(vid)
+        elif kind == "fabric_switch":
+            self.request_fabric_switch(str(message.get("cell", "")))
         return None
 
     def _system_shutdown(self, vid: str) -> None:
@@ -2054,8 +2110,6 @@ class Dashboard:
                     error=response.error,
                 )
                 return
-            from contracts import FlightCommandResult
-
             result = FlightCommandResult.from_bytes(response.payload)
             self.event(
                 "system.shutdown_result", vehicle=vid,
@@ -2074,6 +2128,288 @@ class Dashboard:
             timeout_ms=15000,
             vehicle=vid,
         )
+
+    # ---- NDN stack switch (fabric cell) ---------------------------------------
+    # The operator's only way to change stacks in the field. Order matters:
+    # every vehicle first, the GCS last. All vehicle traffic crosses the GCS,
+    # so the GCS stays on the old stack until every vehicle has its request
+    # (each agent replies, then switches 2 s later in its own transient unit);
+    # a refusal or timeout leaves the GCS where it is. The GCS switch restarts
+    # this process, so its outcome is judged from node state — the cell files
+    # and the vehicles' telemetry tags — by whichever process is running then.
+
+    def _load_fabric_switch(self) -> dict | None:
+        path = self.args.fabric_switch_file
+        if not path:
+            return None
+        try:
+            return json.loads(Path(path).read_text())
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError) as exc:
+            print_json("dash.fabric.switch_file_unreadable", path=path,
+                       error=str(exc))
+            return None
+
+    def _save_fabric_switch(self, record: dict | None) -> None:
+        """Set (None: clear) the switch in progress and mirror it to disk.
+        Caller holds fabric_lock."""
+        self.fabric_switch = record
+        path = self.args.fabric_switch_file
+        if not path:
+            return
+        try:
+            target = Path(path)
+            if record is None:
+                target.unlink(missing_ok=True)
+                return
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_suffix(".tmp")
+            with open(tmp, "w") as fh:
+                json.dump(record, fh)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, target)
+        except OSError as exc:
+            # The switch itself proceeds; only a restarted dashboard loses
+            # track of it (the cells and countdown still come from node state).
+            print_json("dash.fabric.switch_file_failed", path=path,
+                       error=str(exc))
+
+    def _telemetry_ages(self) -> dict[str, float]:
+        """Seconds since each vehicle's last NEW sample, on our own clock."""
+        now = time.monotonic()
+        return {
+            vid: now - state["changed_mono"]
+            for vid, state in list(self.sample_state.items())
+        }
+
+    def _fabric_nodes(self) -> dict[str, dict]:
+        nodes = {"gcs": self.gcs_fabric.get()}
+        for vid in self.vehicles:
+            tag = (self.last_sample.get(vid) or {}).get("fabric") or {}
+            nodes[vid] = {
+                "cell": tag.get("cell"), "since_unix": tag.get("since_unix"),
+            }
+        return nodes
+
+    def fabric_record(self) -> dict:
+        """The `fabric` broadcast. `now_unix` is this GCS's clock, so a UI on
+        an unsynchronised laptop (the field has no NTP but the GCS) can count
+        the settle window down on the fleet's clock."""
+        return {
+            "type": "fabric",
+            "nodes": self._fabric_nodes(),
+            "settle_s": fabric.SETTLE_S,
+            "now_unix": round(time.time(), 3),
+            "switch": self.fabric_switch,
+        }
+
+    def _gcs_switch_blocker(self) -> str:
+        """Why the GCS side cannot run a switch now, else ""."""
+        if self.mission["state"] in ("searching", "investigating"):
+            return f"mission {self.mission['state']}"
+        # Checked before any vehicle is asked: a GCS that cannot follow its
+        # vehicles would split the fleet across stacks.
+        if not os.access(self.args.fabric_cli, os.X_OK):
+            return f"{self.args.fabric_cli} is not installed on the GCS"
+        if shutil.which("systemd-run") is None:
+            return "systemd-run not found on the GCS"
+        return ""
+
+    def request_fabric_switch(self, cell: str) -> None:
+        self.event("fabric.switch.requested", cell=cell)
+        if cell not in fabric.CELLS:
+            self.event("fabric.switch.refused", cell=cell,
+                       reason=f"unknown cell {cell!r}", vehicles={})
+            return
+        with self.fabric_lock:
+            if self.fabric_switch is not None:
+                self.event(
+                    "fabric.switch.refused", cell=cell, vehicles={},
+                    reason="a switch to "
+                    f"'{self.fabric_switch.get('cell')}' is still in progress",
+                )
+                return
+            gcs = self._gcs_switch_blocker()
+            vehicles = fabric.switch_blockers(
+                self.vehicles, self.last_sample, self._telemetry_ages(),
+                self.FABRIC_FRESH_S,
+            )
+            if gcs or vehicles:
+                reasons = ([f"gcs: {gcs}"] if gcs else []) + [
+                    f"{vid}: {why}" for vid, why in vehicles.items()
+                ]
+                self.event("fabric.switch.refused", cell=cell,
+                           reason="; ".join(reasons), vehicles=vehicles)
+                return
+            self.fabric_round = fabric.VehicleRound(self.vehicles)
+            self._save_fabric_switch({
+                "id": uuid.uuid4().hex[:12],
+                "cell": cell,
+                "started_unix": round(time.time(), 3),
+                "phase": "vehicles",
+                "vehicles": {},
+            })
+        self.record_sync()
+        payload = json.dumps({"cell": cell}).encode()
+        for vid in self.vehicles:
+            self._send_fabric_request(vid, payload)
+
+    def _send_fabric_request(self, vid: str, payload: bytes) -> None:
+        def on_response(response) -> None:
+            if not response.status:
+                self._on_fabric_vehicle(vid, "error", str(response.error))
+                return
+            try:
+                result = FlightCommandResult.from_bytes(response.payload)
+            except Exception as exc:
+                self._on_fabric_vehicle(vid, "error", f"bad reply: {exc}")
+                return
+            self._on_fabric_vehicle(vid, result.status, result.message)
+
+        def on_timeout(_request_id: str) -> None:
+            self._on_fabric_vehicle(
+                vid, "timeout",
+                f"no answer in {self.FABRIC_VEHICLE_TIMEOUT_MS / 1000:g} s",
+            )
+
+        self._timed_async(
+            vehicle_system_service(vid, "fabric"),
+            "fabric",
+            payload,
+            on_response,
+            on_timeout,
+            timeout_ms=self.FABRIC_VEHICLE_TIMEOUT_MS,
+            vehicle=vid,
+        )
+
+    def _on_fabric_vehicle(self, vid: str, status: str, message: str) -> None:
+        self.event("fabric.switch.vehicle", vehicle=vid, status=status,
+                   message=message)
+        with self.fabric_lock:
+            rnd, record = self.fabric_round, self.fabric_switch
+            if rnd is None or record is None:
+                return
+            outcome = rnd.record(vid, status, message)
+            record = {**record, "vehicles": dict(rnd.results)}
+            if outcome is None:
+                self._save_fabric_switch(record)
+                return
+            self.fabric_round = None
+            if outcome == "failed":
+                self._save_fabric_switch(None)
+            else:
+                # Same critical section as clearing the round: the watcher
+                # reads "not converging and no round" as an orphaned switch.
+                # Saved before the GCS launch, which eventually restarts us:
+                # the next process must find a switch to judge.
+                record["phase"] = "converging"
+                self._save_fabric_switch(record)
+        if outcome == "failed":
+            switching = sorted(
+                v for v, r in rnd.results.items() if r["status"] == "accepted"
+            )
+            self.event(
+                "fabric.switch.failed", cell=record["cell"],
+                reason="not every vehicle accepted; the GCS was NOT switched"
+                + (f" (switching anyway: {', '.join(switching)})"
+                   if switching else ""),
+                vehicles=rnd.refusals(), switching=switching,
+            )
+            return
+        self._switch_gcs(record)
+
+    def _switch_gcs(self, record: dict) -> None:
+        cell = record["cell"]
+        active = fabric.read_active(self.args.fabric_dir)["cell"]
+        if active == cell:
+            self.event("fabric.switch.gcs", status="already", cell=cell)
+            return
+        self.record_sync()
+        unit, error = fabric.launch_switch(cell, self.args.fabric_cli)
+        if error:
+            with self.fabric_lock:
+                self._save_fabric_switch(None)
+            self.event("fabric.switch.gcs", status="failed", cell=cell,
+                       unit=unit, error=error)
+            self.event(
+                "fabric.switch.failed", cell=cell,
+                reason=f"the GCS switch did not start ({error}); "
+                "the vehicles are switching",
+                vehicles={},
+            )
+            return
+        self.event("fabric.switch.gcs", status="started", cell=cell, unit=unit)
+        self.record_sync()
+
+    def _judge_fabric_switch(self) -> None:
+        """Decide a switch that has reached the GCS phase: done once every
+        node reports the cell, failed if that has not happened in time."""
+        with self.fabric_lock:
+            record = self.fabric_switch
+            if record is None:
+                return
+            if record.get("phase") != "converging":
+                if self.fabric_round is not None:
+                    return  # this process is still collecting vehicle answers
+                # Found on disk mid-round: the process that asked the
+                # vehicles died before they all answered.
+                self._save_fabric_switch(None)
+                outcome, nodes = "orphaned", None
+            else:
+                nodes = self._fabric_nodes()
+                fresh = {
+                    vid for vid, age in self._telemetry_ages().items()
+                    if age <= self.FABRIC_FRESH_S
+                }
+                elapsed = time.time() - float(record.get("started_unix", 0))
+                if fabric.converged(record["cell"], nodes, fresh):
+                    outcome = "done"
+                elif elapsed > self.FABRIC_CONVERGE_S:
+                    outcome = "late"
+                else:
+                    return
+                self._save_fabric_switch(None)
+        if outcome == "done":
+            self.event("fabric.switch.done", cell=record["cell"],
+                       switch_id=record.get("id"), elapsed_s=round(elapsed, 1),
+                       nodes=nodes)
+        elif outcome == "late":
+            self.event(
+                "fabric.switch.failed", cell=record["cell"],
+                switch_id=record.get("id"), nodes=nodes, vehicles={},
+                reason=f"not every node reports '{record['cell']}' with fresh "
+                f"telemetry {self.FABRIC_CONVERGE_S:g} s after the request",
+            )
+        else:
+            self.event(
+                "fabric.switch.failed", cell=record.get("cell"),
+                switch_id=record.get("id"), vehicles=record.get("vehicles", {}),
+                reason="the dashboard restarted before every vehicle answered; "
+                "the GCS was NOT switched",
+            )
+
+    def _watch_fabric_forever(self) -> None:
+        """Broadcast the fabric record on every change and every
+        FABRIC_BROADCAST_S, and judge the switch in progress."""
+        last_key, last_at = None, float("-inf")
+        while True:
+            try:
+                self._judge_fabric_switch()
+                record = self.fabric_record()
+                key = json.dumps([record["nodes"], record["switch"]],
+                                 sort_keys=True)
+                now = time.monotonic()
+                if key != last_key or now - last_at >= self.FABRIC_BROADCAST_S:
+                    if key != last_key:
+                        print_json("dash.fabric", nodes=record["nodes"],
+                                   switch=record["switch"])
+                    self._send_loop(record)
+                    last_key, last_at = key, now
+            except Exception as exc:
+                print_json("dash.fabric.watch_error", error=str(exc))
+            time.sleep(1.0)
 
 
 def make_app(dash: Dashboard, args):
@@ -2247,6 +2583,11 @@ def make_app(dash: Dashboard, args):
             # placeable — there is no separate virtual-deployment mode), so
             # the sim panel is unconditionally on, as v2's old panel was
             "sim": True,
+            # NDN stack switch panel; the current record rides along so a
+            # page that reconnects after the GCS switch restarted this
+            # process shows cells and the settle countdown at once
+            "fabric_switch": True,
+            "fabric": dash.fabric_record(),
             "vehicles": dash.vehicles,
             "enabled": dash.enabled,
             "capabilities": {

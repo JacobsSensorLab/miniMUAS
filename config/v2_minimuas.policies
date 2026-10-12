@@ -37,6 +37,7 @@ provider-policies
             /muas/v2/wuas-01/telemetry/state
             /muas/v2/wuas-01/sensor/capture
             /muas/v2/wuas-01/bench/echo
+            /muas/v2/wuas-01/system/fabric
         }
     }
 
@@ -55,6 +56,7 @@ provider-policies
             /muas/v2/iuas-01/telemetry/state
             /muas/v2/iuas-01/sensor/capture
             /muas/v2/iuas-01/bench/echo
+            /muas/v2/iuas-01/system/fabric
         }
     }
 
@@ -73,6 +75,7 @@ provider-policies
             /muas/v2/iuas-02/telemetry/state
             /muas/v2/iuas-02/sensor/capture
             /muas/v2/iuas-02/bench/echo
+            /muas/v2/iuas-02/system/fabric
         }
     }
 }
@@ -95,6 +98,7 @@ user-policies
             /muas/v2/wuas-01/telemetry/state
             /muas/v2/wuas-01/sensor/capture
             /muas/v2/wuas-01/bench/echo
+            /muas/v2/wuas-01/system/fabric
             /muas/v2/iuas-01/flight/investigate
             /muas/v2/iuas-01/flight/rtl
             /muas/v2/iuas-01/flight/land
@@ -103,6 +107,7 @@ user-policies
             /muas/v2/iuas-01/video/control
             /muas/v2/iuas-01/sensor/capture
             /muas/v2/iuas-01/bench/echo
+            /muas/v2/iuas-01/system/fabric
             /muas/v2/iuas-02/flight/investigate
             /muas/v2/iuas-02/flight/rtl
             /muas/v2/iuas-02/flight/land
@@ -111,6 +116,7 @@ user-policies
             /muas/v2/iuas-02/video/control
             /muas/v2/iuas-02/sensor/capture
             /muas/v2/iuas-02/bench/echo
+            /muas/v2/iuas-02/system/fabric
         }
     }
 

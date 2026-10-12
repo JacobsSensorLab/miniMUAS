@@ -611,6 +611,16 @@ h3.sech .chev { display: inline-block; width: 14px; color: var(--cds-text-helper
   background: #da1e28; color: #fff; font: 700 13px var(--font-mono);
   letter-spacing: 1px; box-shadow: 0 2px 8px rgba(0,0,0,.5); }
 #manualBanner.on { display: block; }
+/* ---- NDN stack (fabric cell) panel ------------------------------------------- */
+#stackCard .mono { font-family: var(--font-mono); }
+#stackCard.mixed { border-left: 3px solid var(--cds-support-error); }
+#stackCard.settling { border-left: 3px solid var(--cds-support-warning); }
+#stackCard.settled { border-left: 3px solid var(--cds-support-success); }
+#stackNodes .row { display: grid; grid-template-columns: 64px 1fr auto; gap: 6px; }
+#stackNodes .row.odd { color: var(--cds-support-error); font-weight: 600; }
+#stackNodes .ago { color: var(--cds-text-helper); }
+#stackStatus.err { color: var(--cds-support-error); }
+#stackStatus.ok { color: var(--cds-support-success); }
 </style>
 </head>
 <body>
@@ -638,6 +648,8 @@ h3.sech .chev { display: inline-block; width: 14px; color: var(--cds-text-helper
   <button class="cds-btn cds-btn--ghost" id="imageryBtn">Imagery on</button>
   <button class="cds-btn cds-btn--ghost" id="cmdModeBtn" style="display:none"
           title="Command routing (live, no redeploy): targeted = NDNSF fast path straight to the known provider; two-phase = full discovery/ACK handshake. metric.latency is tagged with the mode, so flipping this mid-run gives the targeted-vs-two-phase A/B.">Cmd: targeted</button>
+  <span class="cds-tag cds-tag--gray" id="stackTag" style="display:none"
+        title="NDN stack (fabric cell) of every node; see Network stack in the sidebar">stack –</span>
   <span class="cds-tag cds-tag--red" id="conn">offline</span>
 </header>
 
@@ -720,6 +732,22 @@ h3.sech .chev { display: inline-block; width: 14px; color: var(--cds-text-helper
     <button class="cds-btn cds-btn--danger" id="rtlAll">RTL all</button>
     <button class="cds-btn cds-btn--danger" id="landAll">Land all</button>
     <button class="cds-btn cds-btn--secondary" id="holdAll">Hold all</button>
+  </div>
+
+  <div id="stackPanel" style="display:none">
+    <h3>Network stack</h3>
+    <div class="cds-tile" id="stackCard">
+      <div id="stackBanner" style="font-weight:600;margin-bottom:6px">–</div>
+      <div id="stackSettle" class="mono" style="margin-bottom:6px"></div>
+      <div id="stackNodes" class="mono" style="font-size:12px"></div>
+      <div id="stackStatus" style="font-size:12px;margin-top:6px;white-space:pre-wrap"></div>
+    </div>
+    <div class="btnrow">
+      <button class="cds-btn cds-btn--secondary" id="stackNfd"
+        title="Switch every node to the C++ stack (NFD). Vehicles first, then the GCS; refused unless every vehicle is landed, disarmed, idle and reporting.">→ nfd wifi</button>
+      <button class="cds-btn cds-btn--secondary" id="stackFwd"
+        title="Switch every node to the Rust stack (ndn-fwd). Vehicles first, then the GCS; refused unless every vehicle is landed, disarmed, idle and reporting.">→ ndn-fwd wifi</button>
+    </div>
   </div>
 
   <h3>Sensor tasking</h3>
@@ -1032,6 +1060,7 @@ function dispatch(m){
   else if (m.type === "rc") onRc(m);
   else if (m.type === "video_stats") onVideoStats(m);
   else if (m.type === "video_settings") onVideoSettings(m);
+  else if (m.type === "fabric") onFabric(m);
   else if (m.type === "net"){ NETPREV = NET; NET = m; renderNetPanel(); }
   else if (m.type === "sim_anomalies"){
     // payload-key reconciliation: v3 sends `items`, v2 sends `anomalies`
@@ -2886,6 +2915,138 @@ function cmdShutdown(vid){
   send({cmd:"system", vehicle:vid, command:"shutdown", confirm:vid});
 }
 
+// ---------- NDN stack (fabric cell) switch ----------
+// The operator's only way to change stacks in the field; the backend runs it
+// (vehicles first, the GCS last). Cells and the settle countdown come from
+// node state (each node's fabric `active` file and its mtime, rebroadcast by
+// the dashboard as {type:"fabric"}), so both survive the dashboard restart
+// the GCS's own switch causes: the page just reconnects.
+let FAB = null;       // last {type:"fabric"} record
+let FAB_SKEW = 0;     // GCS clock minus this browser's clock, s
+let FAB_NOTE = null;  // {cls, text}: the latest refusal/outcome, kept on screen
+const FAB_SHORT = { "nfd wifi": "NFD", "ndn-fwd wifi": "ndn-fwd" };
+function onFabric(m){
+  FAB = m;
+  // The field laptop's only time source is the GCS, and it may have none:
+  // count down on the GCS clock, not the browser's.
+  if (typeof m.now_unix === "number") FAB_SKEW = m.now_unix - Date.now() / 1000;
+  renderFabric();
+}
+function fabricView(){
+  const nodes = Object.entries(FAB.nodes || {});
+  const counts = {};
+  nodes.forEach(([, s]) => { if (s.cell) counts[s.cell] = (counts[s.cell] || 0) + 1; });
+  const cells = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+  const known = nodes.filter(([, s]) => s.cell).length;
+  const sinces = nodes.map(([, s]) => s.since_unix).filter(x => typeof x === "number");
+  const newest = sinces.length ? Math.max(...sinces) : null;
+  const now = Date.now() / 1000 + FAB_SKEW;
+  return {
+    nodes, now, newest,
+    majority: cells[0] || null,
+    uniform: nodes.length > 0 && known === nodes.length && cells.length === 1,
+    // settle runs from the NEWEST disturbance anywhere in the fleet
+    left: newest == null ? null : newest + (FAB.settle_s || 150) - now,
+  };
+}
+const fabAgo = s => s < 90 ? `${Math.round(s)} s`
+  : s < 5400 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`;
+const fabClock = t => new Date(t * 1000).toLocaleTimeString();
+function renderFabric(){
+  if (!FAB) return;
+  const v = fabricView(), sw = FAB.switch;
+  const settling = v.left != null && v.left > 0;
+  const short = c => FAB_SHORT[c] || c;
+  // header tag: one glance tells whether the data being taken now counts
+  let tagCls, tagText;
+  if (sw){ tagCls = "cds-tag--blue"; tagText = `stack → ${short(sw.cell)}…`; }
+  else if (!v.uniform){ tagCls = "cds-tag--red"; tagText = "stack MIXED"; }
+  else if (settling){ tagCls = "cds-tag--yellow";
+    tagText = `stack ${short(v.majority)} · settling ${Math.ceil(v.left)} s`; }
+  else { tagCls = "cds-tag--green"; tagText = `stack ${short(v.majority)}`; }
+  stackTag.className = "cds-tag " + tagCls;
+  stackTag.textContent = tagText;
+  stackCard.className = "cds-tile " +
+    (!v.uniform ? "mixed" : settling ? "settling" : "settled");
+  stackBanner.textContent = v.uniform
+    ? `All nodes on '${v.majority}'`
+    : "MIXED — nodes are on different stacks (or unknown); data is not comparable";
+  stackSettle.textContent = v.newest == null ? "settle: unknown (no node reports a cell time)"
+    : settling ? `SETTLING: ${Math.ceil(v.left)} s left — data before ` +
+      `${fabClock(v.newest + (FAB.settle_s || 150))} does not count`
+    : `settled since ${fabClock(v.newest + (FAB.settle_s || 150))}`;
+  stackNodes.innerHTML = v.nodes.map(([node, s]) => {
+    const odd = !s.cell || (!v.uniform && s.cell !== v.majority);
+    const since = typeof s.since_unix === "number"
+      ? `${fabClock(s.since_unix)} <span class="ago">(${fabAgo(v.now - s.since_unix)} ago)</span>` : "–";
+    return `<div class="row${odd ? " odd" : ""}"><span>${node}</span>` +
+      `<span>${s.cell || "unknown"}</span><span>${since}</span></div>`;
+  }).join("");
+  let note = FAB_NOTE;
+  if (sw){
+    const phase = sw.phase === "converging"
+      ? "every vehicle accepted; GCS switching — waiting for every node to report it"
+      : "asking the vehicles";
+    const lines = Object.entries(sw.vehicles || {}).map(([vid, r]) =>
+      `  ${vid}: ${r.status}${r.message ? " — " + r.message : ""}`);
+    note = { cls: "", text: `Switching to '${sw.cell}' (${fabAgo(v.now - sw.started_unix)}): ` +
+      `${phase}` + (lines.length ? "\n" + lines.join("\n") : "") };
+  }
+  stackStatus.className = note ? note.cls : "";
+  stackStatus.textContent = note ? note.text : "";
+  stackNfd.disabled = !!sw || (v.uniform && v.majority === "nfd wifi");
+  stackFwd.disabled = !!sw || (v.uniform && v.majority === "ndn-fwd wifi");
+}
+setInterval(renderFabric, 1000);  // the countdown ticks between broadcasts
+function onFabricEvent(m){
+  const perVehicle = o => Object.entries(o || {})
+    .map(([vid, why]) => `\n  ${vid}: ${typeof why === "string" ? why : JSON.stringify(why)}`).join("");
+  switch (m.kind){
+    case "fabric.switch.requested":
+      FAB_NOTE = { cls: "", text: `requested: switch to '${m.cell}'` }; break;
+    case "fabric.switch.refused":
+      FAB_NOTE = { cls: "err", text: `REFUSED switch to '${m.cell}': ${m.reason}` };
+      toast(`stack switch refused: ${m.reason}`, "err"); break;
+    case "fabric.switch.vehicle":
+      if (m.status !== "accepted")
+        toast(`${m.vehicle} did not accept the stack switch: ${m.status}` +
+              (m.message ? ` — ${m.message}` : ""), "err");
+      break;
+    case "fabric.switch.gcs":
+      toast(`GCS stack switch ${m.status}` + (m.error ? `: ${m.error}` : "") +
+            (m.status === "started" ? " — this page will reconnect" : ""),
+            m.status === "failed" ? "err" : "ok");
+      break;
+    case "fabric.switch.done":
+      FAB_NOTE = { cls: "ok", text: `every node switched to '${m.cell}' ` +
+        `(${m.elapsed_s} s) — wait for the settle countdown` };
+      toast(`stack switch to '${m.cell}' done`, "ok"); break;
+    case "fabric.switch.failed":
+      FAB_NOTE = { cls: "err", text: `switch to '${m.cell}' FAILED: ${m.reason}` +
+        perVehicle(m.vehicles) };
+      toast(`stack switch FAILED: ${m.reason}`, "err"); break;
+  }
+  renderFabric();
+}
+function cmdFabricSwitch(cell){
+  if (!FAB) return;
+  const v = fabricView();
+  const now = v.uniform ? `every node is on '${v.majority}'`
+    : "the fleet is MIXED: " + v.nodes.map(([n, s]) => `${n}=${s.cell || "?"}`).join(", ");
+  if (!confirm(
+      `Switch the NDN stack of EVERY node to '${cell}'?\n\n` +
+      `Now: ${now}.\n\n` +
+      `Vehicles first (${VEHICLES.join(", ")}), then this GCS. Refused unless every\n` +
+      `vehicle is reporting telemetry, DISARMED and idle, and no mission is running.\n` +
+      `Each node takes ~30-75 s. The dashboard restarts when the GCS switches;\n` +
+      `this page reconnects by itself. Data counts again ${FAB.settle_s || 150} s after\n` +
+      `the last node comes up (countdown in the Network stack panel).`))
+    return;
+  send({cmd: "fabric_switch", cell});
+}
+stackNfd.onclick = () => cmdFabricSwitch("nfd wifi");
+stackFwd.onclick = () => cmdFabricSwitch("ndn-fwd wifi");
+
 // ---------- area + mission params ----------
 let areaMode = "center";
 modeSeg.querySelectorAll("button").forEach(b => b.onclick = () => {
@@ -2999,6 +3160,8 @@ function onHello(m){
   cmdModeBtn.style.display = m.command_mode ? "" : "none";
   recBtn.style.display = ("recording" in m) ? "" : "none";
   VEHICLES = m.vehicles;
+  stackPanel.style.display = stackTag.style.display = m.fabric_switch ? "" : "none";
+  if (m.fabric) onFabric(m.fabric);
   VEHICLES.forEach(noteLogVehicle);
   if (m.mission){
     targets = m.mission.targets || [];
@@ -4280,10 +4443,13 @@ function onEvent(m){
   // styling is reserved for refusals, failures, and timeouts.
   if (m.ok === true) line.classList.remove("err");
   else if (m.kind.includes("fail") || m.kind.includes("timeout") ||
-           m.kind.includes("rejected") || m.ok === false)
+           m.kind.includes("rejected") || m.kind.includes("refused") ||
+           (m.kind === "fabric.switch.vehicle" && m.status !== "accepted") ||
+           m.ok === false)
     line.classList.add("err");
   cmdLifecycle(m);
   taskingLifecycle(m);
+  if (m.kind.startsWith("fabric.switch.")) onFabricEvent(m);
   // queue_reorder refusal/timeout: drop the strip's optimistic order (the
   // toast already rode the command lifecycle like any other command)
   if (m.command === "queue_reorder" &&
