@@ -206,56 +206,17 @@ LIVE_INTEREST_LIFETIME_MS = 4000
 # Re-measure with ndn-iperf if the radio, MTU or chunk size changes -- the
 # right value tracks the BDP, not the frame rate.
 LIVE_INTEREST_LIMIT = 24
-# ...but a window is also a FRAME bound. NDNSF prefetches at most half the
-# window ahead of the newest produced cursor, so with 24 it can ask for only 12
-# chunks of a frame that does not exist yet; a 1280x800 q85 frame is ~18
-# chunks, and every frame then costs two round trips. Measured on the fleet
-# 2026-10-13 (ndn-fwd, iuas-01 alone, 1280x800 at 30 fps): q85 produced 22.4
-# fps and delivered 19-20 with in_flight pinned at 12, 0 timeouts/nacks/missing,
-# lag climbing to the 1.5 s resubscribe bound every ~10 s; q70 (~13 chunks)
-# kept pace but its lag still reached 1.5 s; q50 (~12 chunks) delivered 28.6
-# of 28.5 fps with lag <= 93 ms. So the window is sized to hold at least one
-# whole frame in its future half (`live_interest_window`), floored at the BDP
-# value above and capped where the bulk measurement turned down (32-48).
-LIVE_INTEREST_LIMIT_MAX = 48
-
-# Bytes per pixel of the agent's JPEGs, (quality, B/px), measured on the fleet
-# 2026-10-13 at 1280x800 (q50 68 KB, q70 77 KB, q85 ~106 KB per frame);
-# interpolated linearly in quality. A frame estimate only sizes the window:
-# over-estimating costs a few parked Interests, under-estimating reproduces the
-# two-round-trip cap, hence the margin for busier outdoor scenes.
-_JPEG_BPP = ((50, 0.066), (70, 0.075), (85, 0.104))
-_FRAME_SIZE_MARGIN = 1.5
-
-
-def expected_chunks_per_frame(width: int, height: int, quality: int) -> int:
-    """Chunks a frame of these settings is expected to need, with margin."""
-    q = min(max(int(quality), _JPEG_BPP[0][0]), _JPEG_BPP[-1][0])
-    for (q0, b0), (q1, b1) in zip(_JPEG_BPP, _JPEG_BPP[1:]):
-        if q <= q1:
-            bpp = b0 + (b1 - b0) * (q - q0) / (q1 - q0)
-            break
-    frame_bytes = max(1, int(width)) * max(1, int(height)) * bpp * _FRAME_SIZE_MARGIN
-    return max(1, -(-int(frame_bytes) // FRAME_CHUNK_BYTES))
-
-
-def live_interest_window(chunks_per_frame: Optional[int]) -> int:
-    """Items in the prefetch window: whole frame in the future half, in bounds."""
-    if not chunks_per_frame:
-        return LIVE_INTEREST_LIMIT
-    return int(min(LIVE_INTEREST_LIMIT_MAX, max(LIVE_INTEREST_LIMIT, 2 * chunks_per_frame)))
-
 
 # The subscriber prefetches at most half its window ahead of the newest
 # produced cursor (NDNSF future horizon = min(lookahead, limit) / 2), and the
 # slowest a stream produces items is one chunk per frame, so a future Interest
-# waits at most (window / 2) / fps for its item to exist. Twice that
+# waits at most (LIVE_INTEREST_LIMIT / 2) / fps for its item to exist. Twice that
 # covers RTT and camera jitter. The fixed 4 s ceiling is what one LOST item
 # costs: the ordered drain waits out the whole first-attempt lifetime, measured
 # on the fleet as stalls of exactly 4.06-4.24 s, each one `timeouts` +1.
-# At 30 fps and a 24-item window this is 0.8 s; at 6 fps and below it is 4 s.
-def live_interest_lifetime_ms(fps: float, window: int = LIVE_INTEREST_LIMIT) -> int:
-    worst_wait_s = (window / 2) / max(1.0, float(fps))
+# At 30 fps this is 0.8 s; at 6 fps and below it is the old 4 s.
+def live_interest_lifetime_ms(fps: float) -> int:
+    worst_wait_s = (LIVE_INTEREST_LIMIT / 2) / max(1.0, float(fps))
     return int(min(LIVE_INTEREST_LIFETIME_MS, 2 * worst_wait_s * 1000))
 
 # Mapping blocks must fit ONE link fragment.
@@ -647,7 +608,6 @@ class VideoStreamConsumer:
         interest_lifetime_ms: Optional[int] = None,
         aggregate_interest_limit: Optional[int] = None,
         fps: Optional[float] = None,
-        chunks_per_frame: Optional[int] = None,
         trace: Optional[Callable[[dict], None]] = None,
     ) -> None:
         from ndnsf import (
@@ -666,21 +626,20 @@ class VideoStreamConsumer:
         # airframes. At 960x600 q75 30 fps the same 128 is ~0.6 s of lookahead
         # and the identical streams ran 20-27 fps with 0-3 timeouts.
         #
-        # So derive it from the rate when the caller knows it, with a window
-        # big enough to request one whole frame ahead (`live_interest_window`;
-        # the caller passes `expected_chunks_per_frame` for its settings).
-        window = live_interest_window(chunks_per_frame)
+        # So derive it from the rate when the caller knows it. chunks/frame is
+        # not known before frames arrive, so assume the small-frame case (2);
+        # under-estimating only costs pipelining, while over-estimating
+        # reproduces the stall above.
         if interest_lifetime_ms is None:
             interest_lifetime_ms = (
-                live_interest_lifetime_ms(fps, window) if fps else LIVE_INTEREST_LIFETIME_MS
+                live_interest_lifetime_ms(fps) if fps else LIVE_INTEREST_LIFETIME_MS
             )
         if aggregate_interest_limit is None:
             if fps:
                 budget = max(1.0, float(fps)) * 2.0 * (interest_lifetime_ms / 1000.0 / 2.0)
-                aggregate_interest_limit = int(min(window, max(8, budget)))
+                aggregate_interest_limit = int(min(LIVE_INTEREST_LIMIT, max(8, budget)))
             else:
-                aggregate_interest_limit = window
-        self.interest_window = aggregate_interest_limit
+                aggregate_interest_limit = LIVE_INTEREST_LIMIT
 
         if isinstance(descriptor, (bytes, bytearray)):
             descriptor = json.loads(bytes(descriptor).decode())

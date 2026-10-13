@@ -1562,13 +1562,8 @@ class Dashboard:
                 if status.transport == "stream" and status.descriptor:
                     # Subscribe once to the vehicle's predictive stream; frames
                     # arrive on framework threads and feed the same WS drainer.
-                    from video_stream import expected_chunks_per_frame
-
-                    self._start_video_sub(
-                        vid, status.descriptor, fps=status.fps,
-                        chunks_per_frame=expected_chunks_per_frame(
-                            status.width, status.height, status.quality),
-                    )
+                    self._start_video_sub(vid, status.descriptor,
+                                          fps=status.fps)
                 else:
                     # segmented: one shared, paced relay thread for the whole
                     # fleet — never a blocking-fetch thread per vehicle (that
@@ -1591,8 +1586,7 @@ class Dashboard:
         )
 
     def _start_video_sub(self, vid: str, descriptor_json: str,
-                         *, fps: float | None = None,
-                         chunks_per_frame: int | None = None) -> None:
+                         *, fps: float | None = None) -> None:
         """Subscribe to a vehicle's predictive video stream (idempotent).
 
         Replaces any prior subscription (a re-enable mints a new descriptor).
@@ -1633,29 +1627,23 @@ class Dashboard:
                     stat["frames"], stat["bytes"], stat["t0"] = 0, 0, now
 
             # Pass the vehicle's frame rate so the prefetch depth and Interest
-            # lifetime are sized from the item rate (a fixed depth over-reaches
+            # lifetime are sized from the item rate. A fixed depth over-reaches
             # at low rates and every prefetch Interest expires before its frame
-            # exists), and the expected frame size so one whole frame can be
-            # requested ahead (a 12-chunk horizon capped 1280x800 q85 at 19-20
-            # fps, video_stream.LIVE_INTEREST_LIMIT_MAX).
+            # exists.
             trace = (
                 (lambda record, vid=vid: trace_writer().emit(
                     "dash.video.frame", vehicle=vid, **record))
                 if frame_trace_enabled() else None
             )
             consumer = VideoStreamConsumer(
-                self.user, descriptor_json, on_frame, fps=fps,
-                chunks_per_frame=chunks_per_frame, trace=trace,
+                self.user, descriptor_json, on_frame, fps=fps, trace=trace,
             )
             holder["consumer"] = consumer
             self.video_subs[vid] = {
                 "consumer": consumer, "descriptor": descriptor_json, "fps": fps,
-                "chunks_per_frame": chunks_per_frame,
                 "log_key": None, "log_t": 0.0,
             }
-            self.event("video.stream_subscribed", vehicle=vid,
-                       interest_window=consumer.interest_window,
-                       chunks_per_frame=chunks_per_frame)
+            self.event("video.stream_subscribed", vehicle=vid)
         except Exception as exc:
             self.event("video.stream_subscribe_failed", vehicle=vid,
                        error=str(exc))
@@ -1729,7 +1717,7 @@ class Dashboard:
             threading.Thread(
                 target=self._start_video_sub,
                 args=(vid, sub["descriptor"]),
-                kwargs={"fps": sub["fps"], "chunks_per_frame": sub["chunks_per_frame"]},
+                kwargs={"fps": sub["fps"]},
                 name=f"video-resub-{vid}",
                 daemon=True,
             ).start()

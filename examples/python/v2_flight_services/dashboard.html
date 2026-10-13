@@ -984,17 +984,21 @@ const COLORS = {};
 // the busiest vehicle starts stalling for seconds — higher presets are for one
 // or two feeds, not three.
 //
-// The two 1280@30 presets trade differently, measured 2026-10-13 (iuas-01
-// alone): the vehicle's encode + per-chunk publish cost caps q85 at ~22 fps
-// produced (40 ms/frame publish on 4 busy A55 cores), while q50-55 streams
-// ~28.5 fps. "max quality" keeps the sharpest image at whatever rate the
-// airframe sustains; "max rate" is the one that actually runs near 30.
+// One vehicle's 1280x800 stream tops out near 15-16 Mbps on this fleet
+// (iuas-01 alone, 2026-10-13, both stacks): the airframe's 4 A55 cores pay per
+// chunk to sign, publish and serve (86% busy at q85), and the GCS was not the
+// limit (busiest thread 34%). Asking for more than that only builds lag until
+// the dashboard skips to live: 1280 q85 requested at 30 fps delivered 17.7 fps
+// with 11 resubscribes in 76 s, while requested at 18 fps it delivered 17.4
+// with none (lag max 409 ms). q55 at 30 fps fits: 28.3 fps, lag max 203 ms.
+// "max rate" is the one that runs near 30; "max quality" is the sharpest image
+// at the rate the airframe actually sustains.
 const VIDEO_PRESETS = [
   {label:"smooth · 640p20",  width:640,  height:400, fps:20, quality:55},
   {label:"balanced · 960p20", width:960,  height:600, fps:20, quality:70},
   {label:"detail · 1280p15",  width:1280, height:800, fps:15, quality:75},
   {label:"max rate · 1280p30 q55", width:1280, height:800, fps:30, quality:55},
-  {label:"max quality · 1280 q85 (~22 fps)", width:1280, height:800, fps:30, quality:85},
+  {label:"max quality · 1280p18 q85", width:1280, height:800, fps:18, quality:85},
 ];
 // Default to the measured-smooth preset rather than the old hardcoded
 // 320x240 @8 fps, which was neither selectable nor visible in the UI.
