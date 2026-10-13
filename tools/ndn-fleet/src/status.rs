@@ -38,7 +38,8 @@ pub struct NodeStatus {
     pub active: Option<String>,
     /// Loaded units only (fabric + role units) → `ActiveState`.
     pub units: BTreeMap<String, String>,
-    pub muas_strategy: Option<String>,
+    /// Strategy on the NDNSF sync group ([`cells::SYNC_GROUP`]).
+    pub sync_strategy: Option<String>,
     /// `/muas` nexthops whose face exists; `dead_nexthops` name faces that do not.
     pub muas_nexthops: usize,
     pub dead_nexthops: Vec<u64>,
@@ -127,16 +128,17 @@ echo "@fwdpkg $(systemctl show -p ExecStart --value muas-fabric-ndn-fwd.service 
 for f in desired good active; do echo "@$f $(cat /var/lib/minimuas/fabric/$f 2>/dev/null)"; done
 systemctl show -p Id,LoadState,ActiveState {units} 2>/dev/null | sed 's/^/@unit /'
 case "$(cat /var/lib/minimuas/fabric/active 2>/dev/null)" in
-  nfd*) nfdc strategy list 2>/dev/null | grep -E 'prefix=/muas[[:space:]]' | sed 's/^/@strategy /'
+  nfd*) nfdc strategy list 2>/dev/null | grep -E 'prefix={sync}[[:space:]]' | sed 's/^/@strategy /'
         nfdc route list 2>/dev/null | grep -E 'prefix=/muas[[:space:]]' | sed 's/^/@route /'
         nfdc face list 2>/dev/null | grep -oE '^faceid=[0-9]+' | sed 's/^/@face /' ;;
-  *) ndn-ctl strategy list 2>/dev/null | grep -E '^/muas[[:space:]]' | sed 's/^/@strategy /'
+  *) ndn-ctl strategy list 2>/dev/null | grep -E '^{sync}[[:space:]]' | sed 's/^/@strategy /'
      ndn-ctl route list 2>/dev/null | grep -E '^/muas[[:space:]]' | sed 's/^/@route /'
      ndn-ctl face list 2>/dev/null | grep -oE '^faceid=[0-9]+' | sed 's/^/@face /' ;;
 esac
 echo "@uptime $(cut -d' ' -f1 /proc/uptime)"
 echo "@t1 $(date +%s%3N)"
-"#
+"#,
+        sync = cells::SYNC_GROUP
     )
 }
 
@@ -151,7 +153,7 @@ fn parse_status(cfg: &Config, node: &Node, text: &str, local_ms: (u64, u64)) -> 
         good: None,
         active: None,
         units: BTreeMap::new(),
-        muas_strategy: None,
+        sync_strategy: None,
         muas_nexthops: 0,
         dead_nexthops: Vec::new(),
         uptime_s: None,
@@ -215,7 +217,7 @@ fn parse_status(cfg: &Config, node: &Node, text: &str, local_ms: (u64, u64)) -> 
         }
     }
     flush_unit(&mut unit, &mut st.units);
-    st.muas_strategy = cells::muas_strategy(&strategy_rows);
+    st.sync_strategy = cells::sync_strategy(&strategy_rows);
     (st.muas_nexthops, st.dead_nexthops) = cells::muas_nexthops(&route_rows, &face_rows);
 
     // The node stamped t0 after local l0 and t1 before local l1, so the true offset lies in
@@ -258,14 +260,16 @@ fn parse_status(cfg: &Config, node: &Node, text: &str, local_ms: (u64, u64)) -> 
     st
 }
 
-/// The fabric conditions the health gate waits for: `/muas` multicast toward every other node,
-/// and the cell's forwarder unit running.
+/// The fabric conditions the health gate waits for: the NDNSF sync group multicast, `/muas`
+/// routed toward every other node (the sync groups inherit those nexthops), and the cell's
+/// forwarder unit running.
 fn fabric_problems(cfg: &Config, st: &NodeStatus) -> Vec<String> {
     let mut p = Vec::new();
-    match &st.muas_strategy {
+    let g = cells::SYNC_GROUP;
+    match &st.sync_strategy {
         Some(s) if s.contains("/multicast/") => {}
-        Some(s) => p.push(format!("/muas strategy is {s}, not multicast")),
-        None => p.push("/muas has no strategy entry".into()),
+        Some(s) => p.push(format!("{g} strategy is {s}, not multicast")),
+        None => p.push(format!("{g} has no strategy entry")),
     }
     if !st.dead_nexthops.is_empty() {
         p.push(format!(
@@ -317,7 +321,7 @@ async fn probe_node(cfg: &Config, node: &Node) -> NodeStatus {
                 good: None,
                 active: None,
                 units: BTreeMap::new(),
-                muas_strategy: None,
+                sync_strategy: None,
                 muas_nexthops: 0,
                 dead_nexthops: Vec::new(),
                 uptime_s: None,
@@ -650,7 +654,7 @@ mod tests {
         let gcs = cfg.gcs().clone();
         let out = gcs_output(
             "ndn-fwd wifi",
-            "/muas             /localhost/nfd/strategy/multicast/v=5",
+            "/muas/v2/group    /localhost/nfd/strategy/multicast/v=5",
             &[
                 "/muas  4  100",
                 "/muas  2  100",
@@ -661,7 +665,7 @@ mod tests {
         );
         let st = parse_status(&cfg, &gcs, &out, (10_000, 10_600));
         assert_eq!(
-            st.muas_strategy.as_deref(),
+            st.sync_strategy.as_deref(),
             Some("/localhost/nfd/strategy/multicast/v=5")
         );
         assert_eq!(st.muas_nexthops, 3, "duplicate nexthop rows count once");
@@ -689,7 +693,7 @@ mod tests {
         let gcs = cfg.gcs().clone();
         let out = gcs_output(
             "nfd wifi",
-            "prefix=/muas strategy=/localhost/nfd/strategy/best-route/v=5",
+            "prefix=/muas/v2/group strategy=/localhost/nfd/strategy/best-route/v=5",
             &["prefix=/muas nexthop=262 origin=static cost=100"],
             (99_000, 99_100),
         );

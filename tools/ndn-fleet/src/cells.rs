@@ -45,16 +45,30 @@ pub fn forwarder_unit(cell: &str) -> Result<&'static str> {
     })
 }
 
-/// Rows of a strategy/route listing for exactly `/muas` (not `/muas/v2/…`), in either the
+/// The NDNSF SVS sync group. Its sync Interests must reach every member, so it is the one
+/// prefix whose multicast strategy the fabric cannot run without: when the choice went missing
+/// (2026-09-18) the group partitioned and every NDNSF service call timed out. `/muas` itself is
+/// best-route since config 2026-10-12 (fabric.nix routing policy).
+pub const SYNC_GROUP: &str = "/muas/v2/group";
+
+/// Rows of a strategy/route listing for exactly `prefix` (not its children), in either the
 /// `ndn-ctl` table form (`/muas  …`) or the `nfdc` key=value form (`prefix=/muas …`).
-fn muas_rows(text: &str) -> impl Iterator<Item = &str> {
-    text.lines()
-        .filter(|l| matches!(l.split_whitespace().next(), Some("/muas" | "prefix=/muas")))
+fn rows_for<'a>(text: &'a str, prefix: &'a str) -> impl Iterator<Item = &'a str> {
+    text.lines().filter(move |l| {
+        l.split_whitespace()
+            .next()
+            .is_some_and(|t| t.strip_prefix("prefix=").unwrap_or(t) == prefix)
+    })
 }
 
-/// The strategy set on `/muas`, from `ndn-ctl strategy list` or `nfdc strategy list`.
-pub fn muas_strategy(text: &str) -> Option<String> {
-    muas_rows(text).next().and_then(|l| {
+fn muas_rows(text: &str) -> impl Iterator<Item = &str> {
+    rows_for(text, "/muas")
+}
+
+/// The strategy set on the NDNSF sync group ([`SYNC_GROUP`]), from `ndn-ctl strategy list` or
+/// `nfdc strategy list`.
+pub fn sync_strategy(text: &str) -> Option<String> {
+    rows_for(text, SYNC_GROUP).next().and_then(|l| {
         l.split_whitespace()
             .skip(1)
             .map(|t| t.strip_prefix("strategy=").unwrap_or(t))
@@ -108,33 +122,34 @@ pub struct ForwarderHealth {
     pub cell: Option<String>,
     pub unit: Option<String>,
     pub unit_state: Option<String>,
-    pub muas_strategy: Option<String>,
-    /// `/muas` nexthops whose face exists.
+    /// Strategy on [`SYNC_GROUP`].
+    pub sync_strategy: Option<String>,
+    /// `/muas` nexthops whose face exists (the sync groups inherit their peers from them).
     pub muas_nexthops: usize,
     /// `/muas` nexthops naming a face that no longer exists.
     pub dead_nexthops: Vec<u64>,
 }
 
 impl ForwarderHealth {
-    /// The forwarder of the active cell runs and `/muas` is multicast — without multicast the
-    /// NDNSF SVS sync group partitions (ndn-rs pin comment: `[[strategy]]` boot config).
+    /// The forwarder of the active cell runs and the NDNSF sync group is multicast — without
+    /// multicast the group partitions (see [`SYNC_GROUP`]).
     pub fn ok(&self) -> bool {
         self.unit_state.as_deref() == Some("active")
             && self.dead_nexthops.is_empty()
             && self
-                .muas_strategy
+                .sync_strategy
                 .as_deref()
                 .is_some_and(|s| s.contains("/multicast"))
     }
 
     fn summary(&self) -> String {
         format!(
-            "{}: cell={} {}={} /muas={} nexthops={} dead={:?}",
+            "{}: cell={} {}={} {SYNC_GROUP}={} /muas nexthops={} dead={:?}",
             self.node,
             self.cell.as_deref().unwrap_or("?"),
             self.unit.as_deref().unwrap_or("?"),
             self.unit_state.as_deref().unwrap_or("?"),
-            self.muas_strategy.as_deref().unwrap_or("none"),
+            self.sync_strategy.as_deref().unwrap_or("none"),
             self.muas_nexthops,
             self.dead_nexthops
         )
@@ -176,7 +191,7 @@ pub async fn forwarder_health(cfg: &Config, node: &Node) -> Result<ForwarderHeal
         cell,
         unit: unit.map(str::to_string),
         unit_state,
-        muas_strategy: muas_strategy(strategy),
+        sync_strategy: sync_strategy(strategy),
         muas_nexthops,
         dead_nexthops,
     })
@@ -529,15 +544,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn muas_rows_match_only_the_exact_prefix_in_both_tools_formats() {
-        let ndnctl_strategy = "Prefix            Strategy\n\
+    fn rows_match_only_the_exact_prefix_in_both_tools_formats() {
+        // The 2026-10-12 layout: multicast on the sync groups only, a best-route child under
+        // sysgen. A prefix match that also took /muas/v2/group/... or stopped at /muas would
+        // report the wrong strategy.
+        let ndnctl_strategy = "Prefix                Strategy\n\
             ──────────────────────────────────────────────────\n\
-            /                 /localhost/nfd/strategy/best-route/v=5\n\
-            /muas             /localhost/nfd/strategy/multicast/v=5\n\
-            /muas/v2/iuas-01  /localhost/nfd/strategy/best-route/v=5\n";
+            /                     /localhost/nfd/strategy/best-route/v=5\n\
+            /muas/v2/group/x      /localhost/nfd/strategy/best-route/v=5\n\
+            /muas/v2/group        /localhost/nfd/strategy/multicast/v=5\n\
+            /muas/v2/sysgen       /localhost/nfd/strategy/multicast/v=5\n";
         assert_eq!(
-            muas_strategy(ndnctl_strategy).as_deref(),
+            sync_strategy(ndnctl_strategy).as_deref(),
             Some("/localhost/nfd/strategy/multicast/v=5")
+        );
+        assert_eq!(
+            sync_strategy("/muas  /localhost/nfd/strategy/multicast/v=5\n"),
+            None
         );
         let ndnctl_routes = "/muas                                                 4     100\n\
             /muas                                                 2     100\n\
@@ -559,10 +582,10 @@ mod tests {
         assert_eq!(muas_nexthops(ndnctl_routes, &healthy), (2, vec![4]));
 
         let nfdc_strategy = "prefix=/ strategy=/localhost/nfd/strategy/best-route/v=5\n\
-            prefix=/muas/v2 strategy=/localhost/nfd/strategy/best-route/v=5\n\
-            prefix=/muas strategy=/localhost/nfd/strategy/multicast/v=5\n";
+            prefix=/muas/v2/sysgen/node strategy=/localhost/nfd/strategy/best-route/v=5\n\
+            prefix=/muas/v2/group strategy=/localhost/nfd/strategy/multicast/v=5\n";
         assert_eq!(
-            muas_strategy(nfdc_strategy).as_deref(),
+            sync_strategy(nfdc_strategy).as_deref(),
             Some("/localhost/nfd/strategy/multicast/v=5")
         );
         let nfdc_routes = "prefix=/muas nexthop=262 origin=static cost=0 flags=child-inherit expires=never\n\
