@@ -215,9 +215,10 @@ async fn ssh_once_to_file(
 /// Copy `files_from` (paths relative to `src_dir`, one per line) from `node` into `dest` with
 /// rsync, over the same ssh options and jump-host fallback as [`ssh`]. Read-only on the node:
 /// the node's rsync is only the sender. It runs as `sudo -n rsync` because dumpcap creates its
-/// ring files 0600 root. `-t` keeps mtimes, so a re-run skips every file whose size and mtime
-/// already match (rsync's quick check) and only fetches new or grown files; `--partial` keeps
-/// an interrupted large file for the next run to finish. stdout lists each transferred path.
+/// ring files 0600 root (the recorder's staged ones in /run stay so until copied to the SD).
+/// `-t` keeps mtimes, so a re-run skips every file whose size and mtime already match (rsync's
+/// quick check) and only fetches new or grown files; `--partial` keeps an interrupted large
+/// file for the next run to finish. stdout lists each transferred path.
 pub async fn rsync_pull(
     cfg: &Config,
     node: &Node,

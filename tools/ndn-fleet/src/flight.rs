@@ -10,6 +10,12 @@
 //! - every node: the recorder (`/var/lib/minimuas/recorder/`: cells.log, link sampler, dumpcap
 //!   ring, forwarding snapshots, chrony; on the GCS also gps.log and ping/) and the role
 //!   journals (`fleet.journal_glob`);
+//! - every node: the recorder's RAM staging (`/run/muas-recorder/`, into `recorder-live/`).
+//!   The recorder writes the current link file (up to 10 min) and dumpcap's current ring file
+//!   (up to 120 s / 32 MB) there and copies each to the SD only once it is closed (config
+//!   911b74f: live SD appends froze the GCS for seconds). Collected before the node is cleanly
+//!   stopped, the end of the last sortie is only there. flight_report.py prefers the SD copy of
+//!   any file present in both. `recorder/.incoming/` (copies in progress) is skipped;
 //! - the GCS: the dashboard recordings (`/var/lib/minimuas/replays/dash-*.jsonl`).
 //!
 //! The GCS's replays held 16 GB on 2026-10-12, so `since` limits a collection to files written
@@ -33,6 +39,7 @@ use crate::status;
 pub const JOB_KIND: &str = "collect";
 
 const RECORDER_DIR: &str = "/var/lib/minimuas/recorder";
+const RECORDER_STAGE_DIR: &str = "/run/muas-recorder";
 const REPLAYS_DIR: &str = "/var/lib/minimuas/replays";
 const LIST: Duration = Duration::from_secs(120);
 /// One rsync of one root; a vehicle's recorder may hold up to its 10 GB cap.
@@ -46,6 +53,8 @@ struct Root {
     dir: String,
     /// `find -name` pattern; `None` = the whole tree.
     pattern: Option<String>,
+    /// Subdirectory (relative) not to descend into.
+    skip: Option<&'static str>,
 }
 
 fn roots(cfg: &Config, node: &Node) -> Result<Vec<Root>> {
@@ -61,11 +70,20 @@ fn roots(cfg: &Config, node: &Node) -> Result<Vec<Root>> {
             name: "recorder",
             dir: RECORDER_DIR.into(),
             pattern: None,
+            // The recorder's in-progress SD copies, renamed into link/ or wire/ when complete.
+            skip: Some(".incoming"),
+        },
+        Root {
+            name: "recorder-live",
+            dir: RECORDER_STAGE_DIR.into(),
+            pattern: None,
+            skip: None,
         },
         Root {
             name: "log",
             dir: log_dir.to_string_lossy().into_owned(),
             pattern: Some(pattern.to_string_lossy().into_owned()),
+            skip: None,
         },
     ];
     if node.is_gcs() {
@@ -73,6 +91,7 @@ fn roots(cfg: &Config, node: &Node) -> Result<Vec<Root>> {
             name: "replays",
             dir: REPLAYS_DIR.into(),
             pattern: None,
+            skip: None,
         });
     }
     Ok(r)
@@ -103,10 +122,19 @@ fn list_script(roots: &[Root]) -> String {
             .map(|p| format!(" -name {}", remote::sh_quote(p)))
             .unwrap_or_default();
         let dir = remote::sh_quote(&r.dir);
+        let skip = r
+            .skip
+            .map(|s| {
+                format!(
+                    " -path {} -prune -o",
+                    remote::sh_quote(&format!("{}/{s}", r.dir))
+                )
+            })
+            .unwrap_or_default();
         // A file the recorder rotates or the disk cap deletes mid-walk makes find exit 1; that
         // is a warning in the manifest, not a failed node.
         s += &format!(
-            "if [ -d {dir} ]; then sudo -n find {dir}{depth} -type f{name} \
+            "if [ -d {dir} ]; then sudo -n find {dir}{depth}{skip} -type f{name} \
              -printf '{n}\\t%s\\t%T@\\t%P\\n' || echo \"warn\t{n}\tfind exit $?\"; \
              else printf 'missing\\t{n}\\n'; fi\n",
             n = r.name
@@ -534,5 +562,73 @@ mod tests {
         );
         assert_eq!(l.missing, ["replays"]);
         assert_eq!(l.warnings.len(), 1);
+    }
+
+    /// The listing runs the generated `find` (minus sudo) over a recorder-shaped tree: the
+    /// recorder's in-progress copies must not be listed (they are renamed into link/ or wire/
+    /// when complete, so a collect would fetch half a file under a name the report never
+    /// reads), the journal pattern must not descend, and an absent root is reported.
+    #[tokio::test]
+    async fn the_listing_skips_incoming_copies_and_reports_absent_roots() {
+        let base = std::env::temp_dir().join(format!("ndn-fleet-flight-{}", std::process::id()));
+        let rec = base.join("recorder");
+        for d in ["link", "wire", ".incoming"] {
+            std::fs::create_dir_all(rec.join(d)).unwrap();
+        }
+        std::fs::create_dir_all(base.join("log/old")).unwrap();
+        for f in [
+            "recorder/cells.log",
+            "recorder/link/link-20261013T120000Z.txt.gz",
+            "recorder/wire/wire_00001_20261013120000.pcapng",
+            "recorder/.incoming/wire_00002_20261013120200.pcapng",
+            "log/iuas-01-agent.jsonl",
+            "log/notes.txt",
+            "log/old/iuas-01-agent.jsonl",
+        ] {
+            std::fs::write(base.join(f), b"x").unwrap();
+        }
+        let roots = [
+            Root {
+                name: "recorder",
+                dir: rec.to_string_lossy().into_owned(),
+                pattern: None,
+                skip: Some(".incoming"),
+            },
+            Root {
+                name: "log",
+                dir: base.join("log").to_string_lossy().into_owned(),
+                pattern: Some("*.jsonl".into()),
+                skip: None,
+            },
+            Root {
+                name: "replays",
+                dir: base.join("replays").to_string_lossy().into_owned(),
+                pattern: None,
+                skip: None,
+            },
+        ];
+        let script = list_script(&roots).replace("sudo -n ", "");
+        let out = remote::local("sh", &["-c", &script], None, &[], LIST)
+            .await
+            .unwrap();
+        std::fs::remove_dir_all(&base).ok();
+        let l = parse_listing(out.stdout_ok().unwrap());
+        let mut got: Vec<String> = l
+            .files
+            .iter()
+            .map(|f| format!("{}/{}", f.root, f.rel))
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            [
+                "log/iuas-01-agent.jsonl",
+                "recorder/cells.log",
+                "recorder/link/link-20261013T120000Z.txt.gz",
+                "recorder/wire/wire_00001_20261013120000.pcapng",
+            ]
+        );
+        assert_eq!(l.missing, ["replays"]);
+        assert!(l.warnings.is_empty(), "{:?}", l.warnings);
     }
 }

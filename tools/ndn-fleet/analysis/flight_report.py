@@ -4,7 +4,8 @@
     flight_report.py <results>/flights/<id> [--fleet fleet.toml] [--settle-s 150] [--no-wire]
 
 Input: the flight directory, `<node>/recorder/` (cells.log, link/, wire/, chrony.log; GCS gps.log
-and ping/ping.jsonl), `<node>/log/*.jsonl` (role journals) and `<gcs>/replays/dash-*.jsonl`
+and ping/ping.jsonl), `<node>/recorder-live/` (the recorder's RAM staging: link and ring files
+not yet on the SD), `<node>/log/*.jsonl` (role journals) and `<gcs>/replays/dash-*.jsonl`
 (every dashboard broadcast). Any of it may be missing; each section says what it lacked.
 
 Output, in the flight directory: report.md (nfd vs ndn-fwd side by side), report.json
@@ -13,9 +14,12 @@ Output, in the flight directory: report.md (nfd vs ndn-fwd side by side), report
 Stack periods: the fleet's cell over time, from every node's recorder/cells.log (a node with no
 cells.log falls back to the cell the dashboard saw: telemetry `sample.fabric`, the `fabric`
 broadcast). A period is a stretch where every node with a known cell is on the same one;
-any cells.log line (switch, recorder or node restart) starts a new one, and stretches where
-nodes disagree are "mixed" and compared with nothing. The first `settle_s` of each period are
-reported separately as settling (PROTOCOL.md I3: churn after a switch is not the stack).
+any cells.log line starts a new one, and stretches where nodes disagree are "mixed" and
+compared with nothing. The first `settle_s` of each period are reported separately as settling
+(PROTOCOL.md I3: churn after a switch is not the stack). A line repeating a node's cell is a
+recorder start, which also restarts settling: the recorder starts with its node (reboot,
+forwarder up from scratch) and with every deploy (2026-10-13 01:00-01:18Z: each node's restart
+fell inside a deploy's rollout), and nothing in cells.log tells a lone recorder crash apart.
 
 Sorties are not identical, so the steady numbers are also broken down by the vehicle's
 distance from the GCS, its altitude (armed samples only) and the video load (streams on),
@@ -157,6 +161,8 @@ class Periods:
         state: Dict[str, str] = {}
         self.segments: List[dict] = []
         for i, (t, node, cell) in enumerate(events):
+            why = "cell change" if state.get(node, cell) != cell else \
+                ("recorder start, same cell" if node in state else "first record")
             state[node] = cell
             # Simultaneous lines (same ns) collapse into one boundary.
             if i + 1 < len(events) and events[i + 1][0] == t:
@@ -167,7 +173,7 @@ class Periods:
                 self.segments[-1]["end"] = t
             self.segments.append({"start": t, "end": t_end, "cell": label,
                                   "steady_from": t + settle_s if label != "mixed" else None,
-                                  "nodes": dict(state), "trigger": node})
+                                  "nodes": dict(state), "trigger": f"{node}: {why}"})
         self.segments = [s for s in self.segments if s["end"] > s["start"]]
         for i, s in enumerate(self.segments):
             s["i"] = i
@@ -722,8 +728,24 @@ def ping(path: str, periods: Periods, ctx: Context, series: Series, veh_node) ->
     return out
 
 
-def link_files(rec_dir: str) -> List[str]:
-    return sorted(glob.glob(os.path.join(rec_dir, "link", "link-*.txt*")))
+def recorder_files(node_dir: str, kind: str) -> List[str]:
+    """A node's `link` or `wire` files in time order, from the SD (`recorder/`) and from the
+    recorder's RAM staging (`recorder-live/`, collected while the node was up: the current
+    link file and ring file, not yet copied to the SD). A file in both is read from the SD copy,
+    which is complete (the staged one was still growing when collected)."""
+    pattern = "link-*.txt*" if kind == "link" else "*"
+    chosen: Dict[str, str] = {}
+    for root in ("recorder-live", "recorder"):  # SD last: it wins
+        for p in glob.glob(os.path.join(node_dir, root, kind, pattern)):
+            if os.path.isfile(p):
+                name = os.path.basename(p)
+                chosen[name[:-3] if name.endswith(".gz") else name] = p
+    # Ring names restart at _00001 with every recorder start, so order by the stamp in the name
+    # (link-<UTC>, wire_NNNNN_<YYYYmmddHHMMSS>), not by the name.
+    def stamp(name: str):
+        m = re.search(r"(\d{8})T?(\d{6})", name)
+        return (m.group(1) + m.group(2), name) if m else ("", name)
+    return [chosen[k] for k in sorted(chosen, key=stamp)]
 
 
 def radio_and_host(node: dict, files: List[str], periods: Periods, ctx: Context, series: Series,
@@ -913,9 +935,7 @@ class WireStream:
 
 
 def wire_loss(nodes: List[dict], flight: str, periods: Periods, ctx: Context, series: Series) -> Optional[dict]:
-    files = {n["name"]: sorted(p for p in glob.glob(os.path.join(flight, n["name"], "recorder", "wire", "*"))
-                               if os.path.isfile(p))
-             for n in nodes}
+    files = {n["name"]: recorder_files(os.path.join(flight, n["name"]), "wire") for n in nodes}
     files = {k: v for k, v in files.items() if v}
     if not files:
         return None
@@ -1357,7 +1377,7 @@ def main() -> int:
         if n is gcs:
             other.append(f"{len(dash.files)} replays")
         inventory[n["name"]] = {"vehicle": n["vehicle"], "cells": src, "link_ticks": 0,
-                                "wire_files": len(glob.glob(os.path.join(rec, "wire", "*"))),
+                                "wire_files": len(recorder_files(os.path.join(flight, n["name"]), "wire")),
                                 "journals": len(journals[n["name"]]), "other": ", ".join(other) or "–"}
     if not changes:
         notes.append("No cell history on any node (no recorder/cells.log, no fabric tags in the "
@@ -1365,12 +1385,12 @@ def main() -> int:
     # The flight ends at the last thing anyone recorded.
     ends = [dash.span()[1] or 0]
     for n in nodes:
-        for p in link_files(os.path.join(flight, n["name"], "recorder"))[-1:]:
+        for p in recorder_files(os.path.join(flight, n["name"]), "link")[-1:]:
             ends.append(os.path.getmtime(p))
         ping_p = os.path.join(flight, n["name"], "recorder", "ping", "ping.jsonl")
         if os.path.exists(ping_p):
             ends.append(os.path.getmtime(ping_p))
-        for p in glob.glob(os.path.join(flight, n["name"], "recorder", "wire", "*")):
+        for p in recorder_files(os.path.join(flight, n["name"]), "wire")[-1:]:
             ends.append(os.path.getmtime(p))
     t_end = max(ends + [t for ch in changes.values() for t, _ in ch[-1:]]) + 1
     periods = Periods(changes, t_end, args.settle_s)
@@ -1405,7 +1425,7 @@ def main() -> int:
     mac_vehicle: Dict[str, str] = {}
     by_addr = {n["addr"]: n["vehicle"] for n in nodes}
     if gcs:
-        for p in sorted(glob.glob(os.path.join(flight, gcs["name"], "recorder", "wire", "*")))[:3]:
+        for p in recorder_files(os.path.join(flight, gcs["name"]), "wire")[:3]:
             for ip, mac in wire.mac_of_addr(p).items():
                 if ip in by_addr:
                     mac_vehicle[mac] = by_addr[ip]
@@ -1413,7 +1433,7 @@ def main() -> int:
         notes.append("Station MACs could not be tied to vehicles (no GCS capture): GCS radio rows are by MAC.")
     radio = {}
     for n in nodes:
-        files = link_files(os.path.join(flight, n["name"], "recorder"))
+        files = recorder_files(os.path.join(flight, n["name"]), "link")
         if not files:
             continue
         log(f"link sampler {n['name']} ({len(files)} files)")

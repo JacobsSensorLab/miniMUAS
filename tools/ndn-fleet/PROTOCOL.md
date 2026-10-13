@@ -138,26 +138,31 @@ Every node runs the flight recorder (config repo, always on) under
 `/var/lib/minimuas/recorder/`: `cells.log` (`<unix_ns> <cell>` at start and on every change),
 `link/` (`muas-link-sample` at 1 Hz, the same sampler a capture runs), `wire/` (dumpcap ring,
 snaplen 200, `udp port 6363`), `forwarding/` (`muas-forwarding-snapshot`), `chrony.log`; the
-GCS adds `gps.log` (gpsd TPV) and `ping/ping.jsonl` (1 Hz NDN ping per vehicle). The dashboard
-records every broadcast in `/var/lib/minimuas/replays/dash-*.jsonl`.
+GCS adds `gps.log` (gpsd TPV) and `ping/ping.jsonl` (1 Hz NDN ping per vehicle). The current link
+file (10 min) and ring file (120 s / 32 MB) are written in RAM, `/run/muas-recorder/`, and land
+in `link/` / `wire/` only when closed (via `.incoming/`); a clean stop flushes them, a power pull
+loses them. The dashboard records every broadcast in `/var/lib/minimuas/replays/dash-*.jsonl`.
 
 ```
 ndn-fleet flight collect [since=<UTC time|unix s>] [id=<flight id>]
 python3 analysis/flight_report.py results/flights/<id>
 ```
 
-`flight collect` (tool `fleet_flight_collect`) rsyncs, per node, `recorder/`, the role journals
-(`fleet.journal_glob`) and on the GCS `replays/` into `flights/<id>/<node>/{recorder,log,replays}/`
-and writes `manifest.json` (per node and root: files, bytes, mtime span, the cells history,
-errors; one entry per collection). It only lists (`sudo -n find`) and sends (`sudo -n rsync`:
-dumpcap's ring files are 0600 root); it never writes to a node, so it takes no lock and no armed
-check and does not stamp the settle clock. `since` keeps only files modified since that time
-(the GCS held 16 GB of replays on 2026-10-12); a node that cannot be reached is reported and the
-rest is kept: run again with `id=<id>` to fetch only what is new or missing (rsync's size+mtime
-check). `flight_report.py` splits the flight into stack periods from every node's `cells.log`,
-drops each period's first 150 s as settling (I3), and writes `report.md` (nfd vs ndn-fwd side by
-side, broken down by distance from the GCS, altitude and video load), `report.json` and
-`series/<node>.csv`.
+`flight collect` (tool `fleet_flight_collect`) rsyncs, per node, `recorder/` (without
+`.incoming/`, copies in progress), the RAM staging into `recorder-live/` (so a collection before
+the nodes are cleanly stopped still gets the end of the last sortie; the report prefers the SD
+copy of a file found in both), the role journals (`fleet.journal_glob`) and on the GCS
+`replays/` into `flights/<id>/<node>/{recorder,recorder-live,log,replays}/` and writes
+`manifest.json` (per node and root: files, bytes, mtime span, the cells history, errors; one
+entry per collection). It only lists (`sudo -n find`) and sends (`sudo -n rsync`: dumpcap's
+ring files are 0600 root until copied to the SD); it never writes to a node, so it takes no lock
+and no armed check and does not stamp the settle clock. `since` keeps only files modified since
+that time (the GCS held 16 GB of replays on 2026-10-12); a node that cannot be reached is
+reported and the rest is kept: run again with `id=<id>` to fetch only what is new or missing
+(rsync's size+mtime check). `flight_report.py` splits the flight into stack periods from every
+node's `cells.log`, drops each period's first 150 s as settling (I3), and writes `report.md`
+(nfd vs ndn-fwd side by side, broken down by distance from the GCS, altitude and video load),
+`report.json` and `series/<node>.csv`.
 
 ## Results layout (`<results>` = `tools/ndn-fleet/results/` in miniMUAS, not committed)
 
@@ -178,7 +183,8 @@ runs/<id>/capture/<node>/        wire.pcapng.gz, link.txt.gz (muas-link-sample),
                                  dumpcap.err (dumpcap's own drop count), started_ns/stopped_ns
 jobs/<id>.log
 flights/<id>/manifest.json       what each collection fetched, per node and root
-flights/<id>/<node>/             recorder/, log/ (role journals), replays/ (GCS)
+flights/<id>/<node>/             recorder/, recorder-live/ (RAM staging), log/ (role journals),
+                                 replays/ (GCS)
 flights/<id>/report.{md,json}, series/<node>.csv   flight_report.py
 ```
 
