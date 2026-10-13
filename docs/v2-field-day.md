@@ -204,6 +204,17 @@ here so the next outing checks for regressions.
    passes, far better attitude stability. Capture coverage is preserved
    (unreached points are taken at the leg end).
 
+5. **The real racket was never reported (2026-07-15 frames).** The GCS
+   saved 167 analyzed frames; the racket is visible in 21. Stock COCO
+   yolov8n labels it from overhead as "kite" (conf 0.38-0.82), never
+   "tennis racket", so the `tennis racket` class filter dropped every
+   sighting. FIX: the class filter takes aliases — `tennis racket|kite`
+   (the module default) reports "kite" as "tennis racket" and keeps the
+   model's class as `raw_label` in the journal and frame sidecars. At
+   conf 0.3 that hits 13/21 racket frames and none of the other 146.
+   YOLOE-26 (open-vocabulary) was tried and scored ≤0.12 on the same
+   frames.
+
 Still open after these fixes: the cold-boot AP/registration self-heal,
 and battery telemetry (now wired via `battery_pct()` but unverified on
 the real FC — confirm it populates the tile).

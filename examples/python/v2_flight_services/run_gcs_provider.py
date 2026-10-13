@@ -48,7 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--detector",
         default="stub",
         help="stub (offset-based fake) or "
-        "yolo:<model.onnx>[?conf=0.35&classes=tennis racket]",
+        "yolo:<model.onnx>[?conf=0.3&classes=tennis racket|kite] "
+        "(see detector.detector_from_spec)",
     )
     parser.add_argument(
         "--hfov-deg",
@@ -274,9 +275,13 @@ def main() -> int:
                     hit = det in detections
                     color = (0, 255, 0) if hit else (0, 165, 255)
                     cv2.rectangle(annotated, (x, y), (x + w, y + h), color, 2)
+                    shown = (
+                        det.label if det.raw_label in ("", det.label)
+                        else f"{det.label} ({det.raw_label})"
+                    )
                     cv2.putText(
                         annotated,
-                        f"{det.label} {det.confidence:.2f}",
+                        f"{shown} {det.confidence:.2f}",
                         (x, max(y - 6, 12)),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.6,
@@ -361,6 +366,7 @@ def main() -> int:
                 frame=request.frame.data_name,
                 detector="yolo",
                 label=best.label,
+                raw_label=best.raw_label,
                 confidence=round(best.confidence, 4),
                 box_xywh=list(best.box_xywh),
                 offset_m={"north": round(north_m, 2), "east": round(east_m, 2)},

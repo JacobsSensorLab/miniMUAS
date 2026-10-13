@@ -3,13 +3,19 @@
 Replaces the v2 detection stub with actual vision. A `yolo:` detector spec
 selects this path on the GCS provider:
 
-    --detector "yolo:/path/yolov8n.onnx?backend=onnxruntime&imgsz=320&conf=0.35&classes=tennis racket"
+    --detector "yolo:/path/yolov8n.onnx?backend=onnxruntime&conf=0.3&classes=tennis racket|kite"
 
 The model is a stock COCO-trained YOLOv8 export (no training needed for
 the demo target — "tennis racket" is COCO class 38), produced once with:
 
     pip install ultralytics
     yolo export model=yolov8n.pt format=onnx imgsz=640 opset=12
+
+Seen from overhead at 5-8 m AGL, that model labels the racket "kite", never
+"tennis racket": on the 167 frames the GCS saved on 2026-07-15, the racket
+is in 21; "tennis racket" fires on 0 of them, "kite" (conf >= 0.3) on 13,
+and on 0 of the 146 without it. Hence the `tennis racket|kite` alias,
+reported as "tennis racket" with the model's class kept in raw_label.
 
 Speed on the Odroid C4 (Amlogic S905X3: 4×Cortex-A55, Mali-G31 MP2 GPU,
 no NPU). The Mali GPU is NOT a useful accelerator here — the Panfrost/
@@ -22,13 +28,15 @@ CPU anyway — so every lever is CPU-side:
     to the GCS Python env to enable it; auto-falls back to opencv if it
     is absent, so behaviour degrades gracefully. `threads=` overrides the
     core count.
-  * imgsz: inference cost scales ~quadratically, so 640 -> 320 is ~4x
-    faster. Needs a model whose input accepts the size: re-export smaller
-    (`yolo export ... imgsz=320`) or with dynamic axes (`... dynamic=True`);
-    a static-640 ONNX only runs at 640.
-  * INT8: quantize the ONNX offline (onnxruntime.quantization; the A55 has
-    the ARMv8.2 DotProd extension, so INT8 GEMM is a real speedup) and
-    point the spec at the quantized model — ~2x more, small accuracy cost.
+  * input size: inference cost scales with input pixels. The model's own
+    static input defines the letterbox (onnxruntime reads it; the opencv
+    backend takes imgsz=WxH). A rectangular 640x416 export of the same
+    weights fits the 640x400 search frames with 35% fewer pixels, but on
+    the field frames above it found the racket in 10/21 (vs 13/21) with 2
+    false frames (vs 0), so the 640x640 export stays.
+  * INT8: measured, not used. Static QDQ quantization (onnxruntime,
+    per-channel, calibrated on the field frames) loses the racket: 0/21
+    hits, or 9/21 with the detection head kept fp32, vs 13/21 in fp32.
 
 Reference: yolov8n via cv2.dnn at 640 is ~1.5-3 s/frame on the A55s;
 onnxruntime at 320 lands well under a second. Detection runs per search
@@ -72,9 +80,10 @@ class DetectorError(RuntimeError):
 
 @dataclass
 class Detection:
-    label: str
+    label: str  # reported label: the target name when raw_label is an alias
     confidence: float
     box_xywh: tuple[int, int, int, int]  # top-left x, y, width, height (px)
+    raw_label: str = ""  # the model's own class name (== label unless aliased)
 
     @property
     def center_px(self) -> tuple[float, float]:
@@ -82,11 +91,32 @@ class Detection:
         return (x + w / 2.0, y + h / 2.0)
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "label": self.label,
             "confidence": round(self.confidence, 4),
             "box_xywh": list(self.box_xywh),
         }
+        if self.raw_label and self.raw_label != self.label:
+            out["raw_label"] = self.raw_label
+        return out
+
+
+def parse_class_filter(spec: str | None) -> dict[str, str] | None:
+    """`classes=` value -> {model class name (lowercase): reported label}.
+
+    Comma separates targets; within a target, `|` lists the model classes
+    that count as it, the first name being the label reported. The stock
+    COCO yolov8n sees a tennis racket from overhead as "kite", so
+    `tennis racket|kite` accepts either class and reports "tennis racket".
+    None (no filter) when the spec is empty.
+    """
+
+    mapping: dict[str, str] = {}
+    for target in (spec or "").split(","):
+        names = [name.strip() for name in target.split("|") if name.strip()]
+        for name in names:
+            mapping[name.lower()] = names[0]
+    return mapping or None
 
 
 class _YoloDetectorBase:
@@ -105,8 +135,8 @@ class _YoloDetectorBase:
         *,
         conf_threshold: float = 0.35,
         iou_threshold: float = 0.45,
-        imgsz: int = 640,
-        class_filter: list[str] | None = None,
+        imgsz: int | tuple[int, int] | None = None,
+        class_filter: dict[str, str] | None = None,
     ) -> None:
         try:
             import cv2
@@ -120,41 +150,53 @@ class _YoloDetectorBase:
         self.model_path = model_path
         self.conf_threshold = float(conf_threshold)
         self.iou_threshold = float(iou_threshold)
-        self.imgsz = int(imgsz)
+        # network input (width, height). None = not configured: 640x640, or
+        # whatever static shape a backend reads from the model itself (see
+        # YoloOrtDetector); an explicit value is checked against that shape.
+        self._imgsz_explicit = imgsz is not None
+        if imgsz is None:
+            imgsz = 640
+        self.input_wh = (
+            (int(imgsz), int(imgsz)) if isinstance(imgsz, int)
+            else (int(imgsz[0]), int(imgsz[1]))
+        )
         # Per-thread, NOT a shared instance attribute: the provider reads
         # last_all_detections right after its own detect() to draw the annotated
         # frame + fill the response's all_classes. A shared attribute would hand
         # a thread the *other* frame's detections — the stuck/misassociated boxes
         # seen in the saved field frames. Read from the same thread that set it.
         self._tls = threading.local()
-        self.class_filter = (
-            {name.strip().lower() for name in class_filter}
-            if class_filter
-            else None
-        )
+        # {model class (lowercase): reported label}; see parse_class_filter
+        self.class_filter = class_filter or None
 
     @property
     def last_all_detections(self) -> list[Detection]:
         return getattr(self._tls, "all_detections", [])
 
     def _preprocess(self, image_bgr):
-        """Letterbox to imgsz×imgsz -> normalized NCHW blob + geometry.
+        """Letterbox into the network input (W×H, not necessarily square)
+        -> normalized NCHW blob + geometry.
 
-        Returns the same (1,3,imgsz,imgsz) float32 RGB/255 tensor whether the
+        Returns the same (1,3,H,W) float32 RGB/255 tensor whether the
         backend is cv2.dnn or onnxruntime (both expect exactly this)."""
         cv2, np = self._cv2, self._np
+        in_w, in_h = self.input_wh
         height, width = image_bgr.shape[:2]
-        scale = min(self.imgsz / width, self.imgsz / height)
+        scale = min(in_w / width, in_h / height)
         new_w, new_h = int(round(width * scale)), int(round(height * scale))
-        pad_x, pad_y = (self.imgsz - new_w) / 2.0, (self.imgsz - new_h) / 2.0
-        resized = cv2.resize(image_bgr, (new_w, new_h))
-        canvas = np.full((self.imgsz, self.imgsz, 3), 114, dtype=np.uint8)
+        pad_x, pad_y = (in_w - new_w) / 2.0, (in_h - new_h) / 2.0
+        resized = (
+            image_bgr if (new_w, new_h) == (width, height)
+            else cv2.resize(image_bgr, (new_w, new_h))
+        )
+        canvas = np.full((in_h, in_w, 3), 114, dtype=np.uint8)
         top, left = int(round(pad_y - 0.1)), int(round(pad_x - 0.1))
         canvas[top:top + new_h, left:left + new_w] = resized
         blob = cv2.dnn.blobFromImage(
-            canvas, 1.0 / 255.0, (self.imgsz, self.imgsz), swapRB=True
+            canvas, 1.0 / 255.0, (in_w, in_h), swapRB=True
         )
-        return blob, scale, pad_x, pad_y
+        # decode maps canvas px back with the offsets actually used
+        return blob, scale, float(left), float(top)
 
     def _infer(self, blob):
         """Run the model on one NCHW blob; return the raw output array."""
@@ -206,21 +248,27 @@ class _YoloDetectorBase:
         all_detections: list[Detection] = []
         for index in np.array(indices).reshape(-1):
             class_id = int(class_ids[index])
-            label = (
+            raw_label = (
                 COCO_NAMES[class_id]
                 if 0 <= class_id < len(COCO_NAMES)
                 else f"class-{class_id}"
+            )
+            target = (
+                self.class_filter.get(raw_label.lower())
+                if self.class_filter
+                else raw_label
             )
             x, y, w, h = boxes[index]
             x = max(0, min(x, width - 1))
             y = max(0, min(y, height - 1))
             detection = Detection(
-                label=label,
+                label=target or raw_label,
                 confidence=float(confidences[index]),
                 box_xywh=(x, y, w, h),
+                raw_label=raw_label,
             )
             all_detections.append(detection)
-            if self.class_filter and label.lower() not in self.class_filter:
+            if target is None:
                 continue
             detections.append(detection)
         all_detections.sort(key=lambda d: d.confidence, reverse=True)
@@ -232,12 +280,16 @@ class _YoloDetectorBase:
         return detections
 
     def describe(self) -> dict[str, Any]:
+        targets: dict[str, list[str]] = {}
+        for raw, label in (self.class_filter or {}).items():
+            targets.setdefault(label, []).append(raw)
         return {
             "detector": self.backend,
             "model": self.model_path,
             "conf": self.conf_threshold,
-            "imgsz": self.imgsz,
-            "classes": sorted(self.class_filter) if self.class_filter else "all",
+            "input_wh": list(self.input_wh),
+            # reported label -> model classes accepted as it
+            "classes": targets or "all",
         }
 
 
@@ -264,7 +316,8 @@ class YoloOnnxDetector(_YoloDetectorBase):
         # threaded, with a warm-up so the race cannot happen at request time.
         self._infer_lock = threading.Lock()
         try:
-            warm = np.zeros((1, 3, self.imgsz, self.imgsz), dtype=np.float32)
+            in_w, in_h = self.input_wh
+            warm = np.zeros((1, 3, in_h, in_w), dtype=np.float32)
             self._net.setInput(warm)
             self._net.forward()
         except Exception:
@@ -305,6 +358,13 @@ class YoloOrtDetector(_YoloDetectorBase):
         opts.graph_optimization_level = (
             ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         )
+        # No busy-wait between operators. The GCS shares its 4 cores with
+        # the forwarder, dashboard and recorder; a spinning pool burns cores
+        # those need, and every parallel op then waits on whichever worker
+        # got preempted. Measured (yolov8n 640, 4 threads, 4 cores): ~10%
+        # slower idle, but 2.2x/4.9x -> 1.5x/1.7x the idle time with one/two
+        # cores busy elsewhere.
+        opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
         available = set(ort.get_available_providers())
         # XNNPACK first when present (fastest ARM path), else MLAS CPU EP.
         providers = [
@@ -319,13 +379,25 @@ class YoloOrtDetector(_YoloDetectorBase):
             raise DetectorError(
                 f"could not load ONNX model {self.model_path!r}: {exc}"
             )
-        self._input_name = self._sess.get_inputs()[0].name
+        model_input = self._sess.get_inputs()[0]
+        self._input_name = model_input.name
         self._providers = self._sess.get_providers()
         self._threads = opts.intra_op_num_threads
+        # A static model input (a rectangular 640x416 export, say) defines
+        # the letterbox; an explicit imgsz= that contradicts it is a config
+        # error worth failing on, not a silent mis-scaled decode.
+        dims = list(model_input.shape)[-2:]
+        if len(dims) == 2 and all(isinstance(d, int) and d > 0 for d in dims):
+            model_wh = (dims[1], dims[0])
+            if self._imgsz_explicit and self.input_wh != model_wh:
+                raise DetectorError(
+                    f"imgsz {self.input_wh[0]}x{self.input_wh[1]} contradicts "
+                    f"the model's static input {model_wh[0]}x{model_wh[1]}"
+                )
+            self.input_wh = model_wh
         try:
-            warm = self._np.zeros(
-                (1, 3, self.imgsz, self.imgsz), dtype=self._np.float32
-            )
+            in_w, in_h = self.input_wh
+            warm = self._np.zeros((1, 3, in_h, in_w), dtype=self._np.float32)
             self._sess.run(None, {self._input_name: warm})
         except Exception:
             pass
@@ -344,11 +416,13 @@ def detector_from_spec(spec: str | None):
     """Build a detector from a `--detector` spec; None for the stub.
 
         stub                          (default; offset-based fake detection)
-        yolo:<model.onnx>[?backend=auto&conf=0.35&iou=0.45&imgsz=640&threads=N&classes=a,b]
+        yolo:<model.onnx>[?backend=auto&conf=0.35&iou=0.45&imgsz=640&threads=N&classes=a|alias,b]
 
     backend: auto (default; onnxruntime if importable, else opencv),
-    onnxruntime, or opencv. imgsz below 640 needs a model exported at that
-    size or with dynamic axes.
+    onnxruntime, or opencv. imgsz: N (square) or WxH (e.g. 640x416).
+    onnxruntime reads a static input size from the model itself; the opencv
+    backend needs imgsz= for anything but a 640x640 model. classes: see
+    parse_class_filter (`tennis racket|kite` reports kite as tennis racket).
     """
 
     spec = (spec or "stub").strip()
@@ -365,16 +439,18 @@ def detector_from_spec(spec: str | None):
             if "=" in pair:
                 key, value = pair.split("=", 1)
                 params[key.strip()] = value.strip()
-    class_filter = (
-        [name for name in params["classes"].split(",") if name.strip()]
-        if "classes" in params
-        else None
-    )
+    imgsz = None
+    if "imgsz" in params:
+        size = params["imgsz"].lower()
+        imgsz = (
+            tuple(int(v) for v in size.split("x", 1)) if "x" in size
+            else int(size)
+        )
     common = dict(
         conf_threshold=float(params.get("conf", 0.35)),
         iou_threshold=float(params.get("iou", 0.45)),
-        imgsz=int(params.get("imgsz", 640)),
-        class_filter=class_filter,
+        imgsz=imgsz,
+        class_filter=parse_class_filter(params.get("classes")),
     )
     backend = params.get("backend", "auto").lower()
     if backend == "auto":
