@@ -38,9 +38,11 @@ CPU anyway — so every lever is CPU-side:
     per-channel, calibrated on the field frames) loses the racket: 0/21
     hits, or 9/21 with the detection head kept fp32, vs 13/21 in fp32.
 
-Reference: yolov8n via cv2.dnn at 640 is ~1.5-3 s/frame on the A55s;
-onnxruntime at 320 lands well under a second. Detection runs per search
-frame on its own worker (see run_gcs_provider), not on continuous video.
+Reference (GCS, 2026-10-12): yolov8n 640 via onnxruntime 1.21 (the nixpkgs
+build ships only the CPU EP, no XNNPACK) is ~1.0 s/frame with the services
+idle and 1.4-2.0 s with one or two cores busy elsewhere; JPEG decode and
+letterbox add 5-20 ms. Detection runs per search frame on its own worker
+(see run_gcs_provider), not on continuous video.
 
 Also hosts the nadir geo-projection: a pixel detection in a downward
 camera frame becomes a ground offset from the capture position via
@@ -361,9 +363,10 @@ class YoloOrtDetector(_YoloDetectorBase):
         # No busy-wait between operators. The GCS shares its 4 cores with
         # the forwarder, dashboard and recorder; a spinning pool burns cores
         # those need, and every parallel op then waits on whichever worker
-        # got preempted. Measured (yolov8n 640, 4 threads, 4 cores): ~10%
-        # slower idle, but 2.2x/4.9x -> 1.5x/1.7x the idle time with one/two
-        # cores busy elsewhere.
+        # got preempted. Measured on the GCS (yolov8n 640, 4 threads):
+        # 1170 -> 971 ms with the services idle, 1816 -> 1436 ms with one
+        # core busy elsewhere, 2508 -> 1955 ms with two. 3 threads measured
+        # the same as 4 without spinning, so threads stays at core count.
         opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
         available = set(ort.get_available_providers())
         # XNNPACK first when present (fastest ARM path), else MLAS CPU EP.
