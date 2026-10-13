@@ -983,11 +983,18 @@ const COLORS = {};
 // that, aggregate demand exceeds what the medium delivers to every station and
 // the busiest vehicle starts stalling for seconds — higher presets are for one
 // or two feeds, not three.
+//
+// The two 1280@30 presets trade differently, measured 2026-10-13 (iuas-01
+// alone): the vehicle's encode + per-chunk publish cost caps q85 at ~22 fps
+// produced (40 ms/frame publish on 4 busy A55 cores), while q50-55 streams
+// ~28.5 fps. "max quality" keeps the sharpest image at whatever rate the
+// airframe sustains; "max rate" is the one that actually runs near 30.
 const VIDEO_PRESETS = [
   {label:"smooth · 640p20",  width:640,  height:400, fps:20, quality:55},
   {label:"balanced · 960p20", width:960,  height:600, fps:20, quality:70},
   {label:"detail · 1280p15",  width:1280, height:800, fps:15, quality:75},
-  {label:"max · 1280p30",     width:1280, height:800, fps:30, quality:85},
+  {label:"max rate · 1280p30 q55", width:1280, height:800, fps:30, quality:55},
+  {label:"max quality · 1280 q85 (~22 fps)", width:1280, height:800, fps:30, quality:85},
 ];
 // Default to the measured-smooth preset rather than the old hardcoded
 // 320x240 @8 fps, which was neither selectable nor visible in the UI.
