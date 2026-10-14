@@ -167,6 +167,8 @@ h3:first-child { margin-top: 0; }
 .cds-tag--blue { background: #00254d; color: #a6c8ff; }
 .cds-tag--yellow { background: #302400; color: #f1c21b; }
 .cds-tag--gray { background: var(--cds-layer-02); color: var(--cds-text-secondary); }
+/* simulated (operator-placed sim target) detections: never mistakable for real */
+.cds-tag--sim { background: #510224; color: #ff7eb6; font-weight: 600; }
 
 /* ---- tiles (cards) ----------------------------------------------------------- */
 .cds-tile {
@@ -215,20 +217,34 @@ h3:first-child { margin-top: 0; }
   border: 1px solid var(--cds-border-subtle); }
 .vxport:disabled { opacity: 0.5; }
 
-/* ---- event log: inline-notification style --------------------------------------- */
+/* ---- event log: one line per event (or collapsed run), click to expand ----------- */
 #log { height: 220px; overflow-y: auto; }
 #log .n {
   background: var(--cds-layer-01); border-left: 3px solid var(--cds-support-info);
   padding: var(--sp-02) var(--sp-03); margin-bottom: 2px;
-  font: 400 11px/1.5 var(--font-mono);
+  font: 400 11px/1.5 var(--font-mono); cursor: pointer;
 }
-#log .n .t { color: var(--cds-text-helper); margin-right: var(--sp-03); }
-#log .n.hit { border-left-color: var(--cds-support-success); }
+#log .n:hover { background: var(--cds-layer-02); }
+#log .n .h { display: flex; gap: var(--sp-03); align-items: baseline;
+  white-space: nowrap; }
+#log .n .t { color: var(--cds-text-helper); }
+#log .n .v { color: var(--cds-text-secondary); }
+#log .n .s { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#log .n .ct { color: var(--cds-text-helper); font-size: 10px; }
+#log .n .loc { background: none; border: none; padding: 0; cursor: pointer;
+  color: var(--cds-link-primary); font: inherit; }
+#log .n .d { margin-top: var(--sp-02); white-space: pre-wrap; word-break: break-all;
+  color: var(--cds-text-secondary); font: inherit; max-height: 240px;
+  overflow: auto; cursor: text; }
+#log .n.ok { border-left-color: var(--cds-support-success); }
+#log .n.warn { border-left-color: var(--cds-support-warning); }
 #log .n.err { border-left-color: var(--cds-support-error); }
+#log .n.err .s { color: var(--cds-support-error); }
 
-/* ---- event log filter bar (chips = union; vehicle/text intersect) ----- */
+/* ---- event log filter bar (chips = union per group; groups/text intersect) ----- */
 #logfilter { margin-bottom: var(--sp-03); }
 #logchips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: var(--sp-02); }
+#logchips .sep { flex-basis: 100%; height: 0; }
 .logchip {
   display: inline-flex; align-items: center; gap: 4px; height: 20px;
   padding: 0 var(--sp-03); border: 1px solid var(--cds-border-subtle);
@@ -242,13 +258,12 @@ h3:first-child { margin-top: 0; }
   border-color: transparent;
 }
 .logchip .ct { font-family: var(--font-mono); font-size: 10px; opacity: .75; }
+.logchip .dot { width: 6px; height: 6px; border-radius: 50%; }
+.logchip .dot.err { background: var(--cds-support-error); }
+.logchip .dot.warn { background: var(--cds-support-warning); }
+.logchip .dot.ok { background: var(--cds-support-success); }
+.logchip .dot.info { background: var(--cds-support-info); }
 #logfilter .rowf { display: flex; gap: var(--sp-02); align-items: center; }
-#logvid {
-  flex: 0 0 38%; height: 24px; padding: 0 var(--sp-02);
-  background: var(--cds-field-01); color: var(--cds-text-primary);
-  border: none; border-bottom: 1px solid var(--cds-border-strong);
-  border-radius: 0; font-size: 11px;
-}
 #logtext {
   flex: 1; min-width: 0; height: 24px; padding: 0 var(--sp-03);
   background: var(--cds-field-01); color: var(--cds-text-primary);
@@ -422,8 +437,11 @@ h3.sech .chev { display: inline-block; width: 14px; color: var(--cds-text-helper
 #cmdlog .n {
   background: var(--cds-layer-01); border-left: 3px solid var(--cds-support-info);
   padding: var(--sp-02) var(--sp-03); margin-bottom: 2px;
-  font: 400 11px/1.5 var(--font-mono);
+  font: 400 11px/1.5 var(--font-mono); cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+#cmdlog .n.open { white-space: normal; word-break: break-word; }
+#cmdlog .n .id { color: var(--cds-text-helper); }
 #cmdlog .n .t { color: var(--cds-text-helper); margin-right: var(--sp-03); }
 #cmdlog .n.ok { border-left-color: var(--cds-support-success); }
 #cmdlog .n.err { border-left-color: var(--cds-support-error); }
@@ -809,11 +827,8 @@ opportunistic: fire whenever the vehicle happens to pass within range.">
   <div id="logfilter">
     <div id="logchips"></div>
     <div class="rowf">
-      <select id="logvid" title="show only this vehicle's events (intersects with the category chips)">
-        <option value="">all vehicles</option>
-      </select>
       <input id="logtext" type="text" placeholder="filter text…"
-        title="substring match on the rendered line (intersects with chips + vehicle)">
+        title="substring match on the line and its full event JSON (intersects with the chips)">
       <button id="logclear" class="xabort" style="visibility:hidden"
         title="clear all event-log filters">✕</button>
     </div>
@@ -2577,8 +2592,13 @@ function draw(){
     ctx.fillStyle = col;
     ctx.beginPath(); ctx.arc(p[0],p[1],tr,0,7); ctx.fill();
     ctx.font = "12px 'IBM Plex Sans', sans-serif";
-    ctx.fillText(`#${t.index} ${t.object_id} ${(t.confidence*100).toFixed(0)}%`,
+    ctx.fillText(`#${t.index} ${t.object_id} ${(t.confidence*100).toFixed(0)}%${
+                   t.simulated ? " · SIMULATED" : ""}`,
                  p[0]+tr+8, p[1]-8);
+    if (t.simulated){   // magenta ring: a sim target, never a real find
+      ctx.strokeStyle = "#ff7eb6"; ctx.lineWidth = lw(2);
+      ctx.beginPath(); ctx.arc(p[0],p[1],tr+4,0,7); ctx.stroke();
+    }
   }
   // ease each marker toward its latest telemetry fix: samples arrive at
   // ~3-4 Hz, frames at 60 — exponential smoothing (τ≈0.25 s) turns the
@@ -4124,25 +4144,39 @@ function abortableOf(c){
   }
   return null;
 }
+// One line per command (ellipsized: provider details like fabric-switch
+// unit names or refusal reasons ran several lines in the field, issue I);
+// click a line to unfold the full detail and the command id.
+const CMDOPEN = new Set();
 function renderCmdLog(){
   cmdlog.innerHTML = CMDS.list.map(c => {
     const cls = c.state === "refused" || c.state === "failed" ? "err"
       : c.state === "timeout" ? "warn"
       : c.state === "acked" || c.state === "done" ? "ok" : "";
-    const when = new Date(c.t * 1000).toLocaleTimeString();
+    const when = fmtLogTime(c.t);
     const ab = abortableOf(c);
     const x = ab ? `<button class="xabort" data-vid="${c.vehicle}"` +
       ` data-label="${ab}" title="Cancel ${ab} on ${c.vehicle}` +
       ` (scoped abort — no RTL)">✕</button>` : "";
-    return `<div class="n ${cls}">${x}<span class="t">${when}</span>` +
-      `${c.vehicle || ""} ${c.command} <span class="st">${c.state}</span>` +
-      `${c.detail ? " — " + c.detail : ""}</div>`;
+    const open = CMDOPEN.has(c.id);
+    const line = `${c.vehicle || ""} ${c.command} ${c.state}` +
+      (c.detail ? ` — ${c.detail}` : "");
+    return `<div class="n ${cls}${open ? " open" : ""}" data-id="${htmlEsc(c.id)}"` +
+      ` title="${htmlEsc(open ? "" : line)}">${x}<span class="t">${when}</span>` +
+      `${htmlEsc(c.vehicle || "")} ${htmlEsc(c.command)} <span class="st">${c.state}</span>` +
+      `${c.detail ? " — " + htmlEsc(c.detail) : ""}` +
+      `${open ? ` <span class="id">${htmlEsc(c.id)}</span>` : ""}</div>`;
   }).join("") || "<span style='color:#6f6f6f;font-size:12px'>no commands yet</span>";
 }
 // One delegated handler survives the innerHTML rebuilds above.
 cmdlog.addEventListener("click", e => {
   const b = e.target.closest(".xabort");
-  if (b) send({cmd:"task_abort", vehicle:b.dataset.vid, label:b.dataset.label});
+  if (b){ send({cmd:"task_abort", vehicle:b.dataset.vid, label:b.dataset.label}); return; }
+  const n = e.target.closest(".n[data-id]");
+  if (!n) return;
+  const id = n.dataset.id;
+  if (CMDOPEN.has(id)) CMDOPEN.delete(id); else CMDOPEN.add(id);
+  renderCmdLog();
 });
 function cmdUpsert(id, fields){
   let c = CMDS.byId[id];
@@ -4238,14 +4272,214 @@ function cmdLifecycle(m){
   }
 }
 
+// ---------- event log: one concise line per event (or collapsed run) ------
+// Field day 2026-10-13, issue I ("logs too text heavy; each entry too
+// long"). The GCS replays (dash-*.jsonl, 1536 events) show why: every field
+// was dumped as k=v, so 1105 lines rendered >120 chars (median 158).
+// video.stream_status (515 lines, ~277 chars: 18 transport counters),
+// command.retry (379, ~144: service name + 32-hex command_id) and
+// command.ok (194, ~160) were 71% of the log, nearly all repeats of the
+// same vehicle/command every 2–10 s (raster-search retried 146×, the
+// detector RPC 281×), and a plain takeoff took 3–4 lines (sent/retry/ok/
+// result). Now: one line = time, vehicle, short verb + outcome, coloured
+// by severity; repeats of the same kind+vehicle (and one command's whole
+// sent→retry→ok→result lifecycle) fold into one line with a count; a
+// click unfolds the full JSON of every folded event — nothing is dropped.
+const LOG_COLLAPSE_S = 30;   // sliding fold window: stream_status ticks every 10 s
+const LOG_GROUP_MAX = 100;   // events folded into one line before a fresh line starts
+const LOG_SEVS = ["err", "warn", "ok", "info"];
+const CMD_TERMINAL = new Set(["command.ok", "command.result", "command.failed",
+                              "command.timeout", "command.rejected"]);
+function htmlEsc(s){
+  return String(s ?? "").replace(/[&<>"']/g, c =>
+    ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" })[c]);
+}
+function fmtLogTime(t){
+  const d = new Date(t * 1000), p = n => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+const fmtMs = ms => typeof ms !== "number" ? ""
+  : ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms)} ms`;
+const fmtPct = c => typeof c === "number" ? `${Math.round(c * 100)}%` : "";
+// command.sent/result carry `command` ("takeoff"); the transport events
+// (retry/ok/failed) carry `label` ("flight:takeoff") — one name for both
+const cmdName = m => String(m.command || m.label || "command").replace(/^flight:/, "");
+// err | warn | ok | info for one event (line colour + severity chips)
+function evtSeverity(m){
+  const k = String(m.kind || "");
+  // ok=true NEVER renders as an error — an accepted ack's note (`error:
+  // "No error"`, `detail: "smart rtl engaged (slot-layered)"`) is success
+  if (m.ok === true) return "ok";
+  // command.ok = the transport got an answer; status=false is the
+  // provider's own reply, whose meaning the domain event carries (field:
+  // all 109 status=false answers were detector RPCs whose detect.miss said
+  // "no-detection"/"detector busy"; flight refusals arrive as
+  // command.result ok=false) — neutral, not an error
+  if (k === "command.ok" && m.status === false) return "info";
+  if (m.ok === false || /fail|timeout|rejected|refused/.test(k) ||
+      (k === "fabric.switch.vehicle" && m.status !== "accepted") ||
+      (k === "sensor.result" && !["captured", "accepted"].includes(m.status)) ||
+      (k === "system.shutdown_result" && m.status !== "accepted"))
+    return "err";
+  // degraded but self-recovering: transport retries, live-stream FAILED
+  // (the subscriber resubscribes on its own — field: 18 FAILED → 24
+  // resubscribes while video kept flowing), a busy/timed-out detector
+  if (/retry|resubscribe|unconfirmed|duplicate/.test(k) ||
+      (k === "video.stream_status" && !/ACTIVE$/.test(String(m.state || ""))) ||
+      (k === "detect.miss" && m.error && m.error !== "no-detection"))
+    return "warn";
+  if (/^command\.ok$|\.hit$|target_found|completed|promoted|done$|^sensor\.result$|^system\.shutdown_result$|^fabric\.switch\.vehicle$/.test(k) ||
+      (k === "mission.search_finished" && m.status === "completed"))
+    return "ok";
+  return "info";
+}
+// verb + outcome for one non-command event (no time/vehicle: the line adds them)
+const EVT_TEXT = {
+  "video.stream_status": m => {
+    const st = String(m.state || "?").split(".").pop().toLowerCase();
+    return st === "active"
+      ? `video live · lag ${m.lag_ms ?? "?"} ms` + (m.dropped ? ` · ${m.dropped} dropped` : "")
+      : `video ${st}${m.reason ? ": " + m.reason : ""}`;
+  },
+  "video.stream_subscribed": () => "video subscribed",
+  "video.stream_resubscribe": m => `video resubscribe: ${m.reason || "?"}`,
+  "video.control": m => `video ${m.enable ? "on" : "off"}${m.transport ? ` (${m.transport})` : ""}`,
+  "detect.sent": m => `detect #${m.seq} sent`,
+  "detect.miss": m => `detect #${m.seq} ` +
+    (m.error && m.error !== "no-detection" ? m.error : "no detection"),
+  "detect.hit": m => `detect #${m.seq} hit ${m.object_id} ${fmtPct(m.confidence)}`,
+  "detect.candidate": m =>
+    `candidate ${m.object_id} ${m.hits}/${m.need} hits ${fmtPct(m.confidence)}`,
+  "mission.started": m => `mission started${m.agl_m != null ? ` · ${m.agl_m} m AGL` : ""}`,
+  "mission.search_finished": m => `search ${m.status || "finished"} · ${m.frames ?? "?"} frames`,
+  "mission.completed": m => `mission completed · ${m.targets ?? 0} targets, ` +
+    `${m.investigated ?? 0} investigated${m.note ? " — " + m.note : ""}`,
+  "mission.target_found": m => `target #${m.index} ${m.object_id} ${fmtPct(m.confidence)}` +
+    (m.promoted_from != null ? ` (from u#${m.promoted_from})` : ""),
+  "target.unconfirmed": m =>
+    `candidate u#${m.index} ${m.object_id} ${m.hits}/${m.need} hits — unconfirmed`,
+  "target.promoted": m => `candidate u#${m.index} promoted`,
+  "target.dismissed": m => `candidate u#${m.index} dismissed`,
+  "target.dispatch": m => `target #${m.index} ${m.sensor} dispatched`,
+  "target.job_completed": m => `target #${m.index} ${m.sensor} done`,
+  "target.job_failed": m => `target #${m.index} ${m.sensor} failed: ${m.note || m.error || "?"}`,
+  "target.completed": m => `target #${m.index} done`,
+  "target.failed": m => `target #${m.index} failed: ${m.note || "?"}`,
+  "sim.anomaly_placed": m => `sim ${m.anomaly_kind || ""} anomaly ${m.signature || ""} placed`,
+  "sensor.request": m => `${m.sensor} ${m.mode || ""} requested`,
+  "sensor.result": m => `${m.sensor} ${m.status}${m.message ? ": " + m.message : ""}`,
+  "system.shutdown_sent": () => "shutdown sent",
+  "system.shutdown_result": m => `shutdown ${m.status}${m.message ? ": " + m.message : ""}`,
+  "fabric.switch.requested": m => `fabric → ${m.cell} requested`,
+  "fabric.switch.refused": m => `fabric → ${m.cell} refused: ${m.reason || "?"}`,
+  "fabric.switch.vehicle": m => `fabric switch ${m.status}` +
+    (m.status !== "accepted" && m.message ? ": " + m.message : ""),
+  "fabric.switch.gcs": m => `gcs fabric → ${m.cell} ${m.status}`,
+  "fabric.switch.done": m => `fabric → ${m.cell} done ${m.elapsed_s ?? "?"} s` +
+    (m.nodes ? ` · ${Object.keys(m.nodes).length} nodes` : ""),
+  "record.started": m => `recording ${m.name || ""} started`,
+  "record.stopped": m => `recording ${m.name || ""} saved`,
+  "command_mode": m => `command mode ${m.mode}`,
+};
+// any kind without a formatter: dotted kind + its short status-ish fields
+function evtTextGeneric(m){
+  const bits = ["status", "state", "sensor", "mode", "reason", "error", "message", "note"]
+    .filter(k => m[k] != null && m[k] !== "" && typeof m[k] !== "object")
+    .map(k => String(m[k]));
+  if (typeof m.index === "number") bits.unshift(`#${m.index}`);
+  return [String(m.kind || "event").replace(/[._]/g, " ")].concat(bits).join(" ");
+}
+// a command run (one or more lifecycles of the same vehicle+command):
+// the LATEST command's state, with its round trip and tries once answered
+function cmdRunText(evts){
+  const last = evts[evts.length - 1];
+  let from = 0;
+  for (let i = evts.length - 1; i >= 0; i--)
+    if (evts[i].kind === "command.sent"){ from = i; break; }
+  const done = evts.slice(from).filter(e =>
+    e.kind === "command.ok" || e.kind === "command.failed").pop();
+  const took = !done ? "" : ` ${fmtMs(done.latency_ms)}` +
+    (done.attempts > 1 ? ` (${done.attempts} tries)` : "");
+  let out;
+  switch (last.kind){
+    case "command.sent": out = "sent"; break;
+    // attempt N = N-1 retries so far
+    case "command.retry": out = `retry ×${(last.attempt || 2) - 1}`; break;
+    case "command.ok":
+      out = (last.status === false ? "answered false" : "ok") + took; break;
+    case "command.failed": out = "failed: no answer" + took; break;
+    case "command.result":
+      out = (last.ok ? "ok" : `refused: ${last.error || last.detail || "?"}`) + took;
+      if (last.ok && last.detail) out += ` — ${last.detail}`;
+      break;
+    case "command.timeout": out = "timed out"; break;
+    case "command.rejected": out = `refused: ${last.reason || "?"}`; break;
+    case "command.duplicate": out = `duplicate${last.answered ? " (answered)" : ""}`; break;
+    default: out = String(last.kind).slice("command.".length);
+  }
+  return `${cmdName(last)} ${out}`;
+}
+// commands in a run: operator commands count their .sent, internal RPCs
+// (detect, raster-search: no .sent) their distinct command ids
+function cmdRunCount(evts){
+  const ids = new Set(evts.filter(e => e.command_id).map(e => e.command_id));
+  return Math.max(evts.filter(e => e.kind === "command.sent").length, ids.size, 1);
+}
+// the rendered line for a run of folded events (chronological)
+function logLine(evts){
+  const last = evts[evts.length - 1];
+  const isCmd = String(last.kind).startsWith("command.");
+  const n = isCmd ? cmdRunCount(evts) : evts.length;
+  return {
+    who: last.vehicle || "",
+    text: isCmd ? cmdRunText(evts) : (EVT_TEXT[last.kind] || evtTextGeneric)(last),
+    badge: n > 1 ? (isCmd ? `${n} cmds` : `×${n}`) : "",
+    sev: evtSeverity(last),
+  };
+}
+// fold key, or null for events that always keep their own line
+function evtGroupKey(m){
+  const k = String(m.kind || "");
+  // georeferenced events (hits, targets, dispatches, captures) are the rare
+  // mission facts and each pins its own map spot (click-to-locate)
+  if (typeof m.lat === "number" && typeof m.lon === "number") return null;
+  if (k.startsWith("command.")) return `cmd|${m.vehicle || ""}|${cmdName(m)}`;
+  const sub = k === "video.stream_status" ? m.state
+    : k === "detect.miss" ? m.error
+    : k.startsWith("sensor.") ? m.sensor
+    : k.startsWith("target.") ? m.index
+    : k.startsWith("fabric.") ? m.cell : "";
+  // severity in the key: an error never folds into a line of successes
+  return `${evtSeverity(m)}|${k}|${m.vehicle || ""}|${sub ?? ""}`;
+}
+// may event m fold into the run `evts` (same key)? Sliding window + cap;
+// in a command run errors never share a line with non-errors: a refusal/
+// timeout always gets its own line and nothing folds into a red one
+function evtJoins(evts, m){
+  const last = evts[evts.length - 1];
+  if (evts.length >= LOG_GROUP_MAX || !(m.t - last.t <= LOG_COLLAPSE_S)) return false;
+  if (!String(m.kind).startsWith("command.")) return true;
+  const term = evts.filter(e => CMD_TERMINAL.has(e.kind)).pop();
+  if (!term) return true;
+  const termErr = evtSeverity(term) === "err";
+  return CMD_TERMINAL.has(m.kind) ? (evtSeverity(m) === "err") === termErr : !termErr;
+}
+// the unfolded detail: every folded event's full JSON, newest first
+function logDetailText(evts){
+  if (evts.length === 1) return JSON.stringify(evts[0], null, 2);
+  return `${evts.length} events ${fmtLogTime(evts[0].t)} → ` +
+    `${fmtLogTime(evts[evts.length - 1].t)}\n` +
+    evts.slice().reverse().map(e => `${fmtLogTime(e.t)} ${JSON.stringify(e)}`).join("\n");
+}
+
 // ---------- event log filtering (display-only over the retained buffer) ----
-// Category chips (auto-derived from event-kind prefixes via THE one mapping
-// table inside evtCategory), a vehicle dropdown (any vehicle seen), and a
-// free-text substring box. Multiple chips = union; vehicle and text
-// intersect with the chip set (evtFilterPass is the pure predicate — the
-// scratchpad harness extracts and unit-tests both functions). Filtering
-// never mutates the buffer: nodes are only hidden, so click-to-locate and
-// the detect frame-order insertion logic keep working untouched. While any
+// Severity chips, vehicle chips (any vehicle seen) and category chips
+// (auto-derived from event-kind prefixes via THE one mapping table inside
+// evtCategory), plus a free-text substring box over the line AND the full
+// JSON of its folded events. Chips in one group = union; groups and text
+// intersect (evtFilterPass is the pure predicate). Filtering never
+// mutates the buffer: nodes are only hidden, so click-to-locate and the
+// detect frame-order insertion logic keep working untouched. While any
 // filter is active retention grows to 1000 lines (so a narrow filter isn't
 // starved by the 250 cap) and at most 250 matches render. Active filters
 // persist (localStorage) and survive replay enter/exit.
@@ -4261,25 +4495,29 @@ function evtCategory(kind){
 }
 const LOG_CATS = ["mission","detect","target","command","coord",
                   "sensor","record","system"];
-// Pure predicate over one log entry {cat, vehicle, text} and the filter
-// state {cats:[], vehicle:"", text:""}: chips = union, vehicle + text
-// intersect; empty filter fields pass everything.
+// Pure predicate over one log entry {cat, sev, vehicle, text} and the filter
+// state {cats:[], sevs:[], vids:[], text:""}: chips union within a group,
+// groups + text intersect; empty filter fields pass everything.
 function evtFilterPass(entry, f){
   if (f.cats && f.cats.length && !f.cats.includes(entry.cat)) return false;
-  if (f.vehicle && entry.vehicle !== f.vehicle) return false;
+  if (f.sevs && f.sevs.length && !f.sevs.includes(entry.sev)) return false;
+  if (f.vids && f.vids.length && !f.vids.includes(entry.vehicle)) return false;
   if (f.text &&
       !String(entry.text || "").toLowerCase().includes(f.text.toLowerCase()))
     return false;
   return true;
 }
 const LOGF_KEY = "muas3.logfilter";
-const LOGF = { cats: [], vehicle: "", text: "" };
+const LOGF = { cats: [], sevs: [], vids: [], text: "" };
 (function loadLogF(){
   try {
     const s = JSON.parse(localStorage.getItem(LOGF_KEY) || "{}");
     if (Array.isArray(s.cats))
       LOGF.cats = s.cats.filter(c => LOG_CATS.includes(c));
-    if (typeof s.vehicle === "string") LOGF.vehicle = s.vehicle;
+    if (Array.isArray(s.sevs))
+      LOGF.sevs = s.sevs.filter(c => LOG_SEVS.includes(c));
+    if (Array.isArray(s.vids))
+      LOGF.vids = s.vids.filter(v => typeof v === "string");
     if (typeof s.text === "string") LOGF.text = s.text;
   } catch (e) {}
 })();
@@ -4287,56 +4525,152 @@ function saveLogF(){
   try { localStorage.setItem(LOGF_KEY, JSON.stringify(LOGF)); } catch (e) {}
 }
 const logFilterActive = () =>
-  !!(LOGF.cats.length || LOGF.vehicle || LOGF.text);
+  !!(LOGF.cats.length || LOGF.sevs.length || LOGF.vids.length || LOGF.text);
 const LOG_VISIBLE = 250;                 // rendered lines, filtered or not
 const logRetention = () => logFilterActive() ? 1000 : 250;
 const LOGVIDS = new Set();               // every vehicle seen in events
+// hello seeds the fleet's vehicle chips before any of them logs an event
 function noteLogVehicle(vid){
   if (!vid || LOGVIDS.has(vid)) return;
-  LOGVIDS.add(vid); syncLogVids();
-}
-function syncLogVids(){
-  logvid.innerHTML = ['<option value="">all vehicles</option>']
-    .concat([...LOGVIDS].sort().map(v => `<option value="${v}">${v}</option>`))
-    .join("");
-  logvid.value = LOGVIDS.has(LOGF.vehicle) ? LOGF.vehicle : "";
+  LOGVIDS.add(vid); applyLogFilter();
 }
 function applyLogFilter(){
   while (log.children.length > logRetention()) log.lastChild.remove();
-  const counts = {};
+  const counts = { cat: {}, sev: {}, vid: {} };
+  const bump = (o, k) => { o[k] = (o[k] || 0) + 1; };
   let visible = 0;
   for (const el of log.children){
-    const cat = el.dataset.cat || "system";
-    counts[cat] = (counts[cat] || 0) + 1;
-    const pass = evtFilterPass(
-      { cat, vehicle: el.dataset.vid || "", text: el.textContent }, LOGF);
+    const entry = { cat: el.dataset.cat || "system", sev: el.dataset.sev || "info",
+                    vehicle: el.dataset.vid || "",
+                    text: el.textContent + "\n" + (el._q || "") };
+    bump(counts.cat, entry.cat); bump(counts.sev, entry.sev);
+    if (entry.vehicle) bump(counts.vid, entry.vehicle);
+    const pass = evtFilterPass(entry, LOGF);
     el.style.display = pass && visible < LOG_VISIBLE ? "" : "none";
     if (pass) visible++;
   }
-  logchips.innerHTML = LOG_CATS.map(c => `
-    <button class="logchip${LOGF.cats.includes(c) ? " on" : ""}" data-cat="${c}"
-      title="show only ${c} events (multiple chips = union; vehicle/text intersect)"
-      >${c}<span class="ct">${counts[c] || 0}</span></button>`).join("");
+  const chip = (group, val, label, list, n, title) =>
+    `<button class="logchip${list.includes(val) ? " on" : ""}" data-${group}="${htmlEsc(val)}"` +
+    ` title="${title}">${label}<span class="ct">${n || 0}</span></button>`;
+  // persisted vehicle chips stay visible before that vehicle speaks again
+  const vids = [...new Set([...LOGVIDS, ...LOGF.vids])].sort();
+  logchips.innerHTML =
+    LOG_SEVS.map(s => chip("sev", s, `<span class="dot ${s}"></span>${s}`,
+      LOGF.sevs, counts.sev[s], `show only ${s} lines (chips in a row = union; rows intersect)`)).join("") +
+    vids.map(v => chip("vid", v, htmlEsc(v), LOGF.vids, counts.vid[v],
+      `show only ${htmlEsc(v)}'s events (chips in a row = union; rows intersect)`)).join("") +
+    `<span class="sep"></span>` +
+    LOG_CATS.map(c => chip("cat", c, c, LOGF.cats, counts.cat[c],
+      `show only ${c} events (chips in a row = union; rows intersect)`)).join("");
   logclear.style.visibility = logFilterActive() ? "visible" : "hidden";
 }
 // delegated: survives the chip innerHTML rebuilds (cmdlog pattern)
 logchips.addEventListener("click", e => {
   const b = e.target.closest(".logchip");
   if (!b) return;
-  const c = b.dataset.cat;
-  LOGF.cats = LOGF.cats.includes(c)
-    ? LOGF.cats.filter(x => x !== c) : LOGF.cats.concat(c);
+  const [field, val] = b.dataset.cat ? ["cats", b.dataset.cat]
+    : b.dataset.sev ? ["sevs", b.dataset.sev] : ["vids", b.dataset.vid];
+  LOGF[field] = LOGF[field].includes(val)
+    ? LOGF[field].filter(x => x !== val) : LOGF[field].concat(val);
   saveLogF(); applyLogFilter();
 });
-logvid.onchange = () => {
-  LOGF.vehicle = logvid.value; saveLogF(); applyLogFilter(); };
 logtext.value = LOGF.text;
 logtext.oninput = () => {
   LOGF.text = logtext.value; saveLogF(); applyLogFilter(); };
 logclear.onclick = () => {
-  LOGF.cats = []; LOGF.vehicle = ""; LOGF.text = "";
-  logtext.value = ""; saveLogF(); syncLogVids(); applyLogFilter();
+  LOGF.cats = []; LOGF.sevs = []; LOGF.vids = []; LOGF.text = "";
+  logtext.value = ""; saveLogF(); applyLogFilter();
 };
+
+// ---------- event log rendering (fold, insert, expand) ----------
+function renderLogLine(line){
+  const evts = line._evts, L = logLine(evts), last = evts[evts.length - 1];
+  line.className = `n ${L.sev}`;
+  line.dataset.sev = L.sev;
+  const h = document.createElement("div");
+  h.className = "h";
+  const span = (cls, text) => {
+    const s = document.createElement("span");
+    s.className = cls; s.textContent = text; h.appendChild(s);
+  };
+  span("t", fmtLogTime(last.t));
+  if (L.who) span("v", L.who);
+  span("s", L.text);
+  if (L.badge) span("ct", L.badge);
+  if (typeof last.lat === "number" && typeof last.lon === "number"){
+    const b = document.createElement("button");
+    b.className = "loc"; b.textContent = "⌖";
+    b.title = "locate on map";
+    h.appendChild(b);
+  }
+  line.title = `${L.who} ${L.text}`.trim() + " — click for details";
+  line.replaceChildren(h);
+  if (line._open){
+    const d = document.createElement("pre");
+    d.className = "d"; d.textContent = logDetailText(evts);
+    line.appendChild(d);
+  }
+}
+function logEvent(m){
+  const key = evtGroupKey(m);
+  let line = null;
+  if (key !== null){
+    // the newest line for this key (active runs sit near the top)
+    let i = 0;
+    for (let el = log.firstChild; el && i < 100; el = el.nextSibling, i++)
+      if (el.dataset.key === key){
+        if (evtJoins(el._evts, m)) line = el;
+        break;
+      }
+  }
+  if (line){ line._evts.push(m); line.remove(); }
+  else {
+    line = document.createElement("div");
+    line._evts = [m]; line._q = ""; line._open = false;
+    if (key !== null) line.dataset.key = key;
+    // filter metadata rides the node (category from THE mapping table)
+    line.dataset.cat = evtCategory(m.kind);
+  }
+  line._q += JSON.stringify(m).toLowerCase() + "\n";   // text-filter haystack
+  if (m.vehicle){ line.dataset.vid = m.vehicle; LOGVIDS.add(m.vehicle); }
+  renderLogLine(line);
+  // detect responses complete out of capture order (each frame's round
+  // trip varies): slot a late line below the LEADING run of higher-seq
+  // detect lines so the log still reads in frame order — but never below
+  // non-detect lines that arrived earlier. (Anchoring above "the first
+  // lower-seq line" buried every new detect line under the first
+  // candidate/dispatch block, so the visible top of the log froze there
+  // and the live detect stream read as stalled after dispatch #1 — while
+  // the recording showed frames still flowing.) A folded run moves to the
+  // top on every new member: it carries the newest information.
+  let anchor = log.firstChild;
+  if (String(m.kind).startsWith("detect.") && m.seq != null){
+    line.dataset.seq = m.seq;
+    while (anchor && anchor.dataset.seq !== undefined &&
+           Number(anchor.dataset.seq) > m.seq)
+      anchor = anchor.nextSibling;
+  }
+  log.insertBefore(line, anchor);   // anchor null → append
+  // retention/visibility is applyLogFilter's job — it trims to 250 (1000
+  // while any filter is active) and hides non-matching lines without ever
+  // reordering or dropping matches early
+  applyLogFilter();
+}
+// one delegated handler: ⌖ locates (pauses follow, pill resumes), a click
+// elsewhere on the line folds/unfolds its detail; clicks inside the
+// detail are left alone so its JSON can be selected and copied
+log.addEventListener("click", e => {
+  const line = e.target.closest("#log > .n");
+  if (!line || !line._evts) return;
+  if (e.target.closest(".loc")){
+    const m = line._evts[line._evts.length - 1];
+    gotoLL(m.lat, m.lon);
+    return;
+  }
+  if (e.target.closest(".d")) return;
+  line._open = !line._open;
+  renderLogLine(line);
+});
 
 // ---------- events / mission state ----------
 const STATE_TAG = { idle:"cds-tag--gray", searching:"cds-tag--blue",
@@ -4373,6 +4707,7 @@ function unconfCardsHTML(){
     <div class="unconf" style="display:flex;justify-content:space-between;
                 align-items:center;margin-bottom:8px">
       <span><b>u#${u.index} ${u.object_id}</b> · ${(u.confidence*100).toFixed(1)}%
+        ${u.simulated ? SIM_TAG : ""}
         <div class="mono">${u.lat.toFixed(6)}, ${u.lon.toFixed(6)}</div>
         <div>
           <button class="cds-btn cds-btn--tertiary ubtn"
@@ -4386,6 +4721,11 @@ function unconfCardsHTML(){
       <span class="cds-tag cds-tag--yellow"
         title="seen on ${u.hits} of the ${u.need} frames confirmation needs — the search ended before a second pass could see it">${u.hits}/${u.need} hits</span>
     </div>`).join("");
+}
+const SIM_TAG = `<span class="cds-tag cds-tag--sim"
+  title="operator-placed sim target: the detection is synthetic, the flights are real">SIMULATED</span>`;
+function escHtml(s){
+  return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
 }
 function renderTargets(){
   mtargets.textContent = targets.length;
@@ -4405,16 +4745,22 @@ function renderTargets(){
     <div style="display:flex;justify-content:space-between;align-items:center;
                 margin-bottom:8px">
       <span><b>#${t.index} ${t.object_id}</b> · ${(t.confidence*100).toFixed(1)}%
+        ${t.simulated ? SIM_TAG : ""}
         <div class="mono">${t.lat.toFixed(6)}, ${t.lon.toFixed(6)}</div>
         <div>${(t.jobs || []).map(j => {
           // display-only queue linkage: the task id the vehicle's queue
           // stream reveals for an investigating job (best-effort match)
           const tid = j.status === "investigating" && j.vehicle
             ? jobQueueTaskId(j.vehicle) : "";
+          // a failed job carries the vehicle's reason; on 2026-10-13 the
+          // card said only "camera failed" / "audio failed" and the reason
+          // ("could not reach approach altitude") was buried in the log
+          const why = j.status === "failed" && j.note
+            ? `<div style="font-size:11px;color:#ff8389">${j.sensor} @ ${j.vehicle}: ${escHtml(j.note)}</div>` : "";
           return `
           <span class="cds-tag ${TGT_TAG[j.status]||'cds-tag--gray'}"
                 title="${j.vehicle || 'not assigned yet'}${tid
-                  ? ` · queue ${tid}` : ''}">${j.sensor} ${j.status}${tid
+                  ? ` · queue ${tid}` : ''}${j.note ? ` · ${escHtml(j.note)}` : ''}">${j.sensor} ${j.status}${tid
                   ? ` <span style="font-family:var(--font-mono);font-size:10px">${tid}</span>` : ''}</span>
           ${j.status === "queued" || j.status === "investigating"
             ? `<button class="xabort" onclick="cancelJob(${t.index},'${j.sensor}')"
@@ -4424,7 +4770,7 @@ function renderTargets(){
             : ""}
           ${(j.artifacts || []).map(a => `<a target="_blank"
             href="/artifact?name=${encodeURIComponent(a)}">${j.sensor === "audio"
-              ? "audio" : "capture"} ↗</a>`).join(" ")}`; }).join(" ")}
+              ? "audio" : "capture"} ↗</a>`).join(" ")}${why}`; }).join(" ")}
         </div>
       </span>
       <span class="cds-tag ${TGT_TAG[t.status]||'cds-tag--gray'}">${t.status}</span>
@@ -4437,27 +4783,6 @@ function renderTargets(){
 }
 
 function onEvent(m){
-  const line = document.createElement("div");
-  line.className = "n";
-  const t = new Date(m.t*1000).toLocaleTimeString();
-  const isDetect = m.kind.startsWith("detect.") && m.seq != null;
-  const skip = ["type","kind","t"].concat(isDetect ? ["frame","seq"] : []);
-  const extra = Object.entries(m).filter(([k]) =>
-    !skip.includes(k)).map(([k,v]) =>
-    `${k}=${typeof v==="number" ? +v.toFixed(5) : JSON.stringify(v)}`).join(" ");
-  const tag = isDetect ? `<b>frame #${m.seq}</b> ` : "";
-  line.innerHTML = `<span class="t">${t}</span>${m.kind} ${tag}${extra}`;
-  if (m.kind.includes("hit") || m.kind.includes("target_found") ||
-      m.kind.includes("completed")) line.classList.add("hit");
-  // ok=true NEVER renders as an error — an accepted ack's `detail` note
-  // (e.g. "smart rtl engaged (slot-layered)") shows neutrally; error
-  // styling is reserved for refusals, failures, and timeouts.
-  if (m.ok === true) line.classList.remove("err");
-  else if (m.kind.includes("fail") || m.kind.includes("timeout") ||
-           m.kind.includes("rejected") || m.kind.includes("refused") ||
-           (m.kind === "fabric.switch.vehicle" && m.status !== "accepted") ||
-           m.ok === false)
-    line.classList.add("err");
   cmdLifecycle(m);
   taskingLifecycle(m);
   if (m.kind.startsWith("fabric.switch.")) onFabricEvent(m);
@@ -4467,38 +4792,10 @@ function onEvent(m){
       (m.kind === "command.timeout" ||
        (m.kind === "command.result" && m.ok === false)))
     queueRevert(m.vehicle);
-  // detect responses complete out of capture order (each frame's round
-  // trip varies): slot a late line below the LEADING run of higher-seq
-  // detect lines so the log still reads in frame order — but never below
-  // non-detect lines that arrived earlier. (Anchoring above "the first
-  // lower-seq line" buried every new detect line under the first
-  // candidate/dispatch block, so the visible top of the log froze there
-  // and the live detect stream read as stalled after dispatch #1 — while
-  // the recording showed frames still flowing.)
-  let anchor = log.firstChild;
-  if (isDetect){
-    line.dataset.seq = m.seq;
-    while (anchor && anchor.dataset.seq !== undefined &&
-           Number(anchor.dataset.seq) > m.seq)
-      anchor = anchor.nextSibling;
-  }
-  if (anchor) log.insertBefore(line, anchor); else log.append(line);
-  // filter metadata rides the node (category from THE mapping table,
-  // vehicle for the dropdown); retention/visibility is applyLogFilter's
-  // job — it trims to 250 (1000 while any filter is active) and hides
-  // non-matching lines without ever reordering or dropping matches early
-  line.dataset.cat = evtCategory(m.kind);
-  if (m.vehicle){ line.dataset.vid = m.vehicle; noteLogVehicle(m.vehicle); }
-  applyLogFilter();
-
-  // pin georeferenced events to the map, and let the log line locate
-  // them: click pans the view to where (and shows when) it happened
+  // one concise (possibly folded) log line, click to unfold the JSON
+  logEvent(m);
+  // pin georeferenced events to the map; the line's ⌖ locates them
   pushMapEvent(m);
-  if (typeof m.lat === "number" && typeof m.lon === "number"){
-    line.style.cursor = "pointer";
-    line.title = "click to locate on map";
-    line.onclick = () => gotoLL(m.lat, m.lon);  // pauses follow, pill resumes
-  }
 
   const byIndex = i => targets.find(x => x.index === i);
   const jobOf = (tg, sensor) =>
@@ -4515,7 +4812,7 @@ function onEvent(m){
       if (!UNCONF.some(u => u.index === m.index))
         UNCONF.push({ index:m.index, object_id:m.object_id, hits:m.hits,
           need:m.need, confidence:m.confidence, lat:m.lat, lon:m.lon,
-          frame:m.frame, status:"unconfirmed" });
+          frame:m.frame, simulated:!!m.simulated, status:"unconfirmed" });
       renderTargets(); break;
     case "target.promoted": {
       const u = UNCONF.find(x => x.index === m.index);
@@ -4546,6 +4843,7 @@ function onEvent(m){
     case "mission.target_found":
       targets.push({ index:m.index, object_id:m.object_id,
         confidence:m.confidence, lat:m.lat, lon:m.lon, frame:m.frame,
+        simulated:!!m.simulated,
         status:"queued", artifacts:[],
         jobs:(m.sensors || ["camera"]).map(s =>
           ({sensor:s, vehicle:"", status:"queued", artifacts:[]})) });
@@ -4581,7 +4879,8 @@ function onEvent(m){
       if (tg){ const j = jobOf(tg, m.sensor);
                if (j){ j.status = m.kind === "target.job_completed"
                          ? "done" : "failed";
-                       j.artifacts = m.artifacts || []; }
+                       j.artifacts = m.artifacts || []; j.note = m.note || "";
+                       if (m.vehicle) j.vehicle = m.vehicle; }
                renderTargets(); }
       break; }
     case "target.completed":
@@ -5043,7 +5342,7 @@ renderCmdLog();
 renderLegend();
 renderNetPanel();
 loadCatalog();                     // hello may re-point via catalog_url
-syncLogVids(); applyLogFilter();   // restore persisted event-log filters
+applyLogFilter();                  // restore persisted event-log filters
 resize(); syncMapCtl(); connect(); draw();
 setTimeout(preview, 800);
 </script>

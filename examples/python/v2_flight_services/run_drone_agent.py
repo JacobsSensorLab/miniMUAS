@@ -158,6 +158,7 @@ def fly_raster(
     on_capture,
     on_leg,
     service_interrupt=None,
+    speed_watch=None,
 ) -> str:
     """Fly the serpentine raster as one continuous motion.
 
@@ -184,6 +185,10 @@ def fly_raster(
     did — the loop then re-commands its current target and the sweep
     resumes exactly where it left off.
 
+    The sweep owns its speed: it (re)asserts `speed_m_s` on the backend,
+    which re-sends it after every position-episode reset (CruiseSpeed),
+    and `speed_watch` (a SpeedWatch) checks the flown speed each tick.
+
     Returns "completed", "aborted", or "timeout".
     """
     speed = max(float(speed_m_s), 0.3)
@@ -208,12 +213,17 @@ def fly_raster(
             if now > deadline_mono:
                 return "timeout"
             if service_interrupt is not None and service_interrupt():
+                # the detour flew at its own (task) speed: take the sweep's
+                # back before re-commanding the target
+                flight.set_cruise_speed(speed, owner=owner)
                 next_send = 0.0  # we were flown elsewhere: re-command
                 continue
             if now >= next_send:
                 flight.goto(t_lat, t_lon, agl_m)
                 next_send = now + 2.0
             here = flight.position()
+            if speed_watch is not None:
+                speed_watch.tick()
             if fire_from is not None:
                 leg_start, axis, pending = fire_from
                 along = _along_leg_m(leg_start, axis, here[0], here[1])
@@ -241,27 +251,35 @@ def fly_raster(
                 return "arrived"
             time.sleep(0.1)
 
-    for leg_index, (leg_start, leg_end) in enumerate(plan.legs):
-        on_leg(leg_index)
-        outcome = cruise(leg_start[0], leg_start[1])
-        if outcome in ("aborted", "timeout", "stalled"):
-            return outcome
-        axis, _length = _leg_axis(leg_start, leg_end)
-        pending = sorted(
-            (
-                (_along_leg_m(leg_start, axis, cp.lat_deg, cp.lon_deg), cp)
-                for cp in caps_by_leg.get(leg_index, [])
-            ),
-            key=lambda item: item[0],
-        )
-        outcome = cruise(leg_end[0], leg_end[1], (leg_start, axis, pending))
-        for _, cp in pending:
-            if abort.is_set():
-                return "aborted"
-            on_capture(cp, flight.position())
-        if outcome in ("aborted", "timeout", "stalled"):
-            return outcome
-    return "completed"
+    def sweep() -> str:
+        for leg_index, (leg_start, leg_end) in enumerate(plan.legs):
+            on_leg(leg_index)
+            outcome = cruise(leg_start[0], leg_start[1])
+            if outcome in ("aborted", "timeout", "stalled"):
+                return outcome
+            axis, _length = _leg_axis(leg_start, leg_end)
+            pending = sorted(
+                (
+                    (_along_leg_m(leg_start, axis, cp.lat_deg, cp.lon_deg), cp)
+                    for cp in caps_by_leg.get(leg_index, [])
+                ),
+                key=lambda item: item[0],
+            )
+            outcome = cruise(leg_end[0], leg_end[1], (leg_start, axis, pending))
+            for _, cp in pending:
+                if abort.is_set():
+                    return "aborted"
+                on_capture(cp, flight.position())
+            if outcome in ("aborted", "timeout", "stalled"):
+                return outcome
+        return "completed"
+
+    owner = object()  # this sweep's claim on the cruise speed
+    flight.set_cruise_speed(speed, owner=owner)
+    try:
+        return sweep()
+    finally:
+        flight.release_cruise_speed(owner)
 
 
 def fly_orbit(
@@ -830,6 +848,7 @@ def smart_rtl(
     cancel: threading.Event,
     base_agl_m: float = 8.0,
     separation_m: float = 3.0,
+    speed_m_s: float = 3.0,
     on_event=None,
 ) -> str:
     """Layered return-to-launch: collision-free by construction.
@@ -844,6 +863,14 @@ def smart_rtl(
     underneath as a second layer. Falls back to the autopilot's RTL when
     home is unknown, and backs off entirely if the operator takes the
     aircraft out of GUIDED (the RC pilot always wins).
+
+    Every vehicle returns at the SAME commanded `speed_m_s`. Before, the
+    return inherited whatever DO_CHANGE_SPEED was still live in the guided
+    episode: 2026-10-13 16:58:44 wuas-01 crawled home at 0.45 m/s (its
+    last raster asked 0.5 m/s) while both IUAS, never given a speed, flew
+    at WPNAV_SPEED (peaks 4.1 and 4.8 m/s); 26 s in, wuas-01 left GUIDED
+    (RTL, LOITER 1 s later: not the agent) and came down in LOITER 9.3 m
+    short of home with its battery at 12%.
     """
 
     emit = on_event or (lambda **kw: None)
@@ -860,47 +887,66 @@ def smart_rtl(
         emit(kind="rtl.fallback", reason="home unknown")
         flight.rtl()
         return "fallback"
-    emit(kind="rtl.smart", slot_agl_m=slot, home=list(home))
+    speed = max(float(speed_m_s), 0.3)
+    owner = object()  # this return's claim on the cruise speed
+    flight.set_cruise_speed(speed, owner=owner)
+    watch = SpeedWatch(flight, speed, task="rtl")
+    emit(kind="rtl.smart", slot_agl_m=slot, home=list(home), speed_m_s=speed)
+
+    def flight_mode() -> str:
+        return str(flight.telemetry().get("mode", "") or "").upper()
 
     def pilot_took_over() -> bool:
-        mode = str(flight.telemetry().get("mode", "") or "").upper()
-        return mode not in ("", "GUIDED")
+        return flight_mode() not in ("", "GUIDED")
 
-    def cruise(lat, lon, agl, deadline_s, tol_m) -> bool:
+    def cruise(lat, lon, agl, deadline_s, tol_m, *, check_speed) -> bool:
         deadline = time.monotonic() + deadline_s
         next_send = 0.0
         while not flight.at_target(lat, lon, agl, tol_m=tol_m):
             if cancel.is_set():
                 return False
-            if pilot_took_over():
-                emit(kind="rtl.takeover")
+            mode = flight_mode()
+            if mode not in ("", "GUIDED"):
+                emit(kind="rtl.takeover", mode=mode,
+                     agl_m=round(flight.position()[2], 1), **watch.summary())
                 return False
             if time.monotonic() > deadline:
+                emit(kind="rtl.deadline", deadline_s=round(deadline_s, 1))
                 return False
             if time.monotonic() >= next_send:
                 flight.goto(lat, lon, agl)
                 next_send = time.monotonic() + 2.0
+            if check_speed:
+                watch.tick()
             time.sleep(0.2)
         return True
 
-    # climb in place to the slot, cruise home at it, then land
-    if not cruise(here[0], here[1], slot,
-                  abs(slot - here[2]) / 0.5 + 30.0, tol_m=3.0):
-        if not cancel.is_set() and not pilot_took_over():
-            emit(kind="rtl.fallback", reason="climb failed")
-            flight.rtl()
-        return "fallback"
-    dist = _dist_m(here[0], here[1], home[0], home[1])
-    if not cruise(home[0], home[1], slot, dist / 1.0 + 60.0, tol_m=3.0):
-        if not cancel.is_set() and not pilot_took_over():
-            emit(kind="rtl.fallback", reason="cruise failed")
-            flight.rtl()
-        return "fallback"
-    if cancel.is_set() or pilot_took_over():
-        return "cancelled"
-    flight.land()
-    emit(kind="rtl.landing", home=list(home))
-    return "landing"
+    def fly_home() -> str:
+        # climb in place to the slot, cruise home at it, then land
+        if not cruise(here[0], here[1], slot,
+                      abs(slot - here[2]) / 0.5 + 30.0, tol_m=3.0,
+                      check_speed=False):
+            if not cancel.is_set() and not pilot_took_over():
+                emit(kind="rtl.fallback", reason="climb failed")
+                flight.rtl()
+            return "fallback"
+        dist = _dist_m(here[0], here[1], home[0], home[1])
+        if not cruise(home[0], home[1], slot, dist / (0.5 * speed) + 30.0,
+                      tol_m=3.0, check_speed=True):
+            if not cancel.is_set() and not pilot_took_over():
+                emit(kind="rtl.fallback", reason="cruise failed")
+                flight.rtl()
+            return "fallback"
+        if cancel.is_set() or pilot_took_over():
+            return "cancelled"
+        flight.land()
+        emit(kind="rtl.landing", home=list(home), **watch.summary())
+        return "landing"
+
+    try:
+        return fly_home()
+    finally:
+        flight.release_cruise_speed(owner)
 
 
 # ---------------------------------------------------------------------------
@@ -908,21 +954,188 @@ def smart_rtl(
 # ---------------------------------------------------------------------------
 
 
+class CruiseSpeed:
+    """The cruise speed a task asked for, re-asserted whenever ArduCopter
+    may have dropped it.
+
+    ArduCopter keeps a MAV_CMD_DO_CHANGE_SPEED only for the current GUIDED
+    position-control episode (ArduCopter/mode_guided.cpp, master
+    0922bce): outside GUIDED the command is refused (Mode::set_speed_NE_ms
+    returns false), ModeGuided::init() and NAV_TAKEOFF leave the position
+    sub-mode, and the first SET_POSITION_TARGET afterwards runs
+    pos_control_start() -> pva_control_start(), which resets the limit to
+    wp_nav->get_default_speed_NE_ms() (WPNAV_SPEED, 10 m/s by default).
+    The raster used to send the speed BEFORE ensure_airborne, so every
+    mission started from the ground flew at WPNAV_SPEED: 2026-10-13 wuas-01
+    asked 0.5 m/s and flew p90 7.5 m/s / max 8.3 m/s; only the one run
+    started while already holding a guided position target (after a
+    sensor-tasking goto, 16:52:21) flew 0.45 m/s.
+
+    Backends call `target_sent()` after every position target that reached
+    the FC and `invalidate()` whenever they change mode or take off; the
+    desired speed is then re-sent right after the first target of each new
+    episode, which is the only point at which it sticks. A task that sets a
+    speed with an `owner` token releases it with `release(owner)` when it
+    ends, so its speed cannot follow the vehicle into the next task — and a
+    late release never clears a successor's speed (RTL starts while the
+    aborted raster is still unwinding).
+    """
+
+    def __init__(self, apply, mode) -> None:
+        self._apply = apply   # speed_m_s -> bool (DO_CHANGE_SPEED accepted)
+        self._mode = mode     # -> current flight-mode name ("" = unknown)
+        self._lock = threading.Lock()
+        self.desired: float | None = None
+        self._owner = None
+        self._held = False    # the FC is known to fly `desired`
+        self._live = False    # a target went out in this GUIDED episode
+        self._retry_at = 0.0  # after a refused/unacked send
+        self._sending = False  # one DO_CHANGE_SPEED in flight at a time
+        self._epoch = 0       # bumped whenever the FC may have dropped it
+
+    def set(self, speed_m_s: float | None, owner=None) -> None:
+        with self._lock:
+            self.desired = None if speed_m_s is None else float(speed_m_s)
+            self._owner = owner
+            self._drop_locked()
+        self._reassert()
+
+    def release(self, owner) -> None:
+        with self._lock:
+            if owner is not None and self._owner is owner:
+                self.desired = None
+                self._owner = None
+
+    def _drop_locked(self) -> None:
+        self._held = False
+        self._retry_at = 0.0
+        self._epoch += 1
+
+    def invalidate(self) -> None:
+        """The FC may have left the position episode (mode change/takeoff)."""
+        with self._lock:
+            self._drop_locked()
+            self._live = False
+
+    def lost(self) -> None:
+        """Telemetry says the FC is not flying `desired`: send it again."""
+        with self._lock:
+            self._drop_locked()
+        self._reassert()
+
+    def target_sent(self) -> None:
+        mode = str(self._mode() or "").upper()
+        with self._lock:
+            if mode and mode != "GUIDED":
+                # the pilot (or a failsafe) has the aircraft; ModeGuided::init
+                # resets the limit when GUIDED is re-entered
+                self._drop_locked()
+                self._live = False
+                return
+            self._live = True
+        self._reassert()
+
+    def _reassert(self) -> None:
+        with self._lock:
+            speed = self.desired
+            if (
+                speed is None or self._held or not self._live
+                or self._sending or time.monotonic() < self._retry_at
+            ):
+                return
+            # PeerGuard re-targets from its own thread: never two sends
+            self._sending = True
+            epoch = self._epoch
+        try:
+            ok = bool(self._apply(speed))
+        finally:
+            with self._lock:
+                self._sending = False
+        with self._lock:
+            if not ok:
+                self._retry_at = time.monotonic() + 2.0
+            elif epoch == self._epoch and self.desired == speed:
+                self._held = True
+            again = ok and not self._held  # dropped again while sending
+        print_json("agent.flight.speed_applied", speed_m_s=speed, ok=ok)
+        if again:
+            self._reassert()
+
+
+class SpeedWatch:
+    """Verify from telemetry that the vehicle flies the commanded speed.
+
+    Fed every control tick; a sustained overspeed (2 s above
+    max(1.5 x requested, requested + 1 m/s)) is logged and the speed is
+    re-sent — the "extremely fast" raster of 2026-10-13 was invisible to
+    the agent. `summary()` goes into the task's finished event.
+    """
+
+    def __init__(self, flight, requested_m_s: float, *, task: str) -> None:
+        self._flight = flight
+        self.requested = float(requested_m_s)
+        self._task = task
+        self._limit = max(1.5 * self.requested, self.requested + 1.0)
+        self._over_since = None
+        self._next_fix = 0.0
+        self.reasserts = 0
+        self._speeds: list[float] = []
+
+    def tick(self) -> None:
+        vn, ve = self._flight.velocity()
+        v = math.hypot(vn, ve)
+        self._speeds.append(v)
+        now = time.monotonic()
+        if v <= self._limit:
+            self._over_since = None
+            return
+        if self._over_since is None:
+            self._over_since = now
+        elif now - self._over_since >= 2.0 and now >= self._next_fix:
+            print_json(
+                "agent.speed.overspeed", task=self._task,
+                requested_m_s=self.requested, observed_m_s=round(v, 2),
+            )
+            self._flight.reapply_cruise_speed()
+            self.reasserts += 1
+            self._next_fix = now + 5.0
+
+    def summary(self) -> dict:
+        q = sorted(self._speeds)
+        if not q:
+            return {"speed_req_m_s": self.requested}
+        return {
+            "speed_req_m_s": self.requested,
+            "speed_p50_m_s": round(q[len(q) // 2], 2),
+            "speed_p90_m_s": round(q[int(len(q) * 0.9)], 2),
+            "speed_max_m_s": round(q[-1], 2),
+            "speed_reasserts": self.reasserts,
+        }
+
+
 class SimFlightBackend:
     """Kinematic bench vehicle: moves toward goto targets at cruise speed.
 
     Gives the dashboard genuine live motion without an autopilot. AGL is
-    tracked directly; armed/mode mimic a guided multirotor's surface.
+    tracked directly; armed/mode mimic a guided multirotor's surface,
+    including ArduCopter's cruise-speed semantics (see CruiseSpeed): the
+    speed limit falls back to `default_speed_m_s` (WPNAV_SPEED's role) on
+    every mode change and on the first position target after a takeoff,
+    and a speed change is refused outside GUIDED — so speed-ordering bugs
+    show up on the bench instead of first in the field.
     """
 
     source = "sim"
 
-    def __init__(self, lat: float, lon: float) -> None:
+    def __init__(self, lat: float, lon: float, *,
+                 default_speed_m_s: float = 2.0) -> None:
         self._lock = threading.Lock()
         self._lat, self._lon = lat, lon
         self._agl = 0.0
         self._target = None  # (lat, lon, agl)
-        self._speed = 2.0
+        self._default_speed = float(default_speed_m_s)
+        self._speed = self._default_speed  # the limit the "FC" flies
+        self._submode = ""  # guided sub-mode: "", "takeoff", "pos"
         self._heading = 0.0
         self._yaw_cmd = None
         self._vn = 0.0
@@ -931,9 +1144,32 @@ class SimFlightBackend:
         self._last_cmd = None  # raw (lat, lon, agl, yaw) pre-bias
         self.armed = False
         self.mode = "STABILIZE"
+        self._cruise = CruiseSpeed(self._fc_change_speed, lambda: self.mode)
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+
+    # -- the "autopilot" side (caller holds self._lock) -------------------
+
+    def _set_mode_locked(self, mode: str) -> None:
+        if mode != self.mode:
+            self.mode = mode
+            self._speed = self._default_speed  # Mode::init
+            self._submode = ""
+
+    def _position_target_locked(self) -> None:
+        self._set_mode_locked("GUIDED")
+        if self._submode != "pos":
+            self._speed = self._default_speed  # pos_control_start
+            self._submode = "pos"
+
+    def _fc_change_speed(self, speed: float) -> bool:
+        """MAV_CMD_DO_CHANGE_SPEED as ArduCopter handles it."""
+        with self._lock:
+            if self.mode != "GUIDED":
+                return False
+            self._speed = max(0.2, float(speed))
+            return True
 
     def _run(self) -> None:
         dt = 0.2
@@ -971,21 +1207,47 @@ class SimFlightBackend:
                         self.armed = False
                         self.mode = "STABILIZE"
                         self._target = None
+                elif self.mode == "LAND" and self._agl <= 0.05:
+                    # ArduCopter LAND disarms on touchdown
+                    self.armed = False
+                    self._target = None
 
     def position(self):
         with self._lock:
             return (self._lat, self._lon, self._agl)
 
-    def set_cruise_speed(self, speed: float) -> None:
-        with self._lock:
-            self._speed = max(0.2, float(speed))
+    def set_cruise_speed(self, speed: float | None, owner=None) -> None:
+        self._cruise.set(speed, owner)
+
+    def release_cruise_speed(self, owner) -> None:
+        self._cruise.release(owner)
+
+    def reapply_cruise_speed(self) -> None:
+        self._cruise.lost()
+
+    def cruise_speed(self) -> float | None:
+        return self._cruise.desired
+
+    def airborne_failure(self) -> str:
+        return ""  # the kinematic sim always gets airborne
 
     def ensure_airborne(self, agl: float) -> bool:
         with self._lock:
-            self.armed = True
-            self.mode = "GUIDED"
-            self._home = (self._lat, self._lon)
+            if not self.armed:
+                # launching from here: THIS is home (as on the FC backend)
+                self.armed = True
+                self._home = (self._lat, self._lon)
+                self._set_mode_locked("GUIDED")
+                self._submode = "takeoff"
+                took_off = True
+            else:
+                self._position_target_locked()
+                took_off = False
             self._target = (self._lat, self._lon, agl)
+        if took_off:
+            self._cruise.invalidate()
+        else:
+            self._cruise.target_sent()
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             if abs(self.position()[2] - agl) < 0.3:
@@ -1003,10 +1265,11 @@ class SimFlightBackend:
 
     def goto(self, lat: float, lon: float, agl: float, *, yaw_deg=None) -> None:
         with self._lock:
-            self.mode = "GUIDED"
+            self._position_target_locked()
             self._last_cmd = (lat, lon, agl, yaw_deg)
             self._target = (lat, lon, self._effective_agl(agl))
             self._yaw_cmd = yaw_deg
+        self._cruise.target_sent()
 
     def at_target(self, lat, lon, agl, tol_m=1.0) -> bool:
         p = self.position()
@@ -1048,23 +1311,26 @@ class SimFlightBackend:
     def rtl(self) -> bool:
         with self._lock:
             home = getattr(self, "_home", (self._lat, self._lon))
-            self.mode = "RTL"
+            self._set_mode_locked("RTL")
             self._target = (home[0], home[1], 0.0)
             self._yaw_cmd = None
+        self._cruise.invalidate()
         return True
 
     def land(self) -> bool:
         with self._lock:
-            self.mode = "LAND"
+            self._set_mode_locked("LAND")
             self._target = (self._lat, self._lon, 0.0)
             self._yaw_cmd = None
+        self._cruise.invalidate()
         return True
 
     def hold(self) -> bool:
         with self._lock:
-            self.mode = "GUIDED"
+            self._position_target_locked()
             self._target = (self._lat, self._lon, self._agl)
             self._yaw_cmd = None
+        self._cruise.target_sent()
         return True
 
     def confirm_guided(self, *, timeout_s: float = 8.0) -> bool:
@@ -1077,12 +1343,15 @@ class SimFlightBackend:
     def telemetry(self) -> dict:
         lat, lon, agl = self.position()
         vn, ve = self.velocity()
+        cruise = self._cruise.desired
         return {
             "lat_deg": lat,
             "lon_deg": lon,
             "alt_m": agl,
             "agl_m": agl,
             "heading_deg": self.heading() or 0.0,
+            "groundspeed_m_s": math.hypot(vn, ve),
+            "cruise_speed_m_s": -1.0 if cruise is None else cruise,
             "armed": self.armed,
             "mode": self.mode,
             "vn_m_s": vn,
@@ -1132,20 +1401,44 @@ class MavlinkFlightBackend:
         self._alt_bias = 0.0
         self._last_cmd = None  # raw (lat, lon, agl, yaw) pre-bias
         self._home = None      # (lat, lon) captured at last ground arm
+        self._cruise = CruiseSpeed(
+            self._link.set_cruise_speed_m_s, self._mode_string
+        )
 
     def position(self):
         p = self._vehicle.position
         # pos.alt is already AGL (link pinned to home_alt_m=0).
         return (p.lat, p.lon, max(p.alt, 0.0))
 
-    def set_cruise_speed(self, speed: float) -> None:
-        self._link.set_cruise_speed_m_s(speed)
+    def set_cruise_speed(self, speed: float | None, owner=None) -> None:
+        """Desired guided cruise speed; sent right after the next position
+        target and re-sent after every mode change/takeoff (CruiseSpeed).
+        None stops asserting one: the autopilot falls back to WPNAV_SPEED
+        at its next mode change or takeoff. `owner` pairs with
+        release_cruise_speed."""
+        self._cruise.set(speed, owner)
+
+    def release_cruise_speed(self, owner) -> None:
+        self._cruise.release(owner)
+
+    def reapply_cruise_speed(self) -> None:
+        self._cruise.lost()
+
+    def cruise_speed(self) -> float | None:
+        return self._cruise.desired
+
+    def airborne_failure(self) -> str:
+        """Why the last ensure_airborne returned False ("" if it didn't)."""
+        return self._link.last_failure
 
     def ensure_airborne(self, agl: float) -> bool:
         if not self._link.is_armed():
             # about to launch from here: THIS is home for smart RTL
             p = self.position()
             self._home = (p[0], p[1])
+        # GUIDED (re)entry and NAV_TAKEOFF both end the position episode
+        # that holds a DO_CHANGE_SPEED
+        self._cruise.invalidate()
         return self._mod.ensure_airborne(
             self._link,
             self._vehicle,
@@ -1222,7 +1515,18 @@ class MavlinkFlightBackend:
                 f = lead / dist
                 t_lat = here[0] + (lat - here[0]) * f
                 t_lon = here[1] + (lon - here[1]) * f
-        self._link.goto(t_lat, t_lon, self._effective_agl(agl), yaw_deg=yaw_deg)
+        self._send_target(
+            t_lat, t_lon, self._effective_agl(agl), yaw_deg=yaw_deg
+        )
+
+    def _send_target(self, lat, lon, agl, *, yaw_deg=None) -> None:
+        """Every SET_POSITION_TARGET goes through here so the cruise speed
+        is re-sent once the FC is in its position sub-mode."""
+        self._link.goto(lat, lon, agl, yaw_deg=yaw_deg)
+        # MavlinkDroneLink drops targets (keeps its latch) while NAV_TAKEOFF
+        # climbs through 3 m: the FC is still in its takeoff sub-mode then
+        if not getattr(self._link._inner, "_takeoff_in_progress", False):
+            self._cruise.target_sent()
 
     def at_target(self, lat, lon, agl, tol_m=2.0) -> bool:
         p = self.position()
@@ -1344,18 +1648,22 @@ class MavlinkFlightBackend:
         return -1.0
 
     def rtl(self) -> bool:
+        self._cruise.invalidate()
         return bool(self._link.rtl())
 
     def land(self) -> bool:
+        self._cruise.invalidate()
         return bool(self._link.land())
 
     def hold(self) -> bool:
         # GUIDED + retarget current position = position hold. Retarget at
         # the CURRENT AGL so a hold never commands a climb or descent.
         p = self.position()
+        if self._mode_string() != "GUIDED":
+            self._cruise.invalidate()  # ModeGuided::init resets the limit
         if not self._link.set_mode_guided():
             return False
-        self._link.goto(p[0], p[1], p[2])
+        self._send_target(p[0], p[1], p[2])
         return True
 
     def telemetry(self) -> dict:
@@ -1373,12 +1681,15 @@ class MavlinkFlightBackend:
         # trustworthy band; drones without one (rf = -1) never alarm
         alarm = 0.0 < rf < 8.0 and abs(rf - agl) > 2.0
         vn, ve = self.velocity()
+        cruise = self._cruise.desired
         return {
             "lat_deg": lat,
             "lon_deg": lon,
             "alt_m": agl,  # AGL frame throughout
             "agl_m": agl,
             "heading_deg": self.heading() or 0.0,
+            "groundspeed_m_s": math.hypot(vn, ve),
+            "cruise_speed_m_s": -1.0 if cruise is None else cruise,
             "armed": bool(self._link.is_armed()),
             "mode": self._mode_string(),
             "battery_pct": battery_pct,
@@ -1708,6 +2019,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Smart RTL: vertical spacing between fleet altitude slots.",
     )
     parser.add_argument(
+        "--rtl-speed-m-s", type=float, default=3.0,
+        help="Smart RTL: horizontal cruise speed home, the same for every "
+        "vehicle (a raster's slow speed must not leak into the return).",
+    )
+    parser.add_argument(
+        "--task-speed-m-s", type=float, default=3.0,
+        help="Cruise speed of sensor-tasking flights (fly to a point, capture, "
+        "and a raster override's detour). 3 m/s = the smart-RTL speed and "
+        "the investigate default (max_speed_mps or 3.0), so every non-search "
+        "flight moves alike; it covers a 100 m hop in ~35 s, and without it "
+        "these flights ran at WPNAV_SPEED (10 m/s default) after a takeoff.",
+    )
+    parser.add_argument(
         "--log-dir", default="/var/lib/minimuas/log",
         help="Directory for the agent's persistent event journal "
         "(fsync-per-line JSONL that survives a pulled battery, unlike "
@@ -1981,7 +2305,8 @@ def main() -> int:
             sensor_gate.release()
 
     def goto_and_wait(lat: float, lon: float, agl: float,
-                      tol_m: float = 2.5, timeout_s: float = 120.0) -> bool:
+                      tol_m: float = 2.5, timeout_s: float = 120.0,
+                      speed_watch=None) -> bool:
         flight.goto(lat, lon, agl)
         next_send = time.monotonic() + 2.0
         deadline = time.monotonic() + timeout_s
@@ -2008,12 +2333,17 @@ def main() -> int:
             if time.monotonic() >= next_send:
                 flight.goto(lat, lon, agl)
                 next_send = time.monotonic() + 2.0
+            if speed_watch is not None:
+                speed_watch.tick()
             time.sleep(0.2)
         return True
 
     def service_override() -> bool:
         """fly_raster hook: serve one pending override capture, then
-        return the vehicle to where the sweep was interrupted."""
+        return the vehicle to where the sweep was interrupted.
+
+        The detour flies at --task-speed-m-s, not the sweep's search speed
+        (fly_raster re-asserts its own speed when this returns)."""
         with tasking_lock:
             entry = tasking["override"]
             tasking["override"] = None
@@ -2025,20 +2355,30 @@ def main() -> int:
             "agent.sensor.override_start",
             request=req.request_id, sensor=req.sensor,
         )
-        if req.target is not None and goto_and_wait(
-            req.target.lat_deg, req.target.lon_deg, resume[2],
-            tol_m=max(2.5, req.radius_m),
-        ):
-            slot["result"] = capture_sensor(req, reject_if_busy=False)
-        else:
-            slot["result"] = SensorCaptureResult(
-                request_id=req.request_id, vehicle_id=vehicle_id,
-                sensor=req.sensor, status="failed",
-                message="could not reach override target (aborted or timed out)",
-            )
-        # resume: fly back to the interrupt point before handing control
-        # back to the sweep
-        goto_and_wait(resume[0], resume[1], resume[2])
+        owner = object()
+        flight.set_cruise_speed(args.task_speed_m_s, owner=owner)
+        watch = SpeedWatch(flight, args.task_speed_m_s,
+                           task=f"sensor-{req.request_id}")
+        try:
+            if req.target is not None and goto_and_wait(
+                req.target.lat_deg, req.target.lon_deg, resume[2],
+                tol_m=max(2.5, req.radius_m), speed_watch=watch,
+            ):
+                slot["result"] = capture_sensor(req, reject_if_busy=False)
+            else:
+                slot["result"] = SensorCaptureResult(
+                    request_id=req.request_id, vehicle_id=vehicle_id,
+                    sensor=req.sensor, status="failed",
+                    message="could not reach override target (aborted or "
+                    "timed out)",
+                )
+            # resume: fly back to the interrupt point before handing control
+            # back to the sweep
+            goto_and_wait(resume[0], resume[1], resume[2], speed_watch=watch)
+        finally:
+            flight.release_cruise_speed(owner)
+        print_json("agent.sensor.flight", request=req.request_id,
+                   **watch.summary())
         done.set()
         return True
 
@@ -2215,6 +2555,7 @@ def main() -> int:
                 cancel=rtl_cancel,
                 base_agl_m=args.rtl_base_agl_m,
                 separation_m=args.rtl_sep_m,
+                speed_m_s=args.rtl_speed_m_s,
                 on_event=lambda **kw: print_json(
                     "agent." + str(kw.pop("kind")), **kw
                 ),
@@ -2733,12 +3074,19 @@ def main() -> int:
         except Exception as exc:
             ok, message = False, str(exc)
         else:
-            message = "" if ok else "takeoff did not reach target AGL"
+            # the gate that failed (and the FC's own PreArm/Arm text), not
+            # a generic line: 2026-10-13 15:38-15:53 wuas-01 refused six
+            # takeoffs and the reason reached neither journal nor operator
+            message = "" if ok else (
+                "takeoff failed: "
+                + (flight.airborne_failure() or "no reason reported")
+            )
         finally:
             set_busy("")
         print_json(
             "agent.command", command="takeoff",
             agl=request.target_agl_m, ok=bool(ok),
+            **({} if ok else {"reason": message}),
         )
         return FlightCommandResult(
             vehicle_id=vehicle_id,
@@ -2850,19 +3198,32 @@ def main() -> int:
                 message=f"busy:{busy['task']}",
             ).to_bytes()
         abort.clear()
+        # this flight's own speed: without one it flew WPNAV_SPEED (10 m/s
+        # default) after a takeoff, or whatever an earlier task left live
+        speed_owner = object()
+        flight.set_cruise_speed(args.task_speed_m_s, owner=speed_owner)
+        watch = SpeedWatch(flight, args.task_speed_m_s,
+                           task=f"sensor-{req.request_id}")
         try:
             here = flight.position()
             agl = max(here[2], min_agl)
             if not flight.ensure_airborne(agl):
+                # the backend's own reason (stage: why), not a generic line:
+                # 2026-10-13 16:55:32 iuas-02 answered "could not get
+                # airborne" for a ground-AGL refusal only its journal showed
                 return SensorCaptureResult(
                     request_id=req.request_id, vehicle_id=vehicle_id,
                     sensor=req.sensor, status="failed",
-                    message="could not get airborne",
+                    message="could not get airborne: "
+                    + (flight.airborne_failure() or "no reason reported"),
                 ).to_bytes()
-            if not goto_and_wait(
+            reached = goto_and_wait(
                 req.target.lat_deg, req.target.lon_deg, agl,
-                tol_m=max(2.5, req.radius_m),
-            ):
+                tol_m=max(2.5, req.radius_m), speed_watch=watch,
+            )
+            print_json("agent.sensor.flight", request=req.request_id,
+                       reached=reached, **watch.summary())
+            if not reached:
                 return SensorCaptureResult(
                     request_id=req.request_id, vehicle_id=vehicle_id,
                     sensor=req.sensor, status="failed",
@@ -2872,6 +3233,7 @@ def main() -> int:
             # reject, so the flight isn't wasted.
             return capture_sensor(req, reject_if_busy=False).to_bytes()
         finally:
+            flight.release_cruise_speed(speed_owner)
             set_busy("")
 
     # ---- service: system/shutdown (authorized companion power-off) ----------
@@ -3249,12 +3611,19 @@ def main() -> int:
                         frame=name, error=str(exc),
                     )
             try:
-                flight.set_cruise_speed(request.speed_m_s)
+                # No speed here: a DO_CHANGE_SPEED sent before takeoff is
+                # refused/reset by ArduCopter (see CruiseSpeed); fly_raster
+                # asserts it once the sweep's position targets are flowing.
                 if not flight.ensure_airborne(request.agl_m):
-                    push_status("airborne failed")
+                    reason = flight.airborne_failure() or "no reason reported"
+                    push_status("airborne failed: " + reason)
+                    print_json(
+                        "agent.search.airborne_failed", task=task_id,
+                        reason=reason,
+                    )
                     return RasterSearchResult(
                         task_id=task_id, status="failed",
-                        notes="could not reach search altitude",
+                        notes="could not reach search altitude: " + reason,
                     ).to_bytes()
                 # Airborne != flyable. Confirm the FC is actually holding
                 # GUIDED with a live target before the sweep, so we never
@@ -3279,6 +3648,7 @@ def main() -> int:
                     _publish_capture(cp, frames, here)
                     push_status()
 
+                watch = SpeedWatch(flight, request.speed_m_s, task=task_id)
                 outcome = fly_raster(
                     flight,
                     plan,
@@ -3289,6 +3659,7 @@ def main() -> int:
                     on_capture=on_capture,
                     on_leg=on_leg,
                     service_interrupt=service_override,
+                    speed_watch=watch,
                 )
                 raw_outcome = outcome
                 if outcome in ("timeout", "stalled"):
@@ -3297,9 +3668,11 @@ def main() -> int:
                     "done" if outcome == "completed" else outcome
                 )
                 push_status(outcome)
+                speed = watch.summary()
                 print_json(
                     "agent.search.finished",
                     task=task_id, outcome=raw_outcome, frames=frames,
+                    **speed,
                 )
                 if raw_outcome == "stalled":
                     notes = "vehicle did not respond to GUIDED commands (stalled)"
@@ -3307,6 +3680,12 @@ def main() -> int:
                     notes = f"timed out; legs={len(plan.legs)}"
                 else:
                     notes = f"legs={len(plan.legs)}"
+                if "speed_p90_m_s" in speed:
+                    notes += (
+                        f"; speed req {speed['speed_req_m_s']:.1f} m/s, "
+                        f"flown p90 {speed['speed_p90_m_s']:.1f} / max "
+                        f"{speed['speed_max_m_s']:.1f} m/s"
+                    )
                 return RasterSearchResult(
                     task_id=task_id,
                     status=outcome,
@@ -3374,7 +3753,7 @@ def main() -> int:
                 return "flyover"
             return "orbit"
 
-        def _run_investigate(request: InvestigatePointRequest):
+        def _run_investigate(request: InvestigatePointRequest, speed_owner):
             """Fly the investigation directly on the agent's flight backend.
 
             One path for sim and MAVLink: climb, then a CONTINUOUS carrot
@@ -3395,7 +3774,9 @@ def main() -> int:
             speed = request.constraints.max_speed_mps or 3.0
             pattern = _select_investigate_pattern(request)
             task_id = f"{vehicle_id}-investigate-{request.source_detection_id}"
-            flight.set_cruise_speed(speed)
+            # released by the handler: the backend re-asserts a set speed
+            # after every takeoff (CruiseSpeed), so it must end with the task
+            flight.set_cruise_speed(speed, owner=speed_owner)
 
             artifacts: list[SensorArtifact] = []
             payloads: list[bytes] = []
@@ -3473,8 +3854,15 @@ def main() -> int:
                 return True
 
             if not flight.ensure_airborne(agl):
+                # Say WHY: on 2026-10-13 both IUAS answered "could not reach
+                # approach altitude" within 2 s of "Investigate anyway" while
+                # the cause, a ground-AGL takeoff refusal (1.61 m / 2.27 m
+                # disarmed baro drift), was only in their system journals.
                 status, note, mode = (
-                    "failed", "could not reach approach altitude", pattern
+                    "failed",
+                    "could not get airborne: "
+                    + (flight.airborne_failure() or "no reason reported"),
+                    pattern,
                 )
             elif not flight.confirm_guided():
                 # Same guard as the raster: airborne != flyable. In the 2026-08
@@ -3644,8 +4032,17 @@ def main() -> int:
             if not set_busy("investigate"):
                 return ServiceResponse(status=False, error=f"busy:{busy['task']}")
             abort.clear()
+            print_json(
+                "agent.investigation.started",
+                source=request.source_detection_id,
+                sensors=request.sensor_plan,
+                lat=request.target.lat_deg, lon=request.target.lon_deg,
+                # a simulated target: real flight, synthetic object
+                simulated=request.simulated,
+            )
+            speed_owner = object()
             try:
-                outcome = _run_investigate(request)
+                outcome = _run_investigate(request, speed_owner)
                 for artifact, art_payload in zip(
                     outcome.result.artifacts, outcome.artifact_payloads
                 ):
@@ -3667,9 +4064,12 @@ def main() -> int:
                     task_id=outcome.result.task_id,
                     status=outcome.result.status,
                     execution=outcome.mode,
+                    note=outcome.result.notes,
+                    simulated=request.simulated,
                 )
                 return outcome.result.to_bytes()
             finally:
+                flight.release_cruise_speed(speed_owner)
                 set_busy("")
 
     # ---- capability + run ----------------------------------------------------

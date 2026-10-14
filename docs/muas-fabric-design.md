@@ -98,7 +98,14 @@ Default (fresh node): `desired = good = nfd wifi` — the field-proven cell.
 **Watchdog** (`muas-fabric-watchdog.timer`, 60 s): re-runs local health against
 `active`; on failure re-triggers apply (which will fall back to `good`). Covers
 mid-mission failures (radio dongle drops, forwarder crash-loop) — the node
-self-heals to last-known-good without operator action.
+self-heals to last-known-good without operator action. On the wifi cells it also
+counts peers: each must have a face and a `/muas` nexthop (else it starts the
+cell's reconcile unit at once), and a tick in which no peer's face received a
+packet is logged as `NO PEER REACHABLE` (not acted on: a GCS before the vehicles
+power up looks the same). Field 2026-10-13 the local check alone passed for hours
+on vehicles whose ndn-fwd had started before Wi-Fi associated and so had no face
+to any peer; `muas-fabric-ndn-fwd-wifi-reconcile.timer` (30 s, the ndn-fwd
+counterpart of `muas-v2-routes`) now re-creates those faces and routes.
 
 **Field CLI** (`muas-fabric`, a small shell wrapper):
 

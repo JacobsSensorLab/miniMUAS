@@ -18,10 +18,11 @@ Nodes launched:
 
 Fabric wiring mirrors the deployment's STRATEGY layer from
 minidronesys-configurations@mini-muas-v2 nix/nixos/common/minimuas/v2.nix:
-multicast strategy on /muas/v2/group and /muas/v2/mission, best-route (the NFD
-default) on /muas. On a single NFD there are no inter-node UDP faces/routes to
-create — those collapse to loopback. The multi-container faithful variant
-(Option A) is documented in the RUNBOOK.
+multicast strategy on /muas/v2/group, best-route (the NFD default) on /muas.
+Mission data lives under each producer's /muas/v2/<vehicle> prefix (see
+contracts.mission_frame_name). On a single NFD there are no inter-node UDP
+faces/routes to create — those collapse to loopback. The multi-container
+faithful variant (Option A) is documented in the RUNBOOK.
 
 This supervisor runs in the foreground until SIGINT/SIGTERM, then tears every
 child down and stops the NFD it started. It writes a readiness file once all
@@ -51,7 +52,6 @@ DEFAULT_UAS_IPBRC = os.environ.get(
 )
 
 GROUP = "/muas/v2/group"
-MISSION_PREFIX = "/muas/v2/mission"
 CONTROLLER = "/muas/v2/controller"
 
 # Fleet layout: distinct start points ~10-12 m apart around a common center so
@@ -179,8 +179,8 @@ class Fleet:
                 raise RuntimeError("nfd-start failed")
             self.started_nfd = True
             log("nfd.started")
-        # Strategy layer mirrors v2.nix: multicast on group + mission prefixes.
-        for prefix in (self.args.group, MISSION_PREFIX):
+        # Strategy layer mirrors the fleet: multicast on the sync group only.
+        for prefix in (self.args.group,):
             r = run(["nfdc", "strategy", "set", "prefix", prefix,
                      "strategy", "/localhost/nfd/strategy/multicast"])
             log("nfd.strategy", prefix=prefix, ok=(r.returncode == 0))

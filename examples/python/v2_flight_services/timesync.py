@@ -12,7 +12,9 @@ chrony's reading is the clock error; the age is reported separately.
 
 from __future__ import annotations
 
+import ipaddress
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -64,9 +66,12 @@ def parse_tracking_csv(text: str) -> ClockReading:
 
 
 def read_chrony(timeout_s: float = 2.0) -> ClockReading:
+    # -n: the reference must come back as the IP chrony uses (offset_vs_local_ms
+    # compares it with this host's addresses), and a reverse-DNS lookup in an
+    # isolated field has no resolver to answer it inside `timeout_s`.
     try:
         out = subprocess.run(
-            [CHRONYC, "-c", "tracking"],
+            [CHRONYC, "-n", "-c", "tracking"],
             capture_output=True, text=True, timeout=timeout_s,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -74,6 +79,54 @@ def read_chrony(timeout_s: float = 2.0) -> ClockReading:
     if out.returncode != 0:
         return UNKNOWN
     return parse_tracking_csv(out.stdout)
+
+
+_LOCAL_ADDRESSES: set[str] = set()
+
+
+def is_local_address(ref: str) -> bool:
+    """True when `ref` is an IP address assigned to this host.
+
+    Binding a socket to an address succeeds only for a local one
+    (EADDRNOTAVAIL otherwise), which covers every interface without parsing
+    `ip addr`. Only hits are cached: mesh0 may get its address after start.
+    """
+    if ref in _LOCAL_ADDRESSES:
+        return True
+    try:
+        family = socket.AF_INET6 if ipaddress.ip_address(ref).version == 6 else socket.AF_INET
+    except ValueError:
+        return False
+    try:
+        with socket.socket(family, socket.SOCK_DGRAM) as s:
+            s.bind((ref, 0))
+    except OSError:
+        return False
+    _LOCAL_ADDRESSES.add(ref)
+    return True
+
+
+def offset_vs_local_ms(ref: str, offset_ms: float, ours: ClockReading) -> float | None:
+    """A remote node's clock minus THIS host's clock, ms; None if unrelated.
+
+    `ref`/`offset_ms` are the node's own chrony reading (node minus `ref`).
+      - The node disciplines to us (every drone -> the GCS): its offset already
+        IS node minus us. Our own reference is irrelevant, so this holds in an
+        isolated field where the GCS serves a hand-set or free-running clock
+        (chrony `local stratum 10`: reference 7F7F0101 with no name, which
+        parse_tracking_csv reads as unknown). Field 2026-10-13: all three
+        drones reported clock_ref 192.168.1.13 at 0.0-0.05 ms while the GCS
+        was on that local reference, and the dashboard showed no offset all day.
+      - Both discipline to the same upstream (bench drones on the pool):
+        (node - R) - (us - R) = node - us.
+    """
+    if not ref:
+        return None
+    if is_local_address(ref):
+        return offset_ms
+    if ours.known and ref == ours.ref:
+        return offset_ms - ours.offset_ms
+    return None
 
 
 class ClockMonitor:

@@ -83,12 +83,14 @@ Service names are intentionally task-oriented and versioned.
 ```
 
 Large sensor products should be passed by data name instead of embedded in
-service payloads.
+service payloads. Mission data lives under its producer's node prefix, which
+the fabric routes to that node; a shared `/muas/v2/mission` tree has no route
+and went to the wrong peer on the 2026-10-13 field day.
 
 ```text
-/muas/v2/mission/<mission-id>/<vehicle>/camera/<camera-id>/frame/<gps-time-ns>/<seq>
-/muas/v2/mission/<mission-id>/<vehicle>/sensor/<sensor-id>/<kind>/<gps-time-ns>/<seq>
-/muas/v2/mission/<mission-id>/evidence/<object-id>/<gps-time-ns>
+/muas/v2/<vehicle>/mission/<mission-id>/camera/<camera-id>/frame/<gps-time-ns>/<seq>
+/muas/v2/<vehicle>/mission/<mission-id>/sensor/<sensor-id>/<kind>/<gps-time-ns>/<seq>
+/muas/v2/mission/<mission-id>/evidence/<object-id>/<gps-time-ns>   (reference only, not served)
 ```
 
 ## Core Payloads
@@ -102,7 +104,7 @@ the contract can be exercised without code generation.
 {
   "mission_id": "mission-001",
   "frame": {
-    "data_name": "/muas/v2/mission/mission-001/wuas-01/camera/front/frame/1710000000000000000/1",
+    "data_name": "/muas/v2/wuas-01/mission/mission-001/camera/front/frame/1710000000000000000/1",
     "gps_time_ns": 1710000000000000000,
     "seq": 1,
     "camera_id": "front",
@@ -160,7 +162,7 @@ the contract can be exercised without code generation.
   "completed_at_gps_ns": 1710000010000000000,
   "artifacts": [
     {
-      "data_name": "/muas/v2/mission/mission-001/iuas-01/sensor/front/frame/1710000009000000000/1",
+      "data_name": "/muas/v2/iuas-01/mission/mission-001/sensor/front/frame/1710000009000000000/1",
       "kind": "image/jpeg",
       "gps_time_ns": 1710000009000000000,
       "pose": {

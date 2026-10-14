@@ -218,3 +218,96 @@ here so the next outing checks for regressions.
 Still open after these fixes: the cold-boot AP/registration self-heal,
 and battery telemetry (now wired via `battery_pct()` but unverified on
 the real FC — confirm it populates the tile).
+
+## Field day 2026-10-13: detection, "Investigate anyway", sim target
+
+1. **0-1 of 2 detections, results late.** The GCS detector takes ~2.2 s a
+   frame (yolov8n on the busy GCS CPU); the WUAS captured one every
+   ~1.4 s and the dashboard sent each at once. The provider fast-rejected
+   61 frames "detector busy" and the dashboard filed each as a miss: in
+   the first mission 17 of 31, among them the frames 2.2 m and 4.0 m from
+   the racket, so it was seen once (kite 0.35, then 0.54 in the third
+   mission) and never confirmed. FIX: the dashboard queues frames and keeps
+   at most `--detect-inflight` (2, = the provider's `--detect-admit`)
+   outstanding; a busy answer re-sends the frame. Leftover candidates
+   settle only after the last frame is answered (and one status poll after
+   the raster's answer collected the final captures); frames from the
+   previous mission's status are ignored. The provider's slot frees when
+   the work ends, and a handler waits `admit x (fetch + infer)`, so a
+   15 s fetch can no longer time out the frames queued behind it.
+   The GCS also saves each frame raw (`*.raw.jpeg`) beside the annotated
+   copy so hits can be re-scored.
+2. **On "nfd wifi" every detection frame fetch timed out.** Mission frames
+   were named `/muas/v2/mission/<mid>/<vid>/...`, which only the cost-100
+   `/muas` peer routes matched; best-route sent them to iuas-02. FIX: mission
+   data now lives under the producer, `/muas/v2/<vid>/mission/<mid>/...`.
+3. **"Investigate anyway" failed on both IUAS within 2 s.** Both refused
+   takeoff on the ground-AGL check (disarmed baro drift 1.61 m and
+   2.27 m > 1.5 m); the card only said "camera failed / audio failed".
+   FIX: `mavlink_flight.ensure_airborne` checks ground AGL after arming
+   (ArduCopter re-zeroes home altitude at arm); the agents now answer
+   "could not get airborne: <stage>: <reason>" and the target card shows
+   each failed job's reason.
+4. **The placed sim target did nothing.** Only the stub detector read the
+   placed anomalies; the field runs yolo. FIX: any detector reports a
+   placed visual target that projects inside a captured frame as a
+   `simulated` detection (object `SIM-<signature>`), flagged SIMULATED on
+   the cards, map, events, investigate request and agent journal, and never
+   merged with real hits. Place one under the raster to exercise confirm ->
+   dispatch -> investigate without a real object.
+
+## Field day 2026-10-13: hover after RTL, raster speed, RTL speeds
+
+1. **New mission after RTL/Land: took off, then hovered.** wuas-01 16:37:31
+   and 16:47:05 CDT: armed, then `ensure_airborne` returned False exactly
+   3 s later (agl 0.7-0.8 m, note "airborne failed") while the vehicle kept
+   climbing to 6/8 m and hovered in GUIDED with nobody commanding it. The
+   3 s is the NAV_TAKEOFF COMMAND_ACK timeout: the telemetry, PeerGuard and
+   watchpoint threads drain the same pymavlink connection and one of them
+   ate the ACK the takeoff was waiting for (reproduced on SITL:
+   `flight.ack_recovered` for takeoff and DO_CHANGE_SPEED). The RTL->Loiter
+   cycle only re-rolled that race. FIX: `LoggingFlightLink` re-judges a
+   timed-out command from pymavlink's per-type message cache, and
+   `ensure_airborne` decides arm/takeoff from telemetry (armed flag, climb
+   check) instead of ACKs; every failure is journaled as
+   `flight.takeoff_refused {stage, reason}` and the raster answers
+   "could not reach search altitude: <stage>: <reason>".
+2. **Raster flew 7-8 m/s whatever speed was set.** Requested 0.5 m/s, flown
+   p90 7.5 / max 8.3 m/s (2 m/s: max 8.5) on every mission started from the
+   ground; the one started after a sensor-tasking goto (16:52:21) flew
+   0.45 m/s. ArduCopter keeps DO_CHANGE_SPEED only within one GUIDED
+   position episode: refused outside GUIDED, reset to WPNAV_SPEED by GUIDED
+   entry and by the first position target after NAV_TAKEOFF
+   (`ModeGuided::pos_control_start`). The raster sent it before takeoff.
+   FIX: the flight backend holds the desired speed and re-sends it right
+   after the first position target of every episode (`CruiseSpeed`);
+   `SpeedWatch` checks |v| from telemetry each tick, re-sends on a sustained
+   overspeed and puts p50/p90/max into `agent.search.finished`. Telemetry
+   now carries `groundspeed_m_s` (it was always 0) and `cruise_speed_m_s`.
+3. **WUAS crawled home, IUAS fast.** The smart RTL never set a speed:
+   wuas-01 returned at its last raster's 0.45 m/s, both IUAS at WPNAV_SPEED
+   (peaks 4.1/4.8 m/s). 26 s in, wuas-01 left GUIDED (RTL, then LOITER 1 s
+   later: a pilot/GCS mode change, not the agent; battery 12%) and came
+   down in LOITER 9.3 m short of home; the agent yielded (`rtl.takeover`).
+   FIX: every vehicle returns at `--rtl-speed-m-s` (default 3); task speeds
+   are released when their task ends so none leaks into the next one.
+   Sensor-tasking flights (fly to a point, and a raster override's detour)
+   fly `--task-speed-m-s` (default 3, = RTL and the investigate default);
+   the raster takes its own speed back after a detour.
+4. **wuas-01 would not arm, 15:38-15:53 (six takeoffs).** Our gates passed
+   (GUIDED confirmed, AGL 0.1-0.2 m, no busy refusal); the autopilot itself
+   refused within ~1 s, and its reason (a "PreArm:"/"Arm:" STATUSTEXT or a
+   failsafe state) was never recorded: the relay drops STATUSTEXT and the
+   dashboard printed every takeoff as "ok: true, No error" because it never
+   read the agent's answer. The FC was rebooted at 15:43 and Mission Planner
+   was on it 15:49-15:51 and 15:58-16:02 (mavrouter journal); it armed at
+   16:07. FIX: the agent keeps the FC's STATUSTEXTs (`flight.fc_text` in
+   the journal) and appends the latest arming verdict to the refusal
+   ("takeoff failed: arm: autopilot did not arm — FC: PreArm: ..."); a
+   failsafe state is named; the dashboard's `command.result` now carries
+   the agent's status and message.
+
+Flight-test before relying on it: one raster from the ground at 1 m/s
+(journal `agent.flight.speed_applied ok=true`, finished event p90 ≈ 1),
+one RTL ALL after it (all three `rtl.landing` at ≈3 m/s), and a mission
+started right after an RTL landing (no `flight.takeoff_refused`).

@@ -21,9 +21,10 @@ image built by `docker/Dockerfile`. Given that, the least-friction path to a
   fabric is one NFD or four — per-node NFDs and inter-node UDP faces are
   transport realism the dashboard cannot show.
 - The strategy layer that actually matters for correctness **is** mirrored from
-  the deployment (`nix/nixos/common/minimuas/v2.nix`): multicast on
-  `/muas/v2/group` and `/muas/v2/mission`, best-route on `/muas`. On a single
-  NFD the inter-node UDP faces and `/muas` routes collapse to loopback.
+  the deployment (`nix/nixos/common/minimuas/fabric.nix`): multicast on the
+  `/muas/v2/group` sync group, best-route on `/muas`. Mission data lives under
+  its producer's `/muas/v2/<vehicle>` prefix. On a single NFD the inter-node UDP
+  faces and `/muas` routes collapse to loopback.
 
 **Rejected:**
 - *Option A — N containers, per-node NFD, full-mesh UDP faces mirroring v2.nix.*
@@ -265,9 +266,11 @@ Mirror `mini-muas-v2:nix/nixos/common/minimuas/v2.nix` + `.../nfd/`:
 - Full mesh **unicast UDP faces**: on each node, for every peer,
   `nfdc face create udp://<peer> reliability on mtu 1452`.
 - **Strategies** (same as here): `nfdc strategy set prefix /muas/v2/group
-  strategy /localhost/nfd/strategy/multicast` and likewise `/muas/v2/mission`.
+  strategy /localhost/nfd/strategy/multicast`.
 - **Routes**: `nfdc route add prefix /muas nexthop <faceid> cost 100` toward
-  every peer face (equal-cost), NFD UDP on **6363**.
+  every peer face (equal-cost), plus `/muas/v2/<vehicle>` at cost 10 toward
+  the face serving that vehicle (mission frames/artifacts live under it), NFD
+  UDP on **6363**.
 - Point every node's controller/roles at the gcs controller `/muas/v2/controller`.
 
 `launch_fleet.py`'s role/flag wiring is unchanged per node; only NFD setup and

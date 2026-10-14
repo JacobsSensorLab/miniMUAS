@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import json
-import math
 import time
 from typing import Any
 
@@ -95,6 +94,13 @@ def vehicle_sensor_event_name(vehicle_id: str) -> str:
     return f"/muas/v2/{vehicle_id}/sensor/last"
 
 
+# Mission data lives UNDER ITS PRODUCER's node prefix (/muas/v2/<vehicle>/...),
+# like every other per-vehicle name: the fabric routes /muas/v2/<id> to the
+# node that serves it (cost 10) on both wifi cells, and has no route for a
+# shared /muas/v2/mission tree. Field 2026-10-13 on "nfd wifi": every GCS fetch
+# of /muas/v2/mission/<mid>/wuas-01/camera/... matched only the equal-cost
+# /muas peer routes, best-route sent it to iuas-02 (GCS FIB snapshot
+# 21:52:34Z), and all 23 detection frame fetches timed out at 15 s.
 def mission_frame_name(
     mission_id: str,
     vehicle_id: str,
@@ -103,7 +109,7 @@ def mission_frame_name(
     seq: int,
 ) -> str:
     return (
-        f"/muas/v2/mission/{mission_id}/{vehicle_id}/camera/"
+        f"/muas/v2/{vehicle_id}/mission/{mission_id}/camera/"
         f"{camera_id}/frame/{timestamp_ns}/{seq}"
     )
 
@@ -117,7 +123,7 @@ def mission_sensor_name(
     seq: int,
 ) -> str:
     return (
-        f"/muas/v2/mission/{mission_id}/{vehicle_id}/sensor/"
+        f"/muas/v2/{vehicle_id}/mission/{mission_id}/sensor/"
         f"{sensor_id}/{kind}/{timestamp_ns}/{seq}"
     )
 
@@ -132,8 +138,11 @@ def mission_evidence_name(mission_id: str, object_id: str, timestamp_ns: int) ->
 #
 # Both are ADDITIVE, backward-compatible extensions:
 #   * anomalies ride the DetectionRequest (optional list[dict]); a GCS that
-#     predates the field ignores it, a placement-free mission sends none and
-#     the stub detector keeps its legacy always-hit behaviour.
+#     predates the field ignores it. Whatever the detector (stub or yolo), a
+#     placed visual anomaly whose position projects inside a fetched frame
+#     yields a detection flagged `simulated` end to end (see
+#     detector.simulated_target_in_frame); a placement-free mission sends none
+#     and the stub detector keeps its legacy always-hit behaviour.
 #   * sensor_meta rides the CapabilityProfile (optional dict); legacy readers
 #     use .get and skip it.
 # Mirrors v3 (muas-contracts::anomaly / muas-contracts::sensors): the sim/
@@ -144,52 +153,6 @@ def mission_evidence_name(mission_id: str, object_id: str, timestamp_ns: int) ->
 # Signature colours a placed VISUAL anomaly can carry (renderer + a future
 # blob detector agree on these). Kept small and stable.
 ANOMALY_SIGNATURES = ("red", "orange", "blue", "magenta", "yellow")
-
-
-def _ground_dist_m(lat_a: float, lon_a: float, lat_b: float, lon_b: float) -> float:
-    """Local-flat ground distance in metres (bench scale — sub-km)."""
-    dn = (lat_b - lat_a) * 111111.0
-    de = (lon_b - lon_a) * 111111.0 * math.cos(math.radians((lat_a + lat_b) / 2.0))
-    return math.hypot(dn, de)
-
-
-def camera_footprint_radius_m(agl_m: float, hfov_deg: float) -> float:
-    """Half-width of a nadir camera's ground footprint at ``agl_m`` — the
-    radius within which a placed anomaly falls inside the frame."""
-    return max(agl_m, 0.0) * math.tan(math.radians(max(hfov_deg, 1e-3)) / 2.0)
-
-
-def nearest_visual_anomaly(
-    cap_lat: float,
-    cap_lon: float,
-    cap_agl: float,
-    hfov_deg: float,
-    anomalies: list[dict] | None,
-) -> tuple[dict, float] | None:
-    """The visual anomaly the nadir camera at this capture pose would find.
-
-    Returns ``(anomaly, ground_offset_m)`` for the nearest ``"visual"`` anomaly
-    whose ground position lies within the camera footprint (plus the blob's own
-    radius), or ``None`` for a clean miss. This is the v2 synthetic detector's
-    read of the sim ground truth: the placed target under the footprint is the
-    one that is "found", and it localises AT that target (offset = how far off
-    nadir it sat, the dashboard's localisation-quality metric).
-    """
-    radius = camera_footprint_radius_m(cap_agl, hfov_deg)
-    best: tuple[dict, float] | None = None
-    for anomaly in anomalies or []:
-        if str(anomaly.get("kind", "visual")) != "visual":
-            continue
-        try:
-            a_lat = float(anomaly["lat_deg"])
-            a_lon = float(anomaly["lon_deg"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        dist = _ground_dist_m(cap_lat, cap_lon, a_lat, a_lon)
-        reach = radius + float(anomaly.get("size_m", 0.0)) / 2.0
-        if dist <= reach and (best is None or dist < best[1]):
-            best = (anomaly, dist)
-    return best
 
 
 def default_camera_meta(
@@ -373,11 +336,11 @@ class DetectionRequest:
     mission_id: str
     frame: FrameRef
     object_query: str = "test-object"
-    # Sim ground-truth anomalies (operator-placed targets) the synthetic
-    # detector should look for in this frame. Optional and additive: absent
-    # or empty keeps the stub detector's legacy always-hit behaviour; when
-    # present, the stub reports a hit ONLY for a placed target under the
-    # frame's footprint (localised at that target). Ignored by real detectors.
+    # Sim ground-truth anomalies (operator-placed targets) to look for in
+    # this frame. Optional and additive: absent or empty keeps the stub
+    # detector's legacy always-hit behaviour; when present, ANY detector
+    # (stub or yolo) reports a placed visual target that projects inside the
+    # frame as a `simulated` detection localised at that target.
     anomalies: list[dict] = field(default_factory=list)
 
     def to_bytes(self) -> bytes:
@@ -407,6 +370,12 @@ class DetectionResponse:
     # error). The dashboard prefers the SMALLEST-offset sighting of a
     # confirmed target for its position, not the highest-confidence one.
     offset_m: float = 0.0
+    # True when this detection is synthetic (an operator-placed sim target or
+    # the stub detector), never a real object seen by a real model. Carried
+    # through candidates/targets/investigations so a sim target can exercise
+    # the whole confirm -> dispatch -> investigate chain in the field without
+    # ever being mistaken for a real find.
+    simulated: bool = False
 
     def to_bytes(self) -> bytes:
         return encode_dataclass(self)
@@ -421,6 +390,7 @@ class DetectionResponse:
             estimate=GeoPoint.from_dict(value["estimate"]),
             evidence_ref=value.get("evidence_ref"),
             offset_m=float(value.get("offset_m", 0.0)),
+            simulated=bool(value.get("simulated", False)),
         )
 
 
@@ -436,6 +406,9 @@ class InvestigatePointRequest:
     facing: str = "target"
     sensor_plan: list[str] = field(default_factory=lambda: ["capture-still"])
     constraints: ConstraintSet = field(default_factory=ConstraintSet)
+    # The target comes from a simulated detection (see DetectionResponse):
+    # the flight is real, the object is not.
+    simulated: bool = False
 
     def to_bytes(self) -> bytes:
         return encode_dataclass(self)
@@ -454,6 +427,7 @@ class InvestigatePointRequest:
             facing=str(value.get("facing", "target")),
             sensor_plan=[str(item) for item in value.get("sensor_plan", [])],
             constraints=ConstraintSet.from_dict(value.get("constraints", {})),
+            simulated=bool(value.get("simulated", False)),
         )
 
 
@@ -576,7 +550,12 @@ class TelemetrySample:
     alt_m: float = 0.0
     agl_m: float = 0.0
     heading_deg: float = 0.0
+    # |ground velocity| from GLOBAL_POSITION_INT, next to the cruise speed
+    # the agent last commanded (-1 = none, autopilot default), so the
+    # dashboard can show requested-vs-flown (2026-10-13: 0.5 m/s requested,
+    # 7.5 m/s flown, and groundspeed always read 0 because nothing set it)
     groundspeed_m_s: float = 0.0
+    cruise_speed_m_s: float = -1.0
     armed: bool = False
     mode: str = ""
     battery_v: float = 0.0
@@ -623,6 +602,7 @@ class TelemetrySample:
             agl_m=float(value.get("agl_m", 0.0)),
             heading_deg=float(value.get("heading_deg", 0.0)),
             groundspeed_m_s=float(value.get("groundspeed_m_s", 0.0)),
+            cruise_speed_m_s=float(value.get("cruise_speed_m_s", -1.0)),
             armed=bool(value.get("armed", False)),
             mode=str(value.get("mode", "")),
             battery_v=float(value.get("battery_v", 0.0)),

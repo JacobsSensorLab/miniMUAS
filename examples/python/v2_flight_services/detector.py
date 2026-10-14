@@ -546,6 +546,53 @@ def project_ground(
     return (dn * scale, de * scale)
 
 
+def ground_to_pixel(
+    north_m: float,
+    east_m: float,
+    image_size: tuple[int, int],
+    *,
+    agl_m: float,
+    hfov_deg: float = 70.0,
+    heading_deg: float | None = None,
+    pitch_deg: float = 0.0,
+    roll_deg: float = 0.0,
+    cam_yaw_offset_deg: float = 0.0,
+) -> tuple[float, float] | None:
+    """Inverse of project_ground: a ground offset from the capture position
+    (north_m, east_m, `agl_m` below) -> the pixel it images at.
+
+    The pixel may lie outside the image (caller checks bounds); None when
+    the point is not below the camera's image plane at all. Same
+    conventions and rotation chain as project_ground, inverted step by step,
+    so a round trip reproduces the pixel wherever project_ground did not
+    clamp a near-horizon ray.
+    """
+
+    width, height = image_size
+    if width <= 0 or agl_m <= 0:
+        return None
+    tan_half = math.tan(math.radians(hfov_deg) / 2.0)
+    yaw = math.radians(heading_deg or 0.0)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    cr, sr = math.cos(math.radians(roll_deg)), math.sin(math.radians(roll_deg))
+    cp, sp = math.cos(math.radians(pitch_deg)), math.sin(math.radians(pitch_deg))
+    # NED -> body: Rx(roll)^T @ Ry(pitch)^T @ Rz(yaw)^T
+    x2, y2, z2 = cy * north_m + sy * east_m, -sy * north_m + cy * east_m, agl_m
+    x1, y1, z1 = cp * x2 - sp * z2, y2, sp * x2 + cp * z2
+    bx, by, bz = x1, cr * y1 + sr * z1, -sr * y1 + cr * z1
+    if bz <= 1e-6:
+        return None
+    bx, by = bx / bz, by / bz
+    # body -> camera: undo the mounting rotation about the boresight
+    mount = math.radians(cam_yaw_offset_deg)
+    cam_fwd = bx * math.cos(mount) + by * math.sin(mount)
+    cam_right = -bx * math.sin(mount) + by * math.cos(mount)
+    return (
+        width / 2.0 + cam_right / tan_half * (width / 2.0),
+        height / 2.0 - cam_fwd / tan_half * (width / 2.0),
+    )
+
+
 def project_nadir(
     center_px: tuple[float, float],
     image_size: tuple[int, int],
@@ -573,3 +620,57 @@ def offset_latlon(
     dlat = north_m / 111_111.0
     denom = 111_111.0 * max(math.cos(math.radians(lat_deg)), 1e-6)
     return (lat_deg + dlat, lon_deg + east_m / denom)
+
+
+def simulated_target_in_frame(
+    anomalies: list[dict] | None,
+    *,
+    cap_lat: float,
+    cap_lon: float,
+    agl_m: float,
+    image_size: tuple[int, int],
+    hfov_deg: float = 70.0,
+    heading_deg: float | None = None,
+    pitch_deg: float = 0.0,
+    roll_deg: float = 0.0,
+    cam_yaw_offset_deg: float = 0.0,
+) -> tuple[dict, tuple[float, float], float] | None:
+    """The operator-placed sim target this captured frame would show.
+
+    The dashboard's placed anomalies are ground truth; a VISUAL one counts as
+    seen when its position projects inside this frame's image, using the
+    frame's own capture pose and the same camera model the real detections
+    are geo-projected with (so the footprint is the true 640x400 rectangle
+    rotated by heading, not a circle). Returns (anomaly, pixel, ground offset
+    from the capture nadir in metres) for the one nearest the image centre,
+    or None. Audio anomalies are never "seen" by a camera.
+    """
+
+    width, height = image_size
+    best = None
+    for anomaly in anomalies or []:
+        if str(anomaly.get("kind", "visual")) != "visual":
+            continue
+        try:
+            a_lat = float(anomaly["lat_deg"])
+            a_lon = float(anomaly["lon_deg"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        north_m = (a_lat - cap_lat) * 111_111.0
+        east_m = (a_lon - cap_lon) * 111_111.0 * max(
+            math.cos(math.radians(cap_lat)), 1e-6
+        )
+        pixel = ground_to_pixel(
+            north_m, east_m, (width, height),
+            agl_m=agl_m, hfov_deg=hfov_deg, heading_deg=heading_deg,
+            pitch_deg=pitch_deg, roll_deg=roll_deg,
+            cam_yaw_offset_deg=cam_yaw_offset_deg,
+        )
+        if pixel is None or not (0 <= pixel[0] < width and 0 <= pixel[1] < height):
+            continue
+        off_center = math.hypot(pixel[0] - width / 2.0, pixel[1] - height / 2.0)
+        if best is None or off_center < best[0]:
+            best = (off_center, anomaly, pixel, math.hypot(north_m, east_m))
+    if best is None:
+        return None
+    return best[1], best[2], best[3]

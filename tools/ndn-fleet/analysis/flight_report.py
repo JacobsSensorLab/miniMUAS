@@ -139,17 +139,61 @@ def jsonl(path: str) -> Iterator[dict]:
 # ---------------------------------------------------------------------------------------------
 # stack periods
 
-def read_cells(path: str) -> List[Tuple[float, str]]:
-    out = []
+def read_cells(path: str) -> Tuple[List[Tuple[float, str]], int]:
+    """(change points, lines dropped as written before the clock was set).
+
+    The nodes have no RTC: a recorder that starts at boot stamps its first lines with the
+    image's build-time clock until muas-time steps it (field day 2026-10-13: lines dated
+    2026-06-12 and 2026-07-13 between two 2026-10-13 lines). Read in file order, any line
+    earlier than one already seen is such a line; its true time is unknown, so it is dropped.
+    The cell it named is not lost: the next correctly stamped line or the previous one covers
+    the same stretch (a boot does not change the cell)."""
+    out: List[Tuple[float, str]] = []
+    dropped = 0
     try:
         with open(path) as f:
             for line in f:
                 ns, _, cell = line.strip().partition(" ")
-                if ns.isdigit() and cell:
-                    out.append((int(ns) / 1e9, cell.strip()))
+                if not (ns.isdigit() and cell):
+                    continue
+                t = int(ns) / 1e9
+                if out and t < out[-1][0]:
+                    dropped += 1
+                    continue
+                out.append((t, cell.strip()))
     except OSError:
         pass
-    return sorted(out)
+    return out, dropped
+
+
+def merge_observed(ch: List[Tuple[float, str]], seen: List[Tuple[float, str]]) -> int:
+    """Add to `ch` (in place) each cell the node reported in telemetry while `ch` says otherwise.
+
+    Telemetry tags every sample with the node's own fabric/active, stamped on the GCS clock,
+    so a disagreement is a change the node's recorder missed: field day 2026-10-13, wuas-01's
+    recorder logged neither the manual switch to nfd wifi at 20:35 nor the dashboard switch to
+    ndn-fwd wifi at 21:26 (its clock was unset; those lines carried pre-clock stamps), which
+    turned 50 minutes of sorties into "mixed". Agreeing samples add nothing, so this never
+    restarts a settle window the recorder already has."""
+    added = 0
+    for t, cell in seen:
+        prior = [c for c in ch if c[0] <= t]
+        if not prior or prior[-1][1] != cell:
+            ch.append((t, cell))
+            ch.sort()
+            added += 1
+    return added
+
+
+def clip_changes(ch: List[Tuple[float, str]], since: Optional[float],
+                 until: Optional[float]) -> List[Tuple[float, str]]:
+    """Change points inside [since, until]; the cell in force at `since` starts the window."""
+    if since is not None:
+        before = [c for c in ch if c[0] < since]
+        ch = ([(since, before[-1][1])] if before else []) + [c for c in ch if c[0] >= since]
+    if until is not None:
+        ch = [c for c in ch if c[0] < until]
+    return ch
 
 
 class Periods:
@@ -1332,13 +1376,33 @@ def render(R: dict) -> str:
 
 # ---------------------------------------------------------------------------------------------
 
+def parse_when(v: Optional[str]) -> Optional[float]:
+    if not v:
+        return None
+    try:
+        return float(v)
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%MZ", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"):
+        try:
+            return datetime.datetime.strptime(v, fmt).replace(tzinfo=datetime.timezone.utc).timestamp()
+        except ValueError:
+            continue
+    raise SystemExit(f"flight_report: cannot parse time {v!r} (want YYYY-MM-DDTHH:MM[:SS]Z or unix s)")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("flight")
     ap.add_argument("--fleet", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fleet.toml"))
     ap.add_argument("--settle-s", type=float, default=SETTLE_S)
     ap.add_argument("--no-wire", action="store_true", help="skip the packet captures (the slowest part)")
+    # A collect pulls everything since a date, which can hold campus rehearsals beside the
+    # sorties: --since/--until report one stretch (e.g. the field day) on its own.
+    ap.add_argument("--since", help="UTC time (YYYY-MM-DDTHH:MM[:SS]Z) or unix s: report from here")
+    ap.add_argument("--until", help="UTC time or unix s: report up to here")
     args = ap.parse_args()
+    since, until = parse_when(args.since), parse_when(args.until)
     flight = os.path.abspath(args.flight)
     nodes = load_nodes(args.fleet)
     gcs = next((n for n in nodes if n["role"] == "gcs"), None)
@@ -1355,16 +1419,21 @@ def main() -> int:
     journals = {n["name"]: sorted(glob.glob(os.path.join(flight, n["name"], "log", "*.jsonl"))) for n in nodes}
 
     changes, inventory = {}, {}
-    fallback = dash.cell_changes(veh_node)
+    fallback = dash.cell_changes({n["name"]: n["vehicle"] for n in nodes})
     for n in nodes:
         rec = os.path.join(flight, n["name"], "recorder")
-        ch = read_cells(os.path.join(rec, "cells.log"))
-        src = f"{len(ch)} lines"
+        ch, pre_clock = read_cells(os.path.join(rec, "cells.log"))
+        src = f"{len(ch)} lines" + (f" ({pre_clock} before the clock was set, dropped)" if pre_clock else "")
         if not ch and fallback.get(n["name"]):
             ch = fallback[n["name"]]
             src = f"missing; {len(ch)} changes from the dashboard"
         elif not ch:
             src = "missing"
+        elif fallback.get(n["name"]):
+            added = merge_observed(ch, fallback[n["name"]])
+            if added:
+                src += f"; +{added} changes the dashboard saw that it lacks"
+        ch = clip_changes(ch, since, until)
         if ch:
             changes[n["name"]] = ch
         other = [x for x in ("gps.log",) if os.path.exists(os.path.join(rec, x))]
@@ -1393,6 +1462,12 @@ def main() -> int:
         for p in recorder_files(os.path.join(flight, n["name"]), "wire")[-1:]:
             ends.append(os.path.getmtime(p))
     t_end = max(ends + [t for ch in changes.values() for t, _ in ch[-1:]]) + 1
+    if until is not None:
+        t_end = min(t_end, until)
+    if since is not None or until is not None:
+        notes.append("Window: " + " to ".join(
+            datetime.datetime.fromtimestamp(x, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            if x is not None else "open" for x in (since, until)) + "; data outside it is not reported.")
     periods = Periods(changes, t_end, args.settle_s)
 
     gcs_pos, fixes = (None, 0)

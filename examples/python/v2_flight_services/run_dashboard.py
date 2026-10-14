@@ -90,7 +90,7 @@ from dataplane import (
 )
 import fabric
 from raster import build_raster, estimate_duration_s
-from timesync import ClockMonitor
+from timesync import ClockMonitor, offset_vs_local_ms
 from telemetry_stream import TelemetryFeed
 from video_stream import frame_trace_enabled, trace_writer
 from ndnsf_runtime import (
@@ -133,7 +133,19 @@ def build_parser() -> argparse.ArgumentParser:
         "IUAS advertises it — one drone can carry the camera and another "
         "the microphone. Default: just --iuas-id.",
     )
-    parser.add_argument("--detect-timeout-ms", type=int, default=30000)
+    parser.add_argument(
+        "--detect-timeout-ms", type=int, default=60000,
+        help="Deadline for one frame's detect-object answer. Must exceed the "
+        "GCS provider's own wait ceiling, detect_admit x (frame fetch + "
+        "inference) = 2 x (15 + 10) s on the fleet, or a frame still queued "
+        "there is written off here while it is being analysed.",
+    )
+    parser.add_argument(
+        "--detect-inflight", type=int, default=2,
+        help="Search frames awaiting a detect-object answer at once; the "
+        "rest wait in the dashboard's FIFO. Matches the provider's "
+        "--detect-admit, so the provider never has to refuse a frame.",
+    )
     parser.add_argument("--search-margin-s", type=float, default=60.0)
     parser.add_argument("--investigate-timeout-ms", type=int, default=120000)
     parser.add_argument(
@@ -282,6 +294,11 @@ class Dashboard:
             "mission_id": "",
             "params": {},
             "search_done": False,
+            # search_done + the post-search status poll + an empty detection
+            # backlog: only then are leftover candidates final (see
+            # _settle_search_locked)
+            "final_polled": False,
+            "search_settled": False,
             "targets": [],      # {index, object_id, confidence, lat, lon,
                                 #  frame, status: queued|investigating|done|
                                 #  failed, artifacts: [], jobs: [...]}
@@ -301,7 +318,18 @@ class Dashboard:
         # detection confirms and queues but never launches it.
         self.enabled: dict[str, bool] = {v: True for v in self.vehicles}
         self.seen_frames: set[str] = set()
-        self.detects_pending = 0
+        # Detection pacing. Every new search frame enters a FIFO; at most
+        # --detect-inflight await an answer, the provider's admission depth.
+        # On 2026-10-13 every frame was sent the moment it was seen: with a
+        # capture every ~1.4 s and ~2.2 s of inference per frame the provider
+        # fast-rejected 61 frames "detector busy" (17/31 in the first
+        # mission), and the dashboard filed each as a miss. The frames 2.2 m
+        # and 4.0 m from the racket were among them, which is why it was
+        # never seen twice. Guarded by detect_lock (taken INSIDE targets_lock,
+        # never the other way round).
+        self.detect_lock = threading.Lock()
+        self.detect_queue: deque = deque()   # frame names, capture order
+        self.detect_inflight: dict[str, str] = {}  # frame -> mission id
         self.detects_done = 0
         self.video_relays: dict[str, dict] = {}  # vid -> {"enabled": bool, "seq": int}
         # Predictive-stream subscribers, one per vehicle whose video/status
@@ -616,8 +644,24 @@ class Dashboard:
     def _poll_search_forever(self) -> None:
         vid = self.args.wuas_id
         while True:
-            if self.mission["state"] == "searching":
+            mission_id = self.mission["mission_id"]
+            if (
+                self.mission["state"] in ("searching", "investigating")
+                and not self.mission["final_polled"]
+            ):
+                after_search = self.mission["search_done"]
                 self._poll_search(vid)
+                if after_search:
+                    # This poll began after the raster answered, so it saw
+                    # the last frames. Before, polling stopped the moment the
+                    # raster answered and the final captures were never
+                    # analysed (31 of 32 frames sent in the first 2026-10-13
+                    # mission, 22 of 24 in the third).
+                    with self.targets_lock:
+                        if self.mission["mission_id"] == mission_id:
+                            self.mission["final_polled"] = True
+                            self._settle_search_locked()
+                    self._pump_dispatch()
             time.sleep(0.5)
 
     def _on_telemetry(self, vid: str, payload: bytes) -> None:
@@ -633,15 +677,15 @@ class Dashboard:
         # freshness on the dashboard's own clock: seconds since the
         # last NEW sample was observed (independent of clock sync)
         age_s = now - state["changed_mono"]
-        # Node-minus-GCS clock offset from chrony on both ends: each
-        # measures itself against its reference (drones against the GCS),
-        # so the difference is exact to chrony's ~0.1 ms. The old figure,
-        # our clock minus the sample's stamp, was 300-700 ms of sample age
-        # (publish + fetch + poll staleness) read as "clock error".
-        ours = self.clock.reading()
-        clock_ms = (
-            sample.clock_offset_ms - ours.offset_ms
-            if sample.clock_ref and ours.known else None
+        # Node-minus-GCS clock offset from chrony, not from differencing wall
+        # clocks across the link (our clock minus the sample's stamp was
+        # 300-700 ms of sample age read as "clock error"). A drone
+        # disciplined to this GCS reports node-minus-GCS directly, so it
+        # needs no absolute time here: the old gate on OUR chrony having a
+        # named reference blanked every offset in the isolated field of
+        # 2026-10-13, where the GCS served its hand-set clock (timesync.py).
+        clock_ms = offset_vs_local_ms(
+            sample.clock_ref, sample.clock_offset_ms, self.clock.reading()
         )
         # With the offset known, our clock minus the stamp is the sample's
         # true age from publish to delivery. `age_ms` is this sample's (the
@@ -691,19 +735,30 @@ class Dashboard:
                 vehicle_search_status_name(vid), timeout_ms=800
             )
             status = SearchStatus.from_bytes(payload)
+            mission_id = self.mission["mission_id"]
             self._send_loop({
                 "type": "search_status",
                 "vehicle": vid,
                 "status": json.loads(payload.decode()),
-                "detects_pending": self.detects_pending,
+                "detects_pending": self._detect_backlog(),
                 "detects_done": self.detects_done,
             })
-            # last_frames is newest-first; dispatch oldest-first so
-            # detections leave (and usually return) in capture order
-            for frame in reversed(status.last_frames):
-                if frame not in self.seen_frames:
-                    self.seen_frames.add(frame)
-                    self._detect_frame(frame)
+            # Only THIS mission's frames. The agent's status object outlives
+            # its raster, so the first polls of a new mission still listed
+            # the previous mission's last six frames: on 2026-10-13 every
+            # restarted mission re-sent them under its own id (6 stale frames
+            # each into missions 1791927451, 1791928229 and 1791928339).
+            if status.mission_id != mission_id:
+                return
+            # last_frames is newest-first; queue oldest-first so detections
+            # run (and return) in capture order
+            fresh = [f for f in reversed(status.last_frames)
+                     if f not in self.seen_frames]
+            if fresh:
+                self.seen_frames.update(fresh)
+                with self.detect_lock:
+                    self.detect_queue.extend(fresh)
+                self._pump_detects()
         except Exception:
             pass
 
@@ -814,10 +869,56 @@ class Dashboard:
         except (ValueError, IndexError):
             return -1
 
-    def _detect_frame(self, frame_name: str) -> None:
+    # Re-queue a frame the provider refused as busy (its slot frees when a
+    # previous frame's work ends) after a pause, at most this many times.
+    DETECT_BUSY_RETRY_S = 1.0
+    DETECT_BUSY_RETRIES = 30
+
+    def _detect_backlog(self) -> int:
+        """This mission's frames still waiting for a detection answer."""
+        mission_id = self.mission["mission_id"]
+        with self.detect_lock:
+            return len(self.detect_queue) + sum(
+                1 for m in self.detect_inflight.values() if m == mission_id
+            )
+
+    def _pump_detects(self) -> None:
+        """Send queued frames while fewer than --detect-inflight await an
+        answer (frames of an earlier mission still count: they hold a
+        provider slot until answered)."""
+        to_send = []
+        mission_id = self.mission["mission_id"]
+        with self.detect_lock:
+            if self.mission["state"] not in ("searching", "investigating"):
+                self.detect_queue.clear()  # aborted: stop analysing
+                return
+            while (
+                self.detect_queue
+                and len(self.detect_inflight) < max(1, self.args.detect_inflight)
+            ):
+                frame = self.detect_queue.popleft()
+                self.detect_inflight[frame] = mission_id
+                to_send.append(frame)
+        for frame in to_send:
+            self._detect_frame(frame, mission_id)
+
+    def _detect_finished(self, frame_name: str, mission_id: str) -> None:
+        with self.detect_lock:
+            self.detect_inflight.pop(frame_name, None)
+            if mission_id == self.mission["mission_id"]:
+                self.detects_done += 1
+        self._pump_detects()
+        with self.targets_lock:
+            if self.mission["mission_id"] == mission_id:
+                self._settle_search_locked()
+        self._pump_dispatch()
+
+    def _detect_frame(
+        self, frame_name: str, mission_id: str, busy_retries: int = 0,
+    ) -> None:
         params = self.mission["params"]
         request = DetectionRequest(
-            mission_id=self.mission["mission_id"],
+            mission_id=mission_id,
             frame=FrameRef(
                 data_name=frame_name,
                 gps_time_ns=gps_time_ns(),
@@ -829,45 +930,78 @@ class Dashboard:
                 content_type=FRAME_CONTENT_TYPE,
             ),
             object_query=params.get("object_query", "tennis racket"),
-            # ship the current sim ground truth so the synthetic detector
-            # finds operator-placed targets (empty => legacy detector path)
+            # the current sim ground truth: the provider reports a placed
+            # target this frame covers as a SIMULATED detection
             anomalies=self._anomaly_snapshot(),
         )
         seq = self._frame_seq(frame_name)
-        self.detects_pending += 1
-        self.event("detect.sent", frame=frame_name, seq=seq)
+        if busy_retries == 0:
+            self.event("detect.sent", frame=frame_name, seq=seq)
+
+        def capture_age_s() -> float | None:
+            # .../frame/<capture gps ns>/<seq>: the capture -> answer delay
+            # the operator experiences (clocks chrony-synced to the GCS)
+            try:
+                return round(
+                    (gps_time_ns() - int(frame_name.rsplit("/", 2)[-2])) / 1e9, 1
+                )
+            except (ValueError, IndexError):
+                return None
+
+        def resend() -> None:
+            if self.mission["mission_id"] != mission_id:
+                self._detect_finished(frame_name, mission_id)
+                return
+            self._detect_frame(frame_name, mission_id, busy_retries + 1)
 
         def on_response(response) -> None:
-            self.detects_pending -= 1
-            self.detects_done += 1
-            if not response.status:
+            if not response.status and response.error == "detector busy":
+                # a pacing signal, not an answer: the frame keeps its slot
+                # and goes again shortly
+                if busy_retries < self.DETECT_BUSY_RETRIES:
+                    print_json("dash.detect.busy", frame=frame_name,
+                               seq=seq, retry=busy_retries + 1)
+                    timer = threading.Timer(self.DETECT_BUSY_RETRY_S, resend)
+                    timer.daemon = True
+                    timer.start()
+                    return
+            try:
+                if self.mission["mission_id"] != mission_id:
+                    print_json("dash.detect.stale", frame=frame_name,
+                               mission=mission_id)
+                    return
+                if not response.status:
+                    self.event(
+                        "detect.miss", frame=frame_name, seq=seq,
+                        error=response.error, capture_age_s=capture_age_s(),
+                    )
+                    return
+                detection = DetectionResponse.from_bytes(response.payload)
                 self.event(
-                    "detect.miss", frame=frame_name, seq=seq,
-                    error=response.error,
+                    "detect.hit",
+                    frame=frame_name,
+                    seq=seq,
+                    object_id=detection.object_id,
+                    simulated=detection.simulated,
+                    confidence=round(detection.confidence, 4),
+                    lat=detection.estimate.lat_deg,
+                    lon=detection.estimate.lon_deg,
+                    offset_m=round(detection.offset_m, 2),
+                    capture_age_s=capture_age_s(),
                 )
-                return
-            detection = DetectionResponse.from_bytes(response.payload)
-            self.event(
-                "detect.hit",
-                frame=frame_name,
-                seq=seq,
-                object_id=detection.object_id,
-                confidence=round(detection.confidence, 4),
-                lat=detection.estimate.lat_deg,
-                lon=detection.estimate.lon_deg,
-                offset_m=round(detection.offset_m, 2),
-            )
-            min_conf = float(params.get("min_confidence", 0.3))
-            if (
-                detection.confidence >= min_conf
-                and self.mission["state"] in ("searching", "investigating")
-            ):
-                self._on_detect_hit(detection, frame_name)
+                min_conf = float(params.get("min_confidence", 0.3))
+                if (
+                    detection.confidence >= min_conf
+                    and self.mission["state"] in ("searching", "investigating")
+                ):
+                    self._on_detect_hit(detection, frame_name)
+            finally:
+                self._detect_finished(frame_name, mission_id)
 
         def on_timeout(_request_id: str) -> None:
-            self.detects_pending -= 1
-            self.detects_done += 1
-            self.event("detect.timeout", frame=frame_name, seq=seq)
+            self.event("detect.timeout", frame=frame_name, seq=seq,
+                       capture_age_s=capture_age_s())
+            self._detect_finished(frame_name, mission_id)
 
         self._timed_async(
             gcs_detection_service(),
@@ -888,15 +1022,27 @@ class Dashboard:
 
         Dedup is by ground distance: hits within `target_separation_m`
         belong to the same candidate/target, best-confidence estimate
-        kept. Already-dispatched targets just absorb further hits.
+        kept. Already-dispatched targets just absorb further hits. A
+        simulated hit (operator-placed sim target) only ever joins simulated
+        candidates/targets and a real hit only real ones, so a sim target
+        placed next to a real object can neither confirm it nor borrow its
+        confirmation.
         """
         sep = float(self.mission["params"].get("target_separation_m", 5.0))
         need = max(1, int(self.args.confirm_count))
         lat, lon = detection.estimate.lat_deg, detection.estimate.lon_deg
+        simulated = bool(detection.simulated)
+
+        def same(entry: dict) -> bool:
+            return (
+                entry.get("simulated", False) == simulated
+                and _dist_m(entry["lat"], entry["lon"], lat, lon) <= sep
+            )
+
         with self.targets_lock:
             # already a confirmed target nearby? absorb + maybe refine.
             for target in self.mission["targets"]:
-                if _dist_m(target["lat"], target["lon"], lat, lon) <= sep:
+                if same(target):
                     cand_conf = max(target["confidence"], detection.confidence)
                     target["confidence"] = cand_conf
                     # refine position only from a BETTER-localized sighting,
@@ -917,7 +1063,7 @@ class Dashboard:
             # otherwise reinforce / create a candidate.
             cand = None
             for c in self.candidates:
-                if _dist_m(c["lat"], c["lon"], lat, lon) <= sep:
+                if same(c):
                     cand = c
                     break
             if cand is None:
@@ -927,6 +1073,7 @@ class Dashboard:
                     "lat": lat, "lon": lon, "frame": frame,
                     "best_offset": detection.offset_m,
                     "frames": set(),
+                    "simulated": simulated,
                 }
                 self.candidates.append(cand)
             cand["frames"].add(frame)
@@ -943,7 +1090,7 @@ class Dashboard:
                 cand["lat"], cand["lon"], cand["frame"] = lat, lon, frame
             self.event(
                 "detect.candidate", object_id=cand["object_id"],
-                hits=cand["hits"], need=need,
+                hits=cand["hits"], need=need, simulated=simulated,
                 confidence=round(cand["confidence"], 4),
                 lat=cand["lat"], lon=cand["lon"],
                 best_offset_m=round(cand["best_offset"], 2),
@@ -962,6 +1109,7 @@ class Dashboard:
                 "lat": cand["lat"], "lon": cand["lon"],
                 "frame": cand["frame"],
                 "best_offset": cand["best_offset"],
+                "simulated": simulated,
                 "status": "queued",
                 "artifacts": [],
                 "jobs": [
@@ -976,7 +1124,7 @@ class Dashboard:
             index=target["index"], object_id=target["object_id"],
             confidence=round(target["confidence"], 4),
             lat=target["lat"], lon=target["lon"], frame=target["frame"],
-            hits=need, sensors=sensors,
+            hits=need, sensors=sensors, simulated=simulated,
         )
         self._pump_dispatch()
 
@@ -986,6 +1134,22 @@ class Dashboard:
         return sensors or ["camera"]
 
     # ---- end-of-raster unconfirmed disposition (operator inputs) -----------
+
+    def _settle_search_locked(self) -> None:
+        """Caller holds targets_lock. Leftover candidates are final only
+        once the raster has answered, a status poll begun after that has
+        queued its last frames, and every queued frame has its detection
+        answer. Settling at the raster's answer (as before) judged
+        candidates while frames were still being analysed: a hit arriving
+        afterwards was dropped or orphaned, and the mission completed with
+        the answers still on the way ("results after a long delay")."""
+        m = self.mission
+        if m["search_settled"] or not (m["search_done"] and m["final_polled"]):
+            return
+        if self._detect_backlog():
+            return
+        m["search_settled"] = True
+        self._finish_search_disposition_locked()
 
     def _finish_search_disposition_locked(self) -> None:
         """Caller holds targets_lock. Convert leftover candidates (each seen
@@ -1007,6 +1171,7 @@ class Dashboard:
                 "lon": cand["lon"],
                 "frame": cand["frame"],
                 "best_offset": cand.get("best_offset", 0.0),
+                "simulated": cand.get("simulated", False),
                 "hits": len(cand["frames"]),
                 "need": need,
                 "status": "unconfirmed",
@@ -1015,7 +1180,7 @@ class Dashboard:
             self.event(
                 "target.unconfirmed",
                 index=u["index"], hits=u["hits"], need=u["need"],
-                object_id=u["object_id"],
+                object_id=u["object_id"], simulated=u["simulated"],
                 confidence=round(u["confidence"], 4),
                 lat=u["lat"], lon=u["lon"], frame=u["frame"],
             )
@@ -1056,6 +1221,7 @@ class Dashboard:
                 "lat": u["lat"], "lon": u["lon"],
                 "frame": u["frame"],
                 "best_offset": u.get("best_offset", 0.0),
+                "simulated": u.get("simulated", False),
                 "status": "queued",
                 "artifacts": [],
                 "jobs": [
@@ -1077,6 +1243,7 @@ class Dashboard:
             confidence=round(target["confidence"], 4),
             lat=target["lat"], lon=target["lon"], frame=target["frame"],
             hits=u_hits, sensors=sensors, promoted_from=u_index,
+            simulated=target["simulated"],
         )
         self._pump_dispatch()
 
@@ -1236,11 +1403,12 @@ class Dashboard:
         return None
 
     def _maybe_complete_locked(self) -> None:
-        """Caller holds targets_lock. Mission ends when the raster is done,
+        """Caller holds targets_lock. Mission ends when the raster is done
+        and every one of its frames has been analysed (search settled),
         nothing is in flight, and no queued job could ever be served by a
         currently enabled vehicle (disabled/absent capability must not
         hold the mission open forever)."""
-        if not self.mission["search_done"]:
+        if not self.mission["search_settled"]:
             return
         if self.mission["state"] not in ("searching", "investigating"):
             return
@@ -1296,6 +1464,7 @@ class Dashboard:
             circle_radius_m=float(params.get("orbit_radius_m", 6.0)),
             circle_count=float(params.get("orbit_count", 1.0)),
             sensor_plan=[job["sensor"]],
+            simulated=target.get("simulated", False),
         )
         self.event(
             "target.dispatch",
@@ -1306,6 +1475,7 @@ class Dashboard:
             lon=request.target.lon_deg,
             radius_m=request.circle_radius_m,
             agl_m=request.approach_alt_m,
+            simulated=request.simulated,
         )
 
         def finish(
@@ -1407,13 +1577,18 @@ class Dashboard:
                 mission_id=mission_id,
                 params=params,
                 search_done=False,
+                final_polled=False,
+                search_settled=False,
                 targets=[],
                 unconfirmed=[],
             )
         self.seen_frames.clear()
         self.candidates.clear()
-        self.detects_pending = 0
-        self.detects_done = 0
+        with self.detect_lock:
+            # the previous mission's queued frames are moot; its in-flight
+            # ones still hold provider slots until they answer
+            self.detect_queue.clear()
+            self.detects_done = 0
 
         area = SearchArea.from_dict(params.get("area", {}))
         request = RasterSearchRequest(
@@ -1447,32 +1622,11 @@ class Dashboard:
                 )
             else:
                 self.event("mission.search_failed", error=response.error)
-            with self.targets_lock:
-                self.mission["search_done"] = True
-                if self.mission["state"] == "searching" and any(
-                    t["status"] in ("queued", "investigating")
-                    for t in self.mission["targets"]
-                ):
-                    self.mission["state"] = "investigating"
-                # leftover candidates (hits < confirm_count) become
-                # operator-facing unconfirmed markers/cards
-                self._finish_search_disposition_locked()
-            # drain (or immediately complete) the target queue
-            self._pump_dispatch()
+            self._on_search_answered(mission_id)
 
         def on_timeout(_request_id: str) -> None:
             self.event("mission.search_timeout")
-            with self.targets_lock:
-                self.mission["search_done"] = True
-                if self.mission["state"] == "searching" and any(
-                    t["status"] in ("queued", "investigating")
-                    for t in self.mission["targets"]
-                ):
-                    self.mission["state"] = "investigating"
-                # leftover candidates (hits < confirm_count) become
-                # operator-facing unconfirmed markers/cards
-                self._finish_search_disposition_locked()
-            self._pump_dispatch()
+            self._on_search_answered(mission_id)
 
         self._timed_async(
             vehicle_flight_service(self.args.wuas_id, "raster-search"),
@@ -1484,6 +1638,26 @@ class Dashboard:
             vehicle=self.args.wuas_id,
         )
 
+    def _on_search_answered(self, mission_id: str) -> None:
+        """The raster has answered (or timed out): its frames may still be
+        in the detection backlog, so leftover candidates settle later (see
+        _settle_search_locked)."""
+        with self.targets_lock:
+            if self.mission["mission_id"] != mission_id:
+                return
+            self.mission["search_done"] = True
+            if self.mission["state"] == "searching" and any(
+                t["status"] in ("queued", "investigating")
+                for t in self.mission["targets"]
+            ):
+                self.mission["state"] = "investigating"
+            backlog = self._detect_backlog()
+            self._settle_search_locked()
+        if backlog:
+            self.event("detect.backlog", frames=backlog)
+        # drain (or complete) the target queue
+        self._pump_dispatch()
+
     def _flight_command(self, vid: str, command: str, params: dict | None = None) -> None:
         self.event("command.sent", vehicle=vid, command=command)
         payload = b"{}"
@@ -1494,12 +1668,27 @@ class Dashboard:
             payload = TakeoffRequest(target_agl_m=agl).to_bytes()
 
         def on_response(response) -> None:
+            # The transport status only says the agent answered. Its verdict
+            # is the FlightCommandResult inside: on 2026-10-13 seven wuas-01
+            # takeoffs (15:38-16:07) were logged "command.result ok: true,
+            # error: No error" while the agent answered status=failed.
+            ok, error, detail = bool(response.status), response.error, ""
+            if ok and response.payload:
+                try:
+                    result = FlightCommandResult.from_bytes(response.payload)
+                except Exception:
+                    result = None
+                if result is not None:
+                    ok = result.status == "accepted"
+                    error = "" if ok else (result.message or result.status)
+                    detail = result.message if ok else ""
             self.event(
                 "command.result",
                 vehicle=vid,
                 command=command,
-                ok=bool(response.status),
-                error=response.error,
+                ok=ok,
+                error=error,
+                detail=detail,
             )
 
         def on_timeout(_request_id: str) -> None:
@@ -1927,9 +2116,13 @@ class Dashboard:
         self._send_loop({"type": "sim_anomalies", "anomalies": self._anomaly_snapshot()})
 
     def place_anomaly(self, params: dict) -> None:
-        """Drop a ground-truth anomaly into the running sim (v3 parity: the
-        operator places targets the synthetic detector then finds). Broadcasts
-        the updated truth so every client re-renders the map + list."""
+        """Drop a ground-truth sim target (v3 parity: the operator places
+        targets the detector then finds). It rides every detect request; the
+        GCS provider, stub OR yolo, reports a visual one that a captured
+        search frame covers as a SIMULATED detection, so in the field it
+        exercises confirm -> dispatch -> investigate without a real object,
+        flagged simulated at every step. Broadcasts the updated truth so
+        every client re-renders the map + list."""
         try:
             lat = float(params["lat"])
             lon = float(params["lon"])
